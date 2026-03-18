@@ -22,6 +22,7 @@ type SpeakBlockOptions = {
 
 class SpeechService {
   private activeRequestId = 0;
+  private stopInFlight: Promise<void> | null = null;
 
   private normalizeError(error: unknown, fallback: string) {
     if (error instanceof Error && error.message.trim()) {
@@ -39,15 +40,31 @@ class SpeechService {
     return Speech.isSpeakingAsync();
   }
 
-  async stop() {
-    this.activeRequestId += 1;
+  private async stopNativeSpeech() {
+    if (this.stopInFlight) {
+      await this.stopInFlight;
+      return;
+    }
+
+    this.stopInFlight = (async () => {
+      try {
+        await Speech.stop();
+      } catch {
+        // El motor TTS puede quedar inestable al volver del fondo.
+        // Un error al limpiar no deberia tirar abajo la app.
+      }
+    })();
 
     try {
-      await Speech.stop();
-    } catch {
-      // El motor TTS puede quedar inestable al volver del fondo.
-      // Un error al limpiar no deberia tirar abajo la app.
+      await this.stopInFlight;
+    } finally {
+      this.stopInFlight = null;
     }
+  }
+
+  async stop() {
+    this.activeRequestId += 1;
+    await this.stopNativeSpeech();
   }
 
   async speakBlock(block: TextBlock, options: SpeakBlockOptions) {
@@ -64,11 +81,7 @@ class SpeechService {
 
     try {
       await audioSessionService.ensureReady();
-      try {
-        await Speech.stop();
-      } catch {
-        // Si no habia una locucion activa o el motor esta inestable, seguimos.
-      }
+      await this.stopNativeSpeech();
 
       Speech.speak(text, {
         rate: options.rate,

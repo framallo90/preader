@@ -1,6 +1,6 @@
 import Slider from '@react-native-community/slider';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
-import { Stack, router, useLocalSearchParams } from 'expo-router';
+import { Stack, router, useLocalSearchParams, useNavigation } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -103,6 +103,7 @@ function getStatusColors(colors: ThemeColors, tone: StatusTone) {
 
 export default function ReaderScreen() {
   const { documentId } = useLocalSearchParams<{ documentId?: string }>();
+  const navigation = useNavigation();
   const { colors, settings, updateSettings } = useAppSettings();
   const [documentRecord, setDocumentRecord] = useState<StoredDocument | null>(null);
   const [parsedDocument, setParsedDocument] = useState<ParsedDocument | null>(null);
@@ -120,6 +121,7 @@ export default function ReaderScreen() {
   const [clockNow, setClockNow] = useState(Date.now());
   const [isUsingCachedText, setIsUsingCachedText] = useState(false);
   const listRef = useRef<FlatList<TextBlock>>(null);
+  const isLeavingRef = useRef(false);
 
   useEffect(() => {
     let isMounted = true;
@@ -474,6 +476,30 @@ export default function ReaderScreen() {
     },
     [reader],
   );
+
+  useEffect(() => {
+    const unsubscribe = navigation.addListener('beforeRemove', (event: any) => {
+      if (isLeavingRef.current) {
+        return;
+      }
+
+      event.preventDefault();
+      isLeavingRef.current = true;
+      setIsVoicePickerVisible(false);
+      setIsSleepTimerPickerVisible(false);
+
+      void (async () => {
+        try {
+          await reader.shutdown();
+          await deactivateKeepAwake(KEEP_AWAKE_TAG);
+        } finally {
+          navigation.dispatch(event.data.action);
+        }
+      })();
+    });
+
+    return unsubscribe;
+  }, [navigation, reader]);
 
   if (isLoading) {
     return (

@@ -72,6 +72,7 @@ export function useReaderController({
   const onErrorRef = useRef(onError);
   const shouldKeepPlayingRef = useRef(false);
   const lastPersistedAtRef = useRef(0);
+  const stopSequenceRef = useRef<Promise<void> | null>(null);
   const persistPositionRef = useRef<
     ((blockIndex: number, charIndex: number, force?: boolean) => Promise<void>) | null
   >(null);
@@ -111,6 +112,50 @@ export function useReaderController({
 
     onErrorRef.current?.(fallback);
   }, []);
+
+  const runStopSequence = useCallback(
+    async (fallback: string, suppressErrors = false) => {
+      if (stopSequenceRef.current) {
+        try {
+          await stopSequenceRef.current;
+        } catch (error) {
+          if (!suppressErrors) {
+            reportError(error, fallback);
+          }
+        }
+
+        return;
+      }
+
+      const stopTask = (async () => {
+        shouldKeepPlayingRef.current = false;
+        setIsPlaying(false);
+        setCurrentWordRange(null);
+
+        await speechService.stop();
+        await persistPositionRef.current?.(
+          positionRef.current.blockIndex,
+          positionRef.current.charIndex,
+          true,
+        );
+      })();
+
+      stopSequenceRef.current = stopTask;
+
+      try {
+        await stopTask;
+      } catch (error) {
+        if (!suppressErrors) {
+          reportError(error, fallback);
+        }
+      } finally {
+        if (stopSequenceRef.current === stopTask) {
+          stopSequenceRef.current = null;
+        }
+      }
+    },
+    [reportError],
+  );
 
   persistPositionRef.current = async (blockIndex: number, charIndex: number, force = false) => {
     const activeDocument = documentRef.current;
@@ -245,12 +290,9 @@ export function useReaderController({
 
   useEffect(() => {
     return () => {
-      shouldKeepPlayingRef.current = false;
-      void speechService.stop().catch(() => {
-        // Ignorado a proposito al desmontar.
-      });
+      void runStopSequence('', true);
     };
-  }, []);
+  }, [runStopSequence]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
@@ -260,19 +302,7 @@ export function useReaderController({
         }
 
         void (async () => {
-          try {
-            shouldKeepPlayingRef.current = false;
-            await speechService.stop();
-            setIsPlaying(false);
-
-            await persistPositionRef.current?.(
-              positionRef.current.blockIndex,
-              positionRef.current.charIndex,
-              true
-            );
-          } catch (error) {
-            reportError(error, 'No se pudo guardar el punto actual al salir del lector.');
-          }
+          await runStopSequence('No se pudo guardar el punto actual al salir del lector.', true);
         })();
 
         return;
@@ -324,20 +354,8 @@ export function useReaderController({
   }, [reportError]);
 
   const stop = useCallback(async () => {
-    try {
-      shouldKeepPlayingRef.current = false;
-      await speechService.stop();
-      setIsPlaying(false);
-      setCurrentWordRange(null);
-      await persistPositionRef.current?.(
-        positionRef.current.blockIndex,
-        positionRef.current.charIndex,
-        true,
-      );
-    } catch (error) {
-      reportError(error, 'No se pudo detener la lectura.');
-    }
-  }, [reportError]);
+    await runStopSequence('No se pudo detener la lectura.');
+  }, [runStopSequence]);
 
   const restartFromCurrent = useCallback(async () => {
     try {
@@ -397,6 +415,9 @@ export function useReaderController({
     isPlaying,
     play,
     stop,
+    shutdown: async () => {
+      await runStopSequence('', true);
+    },
     restartFromCurrent,
     nextBlock,
     previousBlock,
