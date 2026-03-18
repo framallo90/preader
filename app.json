@@ -39,7 +39,7 @@
         "expo-audio",
         {
           "recordAudioAndroid": false,
-          "enableBackgroundPlayback": true,
+          "enableBackgroundPlayback": false,
           "enableBackgroundRecording": false
         }
       ],

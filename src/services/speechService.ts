@@ -23,6 +23,14 @@ type SpeakBlockOptions = {
 class SpeechService {
   private activeRequestId = 0;
 
+  private normalizeError(error: unknown, fallback: string) {
+    if (error instanceof Error && error.message.trim()) {
+      return error;
+    }
+
+    return new Error(fallback);
+  }
+
   async getVoices() {
     return Speech.getAvailableVoicesAsync();
   }
@@ -33,7 +41,13 @@ class SpeechService {
 
   async stop() {
     this.activeRequestId += 1;
-    await Speech.stop();
+
+    try {
+      await Speech.stop();
+    } catch {
+      // El motor TTS puede quedar inestable al volver del fondo.
+      // Un error al limpiar no deberia tirar abajo la app.
+    }
   }
 
   async speakBlock(block: TextBlock, options: SpeakBlockOptions) {
@@ -48,59 +62,65 @@ class SpeechService {
       return;
     }
 
-    await audioSessionService.ensureReady();
-    await Speech.stop();
+    try {
+      await audioSessionService.ensureReady();
+      try {
+        await Speech.stop();
+      } catch {
+        // Si no habia una locucion activa o el motor esta inestable, seguimos.
+      }
 
-    Speech.speak(text, {
-      rate: options.rate,
-      voice: options.voiceId ?? undefined,
-      onStart: () => {
-        if (this.activeRequestId !== nextRequestId) {
-          return;
-        }
+      Speech.speak(text, {
+        rate: options.rate,
+        voice: options.voiceId ?? undefined,
+        onStart: () => {
+          if (this.activeRequestId !== nextRequestId) {
+            return;
+          }
 
-        options.onStart?.();
-      },
-      onBoundary: (event: unknown) => {
-        if (
-          this.activeRequestId !== nextRequestId ||
-          !event ||
-          typeof event !== 'object' ||
-          !('charIndex' in event) ||
-          !('charLength' in event)
-        ) {
-          return;
-        }
+          options.onStart?.();
+        },
+        onBoundary: (event: unknown) => {
+          if (
+            this.activeRequestId !== nextRequestId ||
+            !event ||
+            typeof event !== 'object' ||
+            !('charIndex' in event) ||
+            !('charLength' in event)
+          ) {
+            return;
+          }
 
-        options.onBoundary?.({
-          charIndex: Number(event.charIndex),
-          charLength: Number(event.charLength),
-        });
-      },
-      onDone: () => {
-        if (this.activeRequestId !== nextRequestId) {
-          return;
-        }
+          options.onBoundary?.({
+            charIndex: Number(event.charIndex),
+            charLength: Number(event.charLength),
+          });
+        },
+        onDone: () => {
+          if (this.activeRequestId !== nextRequestId) {
+            return;
+          }
 
-        options.onDone?.();
-      },
-      onStopped: () => {
-        if (this.activeRequestId !== nextRequestId) {
-          return;
-        }
+          options.onDone?.();
+        },
+        onStopped: () => {
+          if (this.activeRequestId !== nextRequestId) {
+            return;
+          }
 
-        options.onStopped?.();
-      },
-      onError: (error) => {
-        if (this.activeRequestId !== nextRequestId) {
-          return;
-        }
+          options.onStopped?.();
+        },
+        onError: (error) => {
+          if (this.activeRequestId !== nextRequestId) {
+            return;
+          }
 
-        options.onError?.(
-          error instanceof Error ? error : new Error('La lectura en voz alta falló.'),
-        );
-      },
-    });
+          options.onError?.(this.normalizeError(error, 'La lectura en voz alta fallo.'));
+        },
+      });
+    } catch (error) {
+      options.onError?.(this.normalizeError(error, 'No se pudo iniciar el motor de voz.'));
+    }
   }
 }
 

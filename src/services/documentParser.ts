@@ -4,6 +4,7 @@ export type DocumentParseErrorCode =
   | 'missing_file'
   | 'empty_document'
   | 'no_extractable_text'
+  | 'document_too_large'
   | 'extractor_unavailable'
   | 'unsupported_format'
   | 'parse_failed';
@@ -27,6 +28,8 @@ export function getFriendlyParseErrorMessage(error: unknown) {
         return 'El documento esta vacio o no se pudo reconstruir texto legible.';
       case 'no_extractable_text':
         return 'Este PDF no contiene texto extraible. Para leerlo haria falta OCR, que no forma parte de esta primera version.';
+      case 'document_too_large':
+        return 'Este PDF es demasiado grande para que esta version lo procese de forma segura en memoria. Estoy priorizando estabilidad para evitar cierres de la app.';
       case 'extractor_unavailable':
         return 'Esta APK no incluye el extractor PDF nativo o la instalacion quedo desactualizada. Rehace la build con EAS e instala la APK nueva.';
       case 'unsupported_format':

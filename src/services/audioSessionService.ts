@@ -16,7 +16,7 @@ class AudioSessionService {
           allowsRecording: false,
           interruptionMode: 'doNotMix',
           playsInSilentMode: true,
-          shouldPlayInBackground: true,
+          shouldPlayInBackground: false,
           shouldRouteThroughEarpiece: false,
         });
 

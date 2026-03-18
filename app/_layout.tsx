@@ -4,7 +4,6 @@ import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 import { AppSettingsProvider, useAppSettings } from '../src/hooks/useAppSettings';
-import { audioSessionService } from '../src/services/audioSessionService';
 import { initializeDatabase } from '../src/storage/database';
 
 function RootNavigator() {
@@ -69,12 +68,6 @@ export default function RootLayout() {
     return () => {
       isMounted = false;
     };
-  }, []);
-
-  useEffect(() => {
-    void audioSessionService.ensureReady().catch(() => {
-      // El servicio de voz vuelve a intentar antes de reproducir.
-    });
   }, []);
 
   if (bootError) {

@@ -1,5 +1,5 @@
 import { Stack, router, useFocusEffect } from 'expo-router';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useState } from 'react';
 import { ActivityIndicator, Alert, StyleSheet, Text, View } from 'react-native';
 
 import { AppButton } from '../src/components/AppButton';
@@ -11,12 +11,11 @@ import { recentFilesRepository } from '../src/storage/recentFilesRepository';
 import { StoredDocument } from '../src/types/storage';
 
 export default function HomeScreen() {
-  const { colors, settings, isReady } = useAppSettings();
+  const { colors } = useAppSettings();
   const [recentDocuments, setRecentDocuments] = useState<StoredDocument[]>([]);
   const [lastOpenedDocument, setLastOpenedDocument] = useState<StoredDocument | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isImporting, setIsImporting] = useState(false);
-  const autoResumeAttemptedRef = useRef(false);
 
   const loadRecentDocuments = useCallback(async () => {
     setIsLoading(true);
@@ -53,18 +52,6 @@ export default function HomeScreen() {
       params: { documentId },
     });
   }, []);
-
-  useEffect(() => {
-    if (!isReady || isLoading || autoResumeAttemptedRef.current) {
-      return;
-    }
-
-    autoResumeAttemptedRef.current = true;
-
-    if (settings.reopenLastDocumentOnLaunch && lastOpenedDocument) {
-      openReader(lastOpenedDocument.id, true);
-    }
-  }, [isLoading, isReady, lastOpenedDocument, openReader, settings.reopenLastDocumentOnLaunch]);
 
   const handleOpenDocument = useCallback(async () => {
     setIsImporting(true);

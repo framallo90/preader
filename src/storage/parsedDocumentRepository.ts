@@ -9,6 +9,10 @@ type ParsedDocumentRow = {
   updatedAt: string;
 };
 
+const MAX_CACHEABLE_TEXT_LENGTH = 500_000;
+const MAX_CACHEABLE_BLOCKS = 4_000;
+const MAX_CACHEABLE_BLOCKS_JSON_LENGTH = 900_000;
+
 function isTextBlock(value: unknown): value is TextBlock {
   if (!value || typeof value !== 'object') {
     return false;
@@ -70,6 +74,19 @@ export const parsedDocumentRepository = {
   },
 
   async saveParsedDocument(document: StoredDocument, parsedDocument: ParsedDocument) {
+    if (
+      parsedDocument.fullText.length > MAX_CACHEABLE_TEXT_LENGTH ||
+      parsedDocument.blocks.length > MAX_CACHEABLE_BLOCKS
+    ) {
+      return;
+    }
+
+    const blocksJson = JSON.stringify(parsedDocument.blocks);
+
+    if (blocksJson.length > MAX_CACHEABLE_BLOCKS_JSON_LENGTH) {
+      return;
+    }
+
     const db = await getDatabase();
 
     await db.runAsync(
@@ -84,7 +101,7 @@ export const parsedDocumentRepository = {
       [
         document.id,
         parsedDocument.fullText,
-        JSON.stringify(parsedDocument.blocks),
+        blocksJson,
         new Date().toISOString(),
       ],
     );

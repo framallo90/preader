@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AppState } from 'react-native';
 
-import { ParsedDocument, TextBlock } from '../types/document';
 import { speechService } from '../services/speechService';
+import { ParsedDocument, TextBlock } from '../types/document';
 import { clamp } from '../utils/math';
 import { WordRange, getWordRangeAt } from '../utils/wordRange';
 
@@ -99,6 +99,19 @@ export function useReaderController({
     onErrorRef.current = onError;
   }, [onError]);
 
+  const reportError = useCallback((error: unknown, fallback: string) => {
+    shouldKeepPlayingRef.current = false;
+    setIsPlaying(false);
+    setCurrentWordRange(null);
+
+    if (error instanceof Error && error.message.trim()) {
+      onErrorRef.current?.(error.message);
+      return;
+    }
+
+    onErrorRef.current?.(fallback);
+  }, []);
+
   persistPositionRef.current = async (blockIndex: number, charIndex: number, force = false) => {
     const activeDocument = documentRef.current;
     const nextPosition = getSafePosition(activeDocument, blockIndex, charIndex);
@@ -126,70 +139,23 @@ export function useReaderController({
   };
 
   speakFromPositionRef.current = async (requestedBlockIndex, requestedCharIndex) => {
-    const activeDocument = documentRef.current;
+    try {
+      const activeDocument = documentRef.current;
 
-    if (!activeDocument || activeDocument.blocks.length === 0) {
-      return;
-    }
-
-    const nextPosition = getSafePosition(
-      activeDocument,
-      requestedBlockIndex ?? positionRef.current.blockIndex,
-      requestedCharIndex ?? positionRef.current.charIndex,
-    );
-    const activeBlock: TextBlock = activeDocument.blocks[nextPosition.blockIndex];
-    const remainingText = activeBlock.text.slice(nextPosition.charIndex);
-
-    if (!remainingText.trim()) {
-      if (nextPosition.blockIndex >= activeDocument.blocks.length - 1) {
-        shouldKeepPlayingRef.current = false;
-        setIsPlaying(false);
-        setCurrentWordRange(null);
-        await persistPositionRef.current?.(nextPosition.blockIndex, activeBlock.text.length, true);
+      if (!activeDocument || activeDocument.blocks.length === 0) {
         return;
       }
 
-      await persistPositionRef.current?.(nextPosition.blockIndex + 1, 0, true);
+      const nextPosition = getSafePosition(
+        activeDocument,
+        requestedBlockIndex ?? positionRef.current.blockIndex,
+        requestedCharIndex ?? positionRef.current.charIndex,
+      );
+      const activeBlock: TextBlock = activeDocument.blocks[nextPosition.blockIndex];
+      const remainingText = activeBlock.text.slice(nextPosition.charIndex);
 
-      if (shouldKeepPlayingRef.current) {
-        await speakFromPositionRef.current?.(nextPosition.blockIndex + 1, 0);
-      }
-
-      return;
-    }
-
-    await persistPositionRef.current?.(nextPosition.blockIndex, nextPosition.charIndex, true);
-    setCurrentWordRange(null);
-
-    await speechService.speakBlock(activeBlock, {
-      startCharIndex: nextPosition.charIndex,
-      rate: rateRef.current,
-      voiceId: voiceIdRef.current,
-      onStart: () => {
-        setIsPlaying(true);
-      },
-      onBoundary: (event) => {
-        if (!shouldKeepPlayingRef.current) {
-          return;
-        }
-
-        const boundaryCharIndex = clamp(
-          nextPosition.charIndex + event.charIndex,
-          0,
-          activeBlock.text.length,
-        );
-
-        setCurrentWordRange(getWordRangeAt(activeBlock.text, boundaryCharIndex));
-        void persistPositionRef.current?.(nextPosition.blockIndex, boundaryCharIndex);
-      },
-      onDone: async () => {
-        if (!shouldKeepPlayingRef.current) {
-          return;
-        }
-
-        const isLastBlock = nextPosition.blockIndex >= activeDocument.blocks.length - 1;
-
-        if (isLastBlock) {
+      if (!remainingText.trim()) {
+        if (nextPosition.blockIndex >= activeDocument.blocks.length - 1) {
           shouldKeepPlayingRef.current = false;
           setIsPlaying(false);
           setCurrentWordRange(null);
@@ -198,19 +164,67 @@ export function useReaderController({
         }
 
         await persistPositionRef.current?.(nextPosition.blockIndex + 1, 0, true);
-        await speakFromPositionRef.current?.(nextPosition.blockIndex + 1, 0);
-      },
-      onStopped: () => {
-        setIsPlaying(false);
-        setCurrentWordRange(null);
-      },
-      onError: (error) => {
-        shouldKeepPlayingRef.current = false;
-        setIsPlaying(false);
-        setCurrentWordRange(null);
-        onErrorRef.current?.(error.message || 'La lectura en voz alta falló.');
-      },
-    });
+
+        if (shouldKeepPlayingRef.current) {
+          await speakFromPositionRef.current?.(nextPosition.blockIndex + 1, 0);
+        }
+
+        return;
+      }
+
+      await persistPositionRef.current?.(nextPosition.blockIndex, nextPosition.charIndex, true);
+      setCurrentWordRange(null);
+
+      await speechService.speakBlock(activeBlock, {
+        startCharIndex: nextPosition.charIndex,
+        rate: rateRef.current,
+        voiceId: voiceIdRef.current,
+        onStart: () => {
+          setIsPlaying(true);
+        },
+        onBoundary: (event) => {
+          if (!shouldKeepPlayingRef.current) {
+            return;
+          }
+
+          const boundaryCharIndex = clamp(
+            nextPosition.charIndex + event.charIndex,
+            0,
+            activeBlock.text.length,
+          );
+
+          setCurrentWordRange(getWordRangeAt(activeBlock.text, boundaryCharIndex));
+          void persistPositionRef.current?.(nextPosition.blockIndex, boundaryCharIndex);
+        },
+        onDone: async () => {
+          if (!shouldKeepPlayingRef.current) {
+            return;
+          }
+
+          const isLastBlock = nextPosition.blockIndex >= activeDocument.blocks.length - 1;
+
+          if (isLastBlock) {
+            shouldKeepPlayingRef.current = false;
+            setIsPlaying(false);
+            setCurrentWordRange(null);
+            await persistPositionRef.current?.(nextPosition.blockIndex, activeBlock.text.length, true);
+            return;
+          }
+
+          await persistPositionRef.current?.(nextPosition.blockIndex + 1, 0, true);
+          await speakFromPositionRef.current?.(nextPosition.blockIndex + 1, 0);
+        },
+        onStopped: () => {
+          setIsPlaying(false);
+          setCurrentWordRange(null);
+        },
+        onError: (error) => {
+          reportError(error, 'La lectura en voz alta fallo.');
+        },
+      });
+    } catch (error) {
+      reportError(error, 'No se pudo continuar la lectura.');
+    }
   };
 
   useEffect(() => {
@@ -224,93 +238,148 @@ export function useReaderController({
     setCurrentCharIndex(nextPosition.charIndex);
     setProgressPercentage(calculatePercentage(document, nextPosition.blockIndex, nextPosition.charIndex));
 
-    void speechService.stop();
+    void speechService.stop().catch(() => {
+      // No bloquear el lector por un fallo del motor al reiniciar el estado.
+    });
   }, [document, initialBlockIndex, initialCharIndex]);
 
   useEffect(() => {
     return () => {
       shouldKeepPlayingRef.current = false;
-      void speechService.stop();
+      void speechService.stop().catch(() => {
+        // Ignorado a proposito al desmontar.
+      });
     };
   }, []);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'inactive' || nextState === 'background') {
+        if (!shouldKeepPlayingRef.current) {
+          return;
+        }
+
+        void (async () => {
+          try {
+            shouldKeepPlayingRef.current = false;
+            await speechService.stop();
+            setIsPlaying(false);
+
+            await persistPositionRef.current?.(
+              positionRef.current.blockIndex,
+              positionRef.current.charIndex,
+              true
+            );
+          } catch (error) {
+            reportError(error, 'No se pudo guardar el punto actual al salir del lector.');
+          }
+        })();
+
+        return;
+      }
+
       if (nextState !== 'active') {
         return;
       }
 
       void (async () => {
-        const isActuallySpeaking = await speechService.isSpeaking();
+        try {
+          const isActuallySpeaking = await speechService.isSpeaking();
 
-        setIsPlaying(isActuallySpeaking);
+          setIsPlaying(isActuallySpeaking);
 
-        if (isActuallySpeaking) {
-          return;
+          if (isActuallySpeaking) {
+            return;
+          }
+
+          shouldKeepPlayingRef.current = false;
+
+          await persistPositionRef.current?.(
+            positionRef.current.blockIndex,
+            positionRef.current.charIndex,
+            true
+          );
+        } catch (error) {
+          reportError(error, 'No se pudo recuperar el estado del lector al volver a la app.');
         }
-
-        shouldKeepPlayingRef.current = false;
-        setCurrentWordRange(null);
-        await persistPositionRef.current?.(
-          positionRef.current.blockIndex,
-          positionRef.current.charIndex,
-          true,
-        );
       })();
     });
 
     return () => {
       subscription.remove();
     };
-  }, []);
+  }, [reportError]);
 
   const play = useCallback(async () => {
-    if (!documentRef.current) {
-      return;
-    }
+    try {
+      if (!documentRef.current) {
+        return;
+      }
 
-    shouldKeepPlayingRef.current = true;
-    await speakFromPositionRef.current?.();
-  }, []);
+      shouldKeepPlayingRef.current = true;
+      await speakFromPositionRef.current?.();
+    } catch (error) {
+      reportError(error, 'No se pudo iniciar la lectura.');
+    }
+  }, [reportError]);
 
   const stop = useCallback(async () => {
-    shouldKeepPlayingRef.current = false;
-    await speechService.stop();
-    setIsPlaying(false);
-    setCurrentWordRange(null);
-    await persistPositionRef.current?.(positionRef.current.blockIndex, positionRef.current.charIndex, true);
-  }, []);
+    try {
+      shouldKeepPlayingRef.current = false;
+      await speechService.stop();
+      setIsPlaying(false);
+      setCurrentWordRange(null);
+      await persistPositionRef.current?.(
+        positionRef.current.blockIndex,
+        positionRef.current.charIndex,
+        true,
+      );
+    } catch (error) {
+      reportError(error, 'No se pudo detener la lectura.');
+    }
+  }, [reportError]);
 
   const restartFromCurrent = useCallback(async () => {
-    if (!documentRef.current) {
-      return;
-    }
+    try {
+      if (!documentRef.current) {
+        return;
+      }
 
-    shouldKeepPlayingRef.current = true;
-    await speechService.stop();
-    await speakFromPositionRef.current?.();
-  }, []);
-
-  const seekToBlock = useCallback(async (blockIndex: number, autoplay = false) => {
-    const activeDocument = documentRef.current;
-
-    if (!activeDocument || activeDocument.blocks.length === 0) {
-      return;
-    }
-
-    shouldKeepPlayingRef.current = false;
-    await speechService.stop();
-    setIsPlaying(false);
-    setCurrentWordRange(null);
-
-    const nextBlockIndex = clamp(blockIndex, 0, activeDocument.blocks.length - 1);
-    await persistPositionRef.current?.(nextBlockIndex, 0, true);
-
-    if (autoplay) {
       shouldKeepPlayingRef.current = true;
-      await speakFromPositionRef.current?.(nextBlockIndex, 0);
+      await speechService.stop();
+      await speakFromPositionRef.current?.();
+    } catch (error) {
+      reportError(error, 'No se pudo reanudar la lectura.');
     }
-  }, []);
+  }, [reportError]);
+
+  const seekToBlock = useCallback(
+    async (blockIndex: number, autoplay = false) => {
+      try {
+        const activeDocument = documentRef.current;
+
+        if (!activeDocument || activeDocument.blocks.length === 0) {
+          return;
+        }
+
+        shouldKeepPlayingRef.current = false;
+        await speechService.stop();
+        setIsPlaying(false);
+        setCurrentWordRange(null);
+
+        const nextBlockIndex = clamp(blockIndex, 0, activeDocument.blocks.length - 1);
+        await persistPositionRef.current?.(nextBlockIndex, 0, true);
+
+        if (autoplay) {
+          shouldKeepPlayingRef.current = true;
+          await speakFromPositionRef.current?.(nextBlockIndex, 0);
+        }
+      } catch (error) {
+        reportError(error, 'No se pudo mover la lectura al bloque elegido.');
+      }
+    },
+    [reportError],
+  );
 
   const nextBlock = useCallback(async () => {
     await seekToBlock(positionRef.current.blockIndex + 1, shouldKeepPlayingRef.current);
