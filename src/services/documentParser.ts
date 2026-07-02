@@ -33,7 +33,7 @@ export function getFriendlyParseErrorMessage(error: unknown) {
       case 'extractor_unavailable':
         return 'Esta APK no incluye el extractor PDF nativo o la instalacion quedo desactualizada. Rehace la build con EAS e instala la APK nueva.';
       case 'unsupported_format':
-        return 'Por ahora el MVP solo admite PDF. La arquitectura ya quedo lista para sumar DOCX, TXT o EPUB mas adelante.';
+        return 'Formato no soportado. La app admite PDF, EPUB, TXT y DOCX.';
       case 'parse_failed':
       default:
         return 'No se pudo interpretar el PDF seleccionado.';

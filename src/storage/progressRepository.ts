@@ -18,7 +18,8 @@ type ProgressRow = {
 
 function mapProgressRow(row: ProgressRow): ReadingProgress {
   return {
-    documentId: row.documentId,
+    bookId: row.documentId,
+    chapterId: null,
     blockIndex: row.blockIndex,
     charIndex: row.charIndex ?? 0,
     percentage: row.percentage ?? 0,

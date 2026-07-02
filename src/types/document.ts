@@ -5,12 +5,23 @@ export type TextBlock = {
   endChar: number;
 };
 
+export type ChapterInfo = {
+  id: string;
+  title: string;
+  povCharacter: string | null;
+  povNumber: number | null;
+  orderIndex: number;
+  startChar: number;
+  endChar: number;
+};
+
 export type ParsedDocument = {
   id: string;
   fileName: string;
   sourceUri: string;
   fullText: string;
   blocks: TextBlock[];
+  chapters: ChapterInfo[];
 };
 
 export interface DocumentParser {

@@ -1,3 +1,4 @@
+// === Legacy (mantenido para compatibilidad) ===
 export type StoredDocument = {
   id: string;
   name: string;
@@ -7,8 +8,61 @@ export type StoredDocument = {
   lastOpenedAt: string;
 };
 
+// === Nuevos tipos: jerarquía Saga → Libro → Capítulo ===
+
+export type Saga = {
+  id: string;
+  name: string;
+  description: string | null;
+  createdAt: string;
+};
+
+export type Book = {
+  id: string;
+  sagaId: string | null;     // null si es libro suelto
+  name: string;
+  orderIndex: number;
+  uri: string;
+  type: string;
+  importedAt: string;
+  lastOpenedAt: string;
+};
+
+export type Chapter = {
+  id: string;
+  bookId: string;
+  orderIndex: number;
+  title: string;             // "BRAN (1)", "PRÓLOGO", etc.
+  povCharacter: string | null; // "BRAN", "CATELYN", null si no es POV
+  povNumber: number | null;
+  startChar: number;
+  endChar: number;
+};
+
+export type Character = {
+  id: string;
+  sagaId: string | null;
+  name: string;
+  aliases: string[];         // guardado como JSON en SQLite
+  house: string | null;
+  description: string | null; // generado por Claude
+  firstSeenBookId: string | null;
+  firstSeenChapterId: string | null;
+  updatedAt: string;
+};
+
+export type ChapterContext = {
+  chapterId: string;
+  beforeSummary: string | null;   // qué recordar antes de leer
+  afterSummary: string | null;    // resumen al terminar
+  characters: string[];           // nombres de personajes que aparecen
+  keyEvents: string[];            // eventos importantes
+  extractedAt: string;
+};
+
 export type ReadingProgress = {
-  documentId: string;
+  bookId: string;
+  chapterId: string | null;
   blockIndex: number;
   charIndex: number;
   percentage: number;

@@ -1,8 +1,8 @@
 {
   "expo": {
-    "name": "pdf-voice-reader",
-    "slug": "pdf-voice-reader",
-    "scheme": "pdf-voice-reader",
+    "name": "intelli-reader",
+    "slug": "intelli-reader",
+    "scheme": "intelli-reader",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -39,7 +39,7 @@
         "expo-audio",
         {
           "recordAudioAndroid": false,
-          "enableBackgroundPlayback": false,
+          "enableBackgroundPlayback": true,
           "enableBackgroundRecording": false
         }
       ],

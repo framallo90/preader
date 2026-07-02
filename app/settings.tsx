@@ -1,87 +1,61 @@
-import { Stack } from 'expo-router';
+import { Stack, router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { StyleSheet, Switch, Text, View } from 'react-native';
+import { Alert, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { AppButton } from '../src/components/AppButton';
 import { OptionPickerModal } from '../src/components/OptionPickerModal';
 import { Screen } from '../src/components/Screen';
 import { useAppSettings } from '../src/hooks/useAppSettings';
-import { SpeechVoice, speechService } from '../src/services/speechService';
+import { authService } from '../src/services/authService';
+import { premiumService, PremiumListener } from '../src/services/premiumService';
 import { clampRounded } from '../src/utils/math';
 
-const SYSTEM_VOICE_VALUE = '__system__';
 const MIN_RATE = 0.6;
 const MAX_RATE = 1.6;
 const MIN_FONT_SIZE = 16;
 const MAX_FONT_SIZE = 28;
 
-function sortVoices(voices: SpeechVoice[]) {
-  return [...voices].sort((left, right) => {
-    if (left.language === right.language) {
-      return left.name.localeCompare(right.name);
-    }
-
-    if (left.language.startsWith('es')) {
-      return -1;
-    }
-
-    if (right.language.startsWith('es')) {
-      return 1;
-    }
-
-    return left.language.localeCompare(right.language);
-  });
-}
+// Voces disponibles en OpenAI TTS (coincide con reader.tsx)
+const OPENAI_VOICE_OPTIONS = [
+  { value: 'onyx', label: 'Onyx', description: 'Voz masculina profunda y narrativa (por defecto).' },
+  { value: 'nova', label: 'Nova', description: 'Voz femenina clara y energica.' },
+  { value: 'alloy', label: 'Alloy', description: 'Voz neutra y versatil.' },
+  { value: 'echo', label: 'Echo', description: 'Voz masculina expresiva.' },
+  { value: 'fable', label: 'Fable', description: 'Voz masculina calida y dramatica.' },
+  { value: 'shimmer', label: 'Shimmer', description: 'Voz femenina suave.' },
+];
+const VALID_OPENAI_VOICES = new Set(OPENAI_VOICE_OPTIONS.map((v) => v.value));
 
 export default function SettingsScreen() {
   const { colors, settings, updateSettings } = useAppSettings();
-  const [voices, setVoices] = useState<SpeechVoice[]>([]);
   const [isVoicePickerVisible, setIsVoicePickerVisible] = useState(false);
+  const [isPremium, setIsPremium] = useState(premiumService.isPremium);
 
   useEffect(() => {
-    let isMounted = true;
-
-    void speechService
-      .getVoices()
-      .then((availableVoices) => {
-        if (isMounted) {
-          setVoices(sortVoices(availableVoices));
-        }
-      })
-      .catch(() => {
-        if (isMounted) {
-          setVoices([]);
-        }
-      });
-
-    return () => {
-      isMounted = false;
-    };
+    const listener: PremiumListener = (premium) => { setIsPremium(premium); };
+    return premiumService.subscribe(listener);
   }, []);
 
-  const voiceOptions = useMemo(
-    () => [
+  const handleLogout = useCallback(() => {
+    Alert.alert('Cerrar sesión', '¿Seguro que querés salir?', [
+      { text: 'Cancelar', style: 'cancel' },
       {
-        value: SYSTEM_VOICE_VALUE,
-        label: 'Sistema',
-        description: 'Usa la voz por defecto del dispositivo.',
+        text: 'Salir',
+        style: 'destructive',
+        onPress: () => { void authService.signOut(); },
       },
-      ...voices.map((voice) => ({
-        value: voice.identifier,
-        label: voice.name,
-        description: voice.language,
-      })),
-    ],
-    [voices],
+    ]);
+  }, []);
+
+  const effectiveVoiceId = useMemo(() => {
+    const saved = settings.defaultVoiceId;
+    return saved && VALID_OPENAI_VOICES.has(saved) ? saved : 'onyx';
+  }, [settings.defaultVoiceId]);
+
+  const selectedVoiceLabel = useMemo(
+    () => OPENAI_VOICE_OPTIONS.find((v) => v.value === effectiveVoiceId)?.label ?? 'Onyx',
+    [effectiveVoiceId],
   );
-
-  const selectedVoiceLabel = useMemo(() => {
-    if (!settings.defaultVoiceId) {
-      return 'Sistema';
-    }
-
-    return voices.find((voice) => voice.identifier === settings.defaultVoiceId)?.name ?? 'Sistema';
-  }, [settings.defaultVoiceId, voices]);
 
   const updateRate = useCallback(
     async (delta: number) => {
@@ -106,7 +80,9 @@ export default function SettingsScreen() {
       <Stack.Screen options={{ title: 'Ajustes' }} />
 
       <View style={styles.headerBlock}>
-        <Text style={[styles.headerTitle, { color: colors.text }]}>Ajusta la experiencia a tu ritmo</Text>
+        <Text style={[styles.headerTitle, { color: colors.text }]}>
+          Ajusta la experiencia a tu ritmo
+        </Text>
         <Text style={[styles.headerSubtitle, { color: colors.textMuted }]}>
           Deja listo el lector una vez y despues concentrate solo en abrir el documento y escuchar.
         </Text>
@@ -168,7 +144,9 @@ export default function SettingsScreen() {
                 colors={colors}
                 compact
               />
-              <Text style={[styles.valueText, { color: colors.text }]}>{settings.fontSize.toFixed(0)}</Text>
+              <Text style={[styles.valueText, { color: colors.text }]}>
+                {settings.fontSize.toFixed(0)}
+              </Text>
               <AppButton
                 label="+"
                 onPress={() => void updateFontSize(1)}
@@ -183,7 +161,9 @@ export default function SettingsScreen() {
 
           <View style={styles.settingRow}>
             <View style={styles.settingCopy}>
-              <Text style={[styles.settingTitle, { color: colors.text }]}>Velocidad por defecto</Text>
+              <Text style={[styles.settingTitle, { color: colors.text }]}>
+                Velocidad por defecto
+              </Text>
               <Text style={[styles.settingHint, { color: colors.textMuted }]}>
                 Valor inicial que usa el lector al empezar o retomar.
               </Text>
@@ -196,7 +176,9 @@ export default function SettingsScreen() {
                 colors={colors}
                 compact
               />
-              <Text style={[styles.valueText, { color: colors.text }]}>{settings.defaultRate.toFixed(2)}x</Text>
+              <Text style={[styles.valueText, { color: colors.text }]}>
+                {settings.defaultRate.toFixed(2)}x
+              </Text>
               <AppButton
                 label="+"
                 onPress={() => void updateRate(0.1)}
@@ -211,9 +193,9 @@ export default function SettingsScreen() {
 
           <View style={styles.settingRow}>
             <View style={styles.settingCopy}>
-              <Text style={[styles.settingTitle, { color: colors.text }]}>Voz por defecto</Text>
+              <Text style={[styles.settingTitle, { color: colors.text }]}>Voz OpenAI TTS</Text>
               <Text style={[styles.settingHint, { color: colors.textMuted }]}>
-                Se usa en el lector salvo que elijas otra mas adelante.
+                Voz usada para generar el audio. Se cachea por voz, cambiarla regenera el audio.
               </Text>
             </View>
             <AppButton
@@ -280,6 +262,48 @@ export default function SettingsScreen() {
         </View>
       </View>
 
+      <View style={styles.sectionGroup}>
+        <Text style={[styles.sectionLabel, { color: colors.textMuted }]}>Cuenta</Text>
+        <View style={[styles.sectionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+          <View style={styles.settingRow}>
+            <View style={styles.settingCopy}>
+              <Text style={[styles.settingTitle, { color: colors.text }]}>
+                {isPremium ? '✦ Premium activo' : 'Plan gratuito'}
+              </Text>
+              <Text style={[styles.settingHint, { color: colors.textMuted }]}>
+                {isPremium
+                  ? 'Voces de IA, contexto de capítulos y chat companion habilitados.'
+                  : 'Lectura con voz del sistema. Suscribite para IA premium.'}
+              </Text>
+            </View>
+            {!isPremium ? (
+              <AppButton
+                label="Premium"
+                onPress={() => router.push('/subscription')}
+                colors={colors}
+                compact
+              />
+            ) : null}
+          </View>
+          <View style={[styles.divider, { backgroundColor: colors.border }]} />
+          <View style={styles.settingRow}>
+            <View style={styles.settingCopy}>
+              <Text style={[styles.settingTitle, { color: colors.text }]}>Sesión</Text>
+              <Text style={[styles.settingHint, { color: colors.textMuted }]}>
+                Cerrá sesión para cambiar de cuenta o liberar almacenamiento.
+              </Text>
+            </View>
+            <AppButton
+              label="Salir"
+              onPress={handleLogout}
+              variant="secondary"
+              colors={colors}
+              compact
+            />
+          </View>
+        </View>
+      </View>
+
       <View
         style={[
           styles.notesCard,
@@ -291,29 +315,33 @@ export default function SettingsScreen() {
       >
         <Text style={[styles.notesTitle, { color: colors.text }]}>Notas de esta version</Text>
         <Text style={[styles.noteText, { color: colors.textMuted }]}>
-          La app guarda cache local del texto parseado para abrir mas rapido documentos ya leidos.
+          El audio se genera con OpenAI TTS (tts-1-hd) y se cachea localmente. La primera
+          reproduccion requiere conexion; despues funciona sin red.
         </Text>
         <Text style={[styles.noteText, { color: colors.textMuted }]}>
-          Si el PDF es un escaneo sin texto extraible, la app lo informa y no intenta OCR.
+          Cambiar de voz en ajustes provoca que el proximo tramo regenere audio con la nueva voz.
+          Los tramos con la voz anterior siguen en cache.
         </Text>
         <Text style={[styles.noteText, { color: colors.textMuted }]}>
-          En Android no se usa pausa nativa porque `expo-speech` no la soporta: se detiene, guarda el
-          punto actual y retoma desde el subindice mas cercano.
+          El texto de cada tramo pasa por Claude Haiku antes de la sintesis para limpiar artefactos
+          de conversion y mejorar la pronunciacion.
+        </Text>
+        <Text style={[styles.noteText, { color: colors.textMuted }]}>
+          Al terminar cada capitulo se extrae contexto automaticamente en background (personajes,
+          resumen, eventos clave). El banner del siguiente capitulo muestra el resumen.
         </Text>
       </View>
 
       <OptionPickerModal
-        title="Voz por defecto"
+        title="Voz OpenAI TTS"
         visible={isVoicePickerVisible}
         colors={colors}
-        selectedValue={settings.defaultVoiceId ?? SYSTEM_VOICE_VALUE}
-        options={voiceOptions}
+        selectedValue={effectiveVoiceId}
+        options={OPENAI_VOICE_OPTIONS}
         onClose={() => setIsVoicePickerVisible(false)}
         onSelect={(value) => {
           setIsVoicePickerVisible(false);
-          void updateSettings({
-            defaultVoiceId: value === SYSTEM_VOICE_VALUE ? null : value,
-          });
+          void updateSettings({ defaultVoiceId: value });
         }}
       />
     </Screen>

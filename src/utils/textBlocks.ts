@@ -3,9 +3,11 @@ import { TextBlock } from '../types/document';
 const TARGET_BLOCK_LENGTH = 280;
 const HARD_BLOCK_LENGTH = 420;
 const MIN_BLOCK_LENGTH = 110;
+const SENTENCE_PATTERN = /[^.!?]+[.!?]+[\])'"\u00BB\u201D]*|[^.!?]+$/g;
+const HYPHENATED_LINE_BREAK_PATTERN = /([A-Za-z\u00C0-\u024F])-\n([A-Za-z\u00C0-\u024F])/g;
 
 function splitIntoSentences(paragraph: string) {
-  const matches = paragraph.match(/[^.!?]+[.!?]+[\])'"»”]*|[^.!?]+$/g);
+  const matches = paragraph.match(SENTENCE_PATTERN);
   return matches?.map((sentence) => sentence.trim()).filter(Boolean) ?? [paragraph];
 }
 
@@ -42,8 +44,9 @@ export function normalizeExtractedText(value: string) {
   return value
     .replace(/\r\n/g, '\n')
     .replace(/\r/g, '\n')
-    .replace(/([A-Za-zÀ-ÖØ-öø-ÿ])-\n([A-Za-zÀ-ÖØ-öø-ÿ])/g, '$1$2')
+    .replace(HYPHENATED_LINE_BREAK_PATTERN, '$1$2')
     .replace(/\u0000/g, '')
+    .replace(/\u00A0/g, ' ')
     .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .replace(/[ \t]{2,}/g, ' ')

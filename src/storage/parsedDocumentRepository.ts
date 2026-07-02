@@ -1,12 +1,15 @@
 import { ParsedDocument, TextBlock } from '../types/document';
-import { StoredDocument } from '../types/storage';
 import { getDatabase } from './database';
 
+// Acepta tanto Book como StoredDocument (ambos tienen id, name, uri)
+export type DocumentRef = { id: string; name: string; uri: string };
+
 type ParsedDocumentRow = {
-  documentId: string;
+  bookId: string;
   fullText: string;
   blocksJson: string;
-  updatedAt: string;
+  chaptersJson: string;
+  savedAt: string;
 };
 
 const MAX_CACHEABLE_TEXT_LENGTH = 500_000;
@@ -28,7 +31,7 @@ function isTextBlock(value: unknown): value is TextBlock {
   );
 }
 
-function parseBlocksJson(value: string) {
+function parseBlocksJson(value: string): TextBlock[] {
   try {
     const parsed = JSON.parse(value);
 
@@ -43,14 +46,11 @@ function parseBlocksJson(value: string) {
 }
 
 export const parsedDocumentRepository = {
-  async getParsedDocument(document: StoredDocument): Promise<ParsedDocument | null> {
+  async getParsedDocument(document: DocumentRef): Promise<ParsedDocument | null> {
     const db = await getDatabase();
     const row = await db.getFirstAsync<ParsedDocumentRow>(
-      `
-        SELECT documentId, fullText, blocksJson, updatedAt
-        FROM parsed_document_cache
-        WHERE documentId = ?
-      `,
+      `SELECT bookId, fullText, blocksJson, chaptersJson, savedAt
+       FROM parsed_document_cache WHERE bookId = ?`,
       [document.id],
     );
 
@@ -64,16 +64,19 @@ export const parsedDocumentRepository = {
       return null;
     }
 
+    // chapters se re-detectan en reader.tsx con el bookId correcto;
+    // los devolvemos vacíos para que el caller siempre llame a detectChapters.
     return {
       id: document.id,
       fileName: document.name,
       sourceUri: document.uri,
       fullText: row.fullText,
       blocks,
+      chapters: [],
     };
   },
 
-  async saveParsedDocument(document: StoredDocument, parsedDocument: ParsedDocument) {
+  async saveParsedDocument(document: DocumentRef, parsedDocument: ParsedDocument) {
     if (
       parsedDocument.fullText.length > MAX_CACHEABLE_TEXT_LENGTH ||
       parsedDocument.blocks.length > MAX_CACHEABLE_BLOCKS
@@ -87,28 +90,23 @@ export const parsedDocumentRepository = {
       return;
     }
 
+    const chaptersJson = JSON.stringify(parsedDocument.chapters ?? []);
     const db = await getDatabase();
 
     await db.runAsync(
-      `
-        INSERT INTO parsed_document_cache (documentId, fullText, blocksJson, updatedAt)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(documentId) DO UPDATE SET
-          fullText = excluded.fullText,
-          blocksJson = excluded.blocksJson,
-          updatedAt = excluded.updatedAt
-      `,
-      [
-        document.id,
-        parsedDocument.fullText,
-        blocksJson,
-        new Date().toISOString(),
-      ],
+      `INSERT INTO parsed_document_cache (bookId, fullText, blocksJson, chaptersJson, savedAt)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(bookId) DO UPDATE SET
+         fullText = excluded.fullText,
+         blocksJson = excluded.blocksJson,
+         chaptersJson = excluded.chaptersJson,
+         savedAt = excluded.savedAt`,
+      [document.id, parsedDocument.fullText, blocksJson, chaptersJson, new Date().toISOString()],
     );
   },
 
   async removeParsedDocument(documentId: string) {
     const db = await getDatabase();
-    await db.runAsync('DELETE FROM parsed_document_cache WHERE documentId = ?', [documentId]);
+    await db.runAsync('DELETE FROM parsed_document_cache WHERE bookId = ?', [documentId]);
   },
 };

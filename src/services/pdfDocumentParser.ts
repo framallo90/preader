@@ -3,16 +3,16 @@ import * as FileSystem from 'expo-file-system/legacy';
 
 import { DocumentParser, ParsedDocument } from '../types/document';
 import { buildTextBlocks, normalizeExtractedText } from '../utils/textBlocks';
+import { cleanPdfTabArtifacts, detectChapters } from '../utils/chapterDetector';
 import { DocumentParseError } from './documentParser';
 
 function countExtractableCharacters(text: string) {
   return text.replace(/[^A-Za-z0-9]/g, '').length;
 }
 
-const LARGE_DOCUMENT_PAGE_THRESHOLD = 120;
 const MAX_DOCUMENT_CHAR_COUNT = 1_200_000;
 
-async function extractLargePdfText(uri: string, pageCount: number) {
+async function extractPdfTextPageByPage(uri: string, pageCount: number) {
   let totalChars = 0;
   const pageTexts: string[] = [];
 
@@ -41,23 +41,15 @@ async function extractLargePdfText(uri: string, pageCount: number) {
 async function extractPdfText(uri: string) {
   const pageCount = await getPageCount(uri).catch(() => 0);
 
-  if (pageCount >= LARGE_DOCUMENT_PAGE_THRESHOLD) {
-    return extractLargePdfText(uri, pageCount);
+  if (pageCount > 0) {
+    return extractPdfTextPageByPage(uri, pageCount);
   }
 
   try {
     const rawText = await extractText(uri);
 
-    if (rawText.length > MAX_DOCUMENT_CHAR_COUNT && pageCount > 0) {
-      return extractLargePdfText(uri, pageCount);
-    }
-
     return rawText;
   } catch (error) {
-    if (pageCount > 0) {
-      return extractLargePdfText(uri, pageCount);
-    }
-
     throw error;
   }
 }
@@ -96,7 +88,9 @@ class PdfDocumentParser implements DocumentParser {
 
     try {
       const rawText = await extractPdfText(uri);
-      const fullText = normalizeExtractedText(rawText);
+      // Limpia artefactos de conversión ePUB→PDF antes de normalizar
+      const cleanedRaw = cleanPdfTabArtifacts(rawText);
+      const fullText = normalizeExtractedText(cleanedRaw);
 
       if (!fullText) {
         throw new DocumentParseError(
@@ -119,13 +113,16 @@ class PdfDocumentParser implements DocumentParser {
       }
 
       const fileName = uri.split('/').pop() ?? 'documento.pdf';
+      const documentId = fileName;
+      const chapters = detectChapters(documentId, fullText);
 
       return {
-        id: fileName,
+        id: documentId,
         fileName,
         sourceUri: uri,
         fullText,
         blocks,
+        chapters,
       };
     } catch (error) {
       throw toDocumentParseError(error);
