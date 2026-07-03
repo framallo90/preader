@@ -18,9 +18,12 @@ export type Saga = {
 };
 
 export type Book = {
-  id: string;
+  id: string;                // fingerprint de contenido (bk_...)
   sagaId: string | null;     // null si es libro suelto
-  name: string;
+  name: string;              // nombre de archivo (fallback de display)
+  title: string | null;      // título real extraído de la metadata
+  author: string | null;     // autor extraído de la metadata
+  coverUri: string | null;   // portada extraída, archivo local
   orderIndex: number;
   uri: string;
   type: string;

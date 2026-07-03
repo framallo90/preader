@@ -2,7 +2,7 @@ import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 
 import { Book, StoredDocument } from '../types/storage';
-import { createDocumentId, getFileExtension, safeDisplayFileName } from '../utils/documentId';
+import { createBookFingerprint, getFileExtension, safeDisplayFileName } from '../utils/documentId';
 import { SUPPORTED_MIME_TYPES } from './parserRegistry';
 
 function getDocumentsDirectory() {
@@ -31,11 +31,10 @@ async function copyAssetToDocuments(asset: DocumentPicker.DocumentPickerAsset): 
   }
   await ensureDocumentsDirectory();
   const documentName = safeDisplayFileName(asset.name);
-  const documentId = createDocumentId({
-    name: documentName,
-    lastModified: asset.lastModified,
-    size: asset.size,
-  });
+  // Identidad por contenido (no por nombre/fecha): re-importar el mismo
+  // archivo — aunque esté renombrado — matchea el mismo libro y conserva
+  // progreso, capítulos, contexto y cache de audio.
+  const documentId = await createBookFingerprint(asset.uri, asset.size);
   const extension = getFileExtension(documentName, asset.mimeType);
   const documentsDirectory = getDocumentsDirectory();
   const destinationUri = `${documentsDirectory}/${documentId}${extension}`;
@@ -68,6 +67,9 @@ export const filePickerService = {
       id: documentId,
       sagaId: sagaId ?? null,
       name: documentName,
+      title: null,
+      author: null,
+      coverUri: null,
       orderIndex,
       uri: destinationUri,
       type: asset.mimeType ?? 'application/pdf',

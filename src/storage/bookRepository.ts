@@ -5,6 +5,9 @@ type BookRow = {
   id: string;
   sagaId: string | null;
   name: string;
+  title: string | null;
+  author: string | null;
+  coverUri: string | null;
   orderIndex: number;
   uri: string;
   type: string;
@@ -12,11 +15,16 @@ type BookRow = {
   lastOpenedAt: string;
 };
 
+const BOOK_COLUMNS = 'id, sagaId, name, title, author, coverUri, orderIndex, uri, type, importedAt, lastOpenedAt';
+
 function mapBookRow(row: BookRow): Book {
   return {
     id: row.id,
     sagaId: row.sagaId,
     name: row.name,
+    title: row.title,
+    author: row.author,
+    coverUri: row.coverUri,
     orderIndex: row.orderIndex,
     uri: row.uri,
     type: row.type,
@@ -28,27 +36,49 @@ function mapBookRow(row: BookRow): Book {
 export const bookRepository = {
   async saveBook(book: Book): Promise<void> {
     const db = await getDatabase();
+    // COALESCE en title/author/coverUri: re-importar el mismo libro
+    // (mismo fingerprint) no debe pisar la metadata ya extraída.
     await db.runAsync(
-      `INSERT INTO books (id, sagaId, name, orderIndex, uri, type, importedAt, lastOpenedAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO books (id, sagaId, name, title, author, coverUri, orderIndex, uri, type, importedAt, lastOpenedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          sagaId = excluded.sagaId,
          name = excluded.name,
+         title = COALESCE(excluded.title, title),
+         author = COALESCE(excluded.author, author),
+         coverUri = COALESCE(excluded.coverUri, coverUri),
          orderIndex = excluded.orderIndex,
          uri = excluded.uri,
          type = excluded.type,
-         importedAt = excluded.importedAt,
          lastOpenedAt = excluded.lastOpenedAt`,
       [
         book.id,
         book.sagaId,
         book.name,
+        book.title,
+        book.author,
+        book.coverUri,
         book.orderIndex,
         book.uri,
         book.type,
         book.importedAt,
         book.lastOpenedAt,
       ],
+    );
+  },
+
+  async updateBookMetadata(
+    bookId: string,
+    metadata: { title: string | null; author: string | null; coverUri: string | null },
+  ): Promise<void> {
+    const db = await getDatabase();
+    await db.runAsync(
+      `UPDATE books SET
+         title = COALESCE(?, title),
+         author = COALESCE(?, author),
+         coverUri = COALESCE(?, coverUri)
+       WHERE id = ?`,
+      [metadata.title, metadata.author, metadata.coverUri, bookId],
     );
   },
 
@@ -63,7 +93,7 @@ export const bookRepository = {
   async getBookById(bookId: string): Promise<Book | null> {
     const db = await getDatabase();
     const row = await db.getFirstAsync<BookRow>(
-      'SELECT id, sagaId, name, orderIndex, uri, type, importedAt, lastOpenedAt FROM books WHERE id = ?',
+      `SELECT ${BOOK_COLUMNS} FROM books WHERE id = ?`,
       [bookId],
     );
     return row ? mapBookRow(row) : null;
@@ -72,7 +102,7 @@ export const bookRepository = {
   async getLastOpenedBook(): Promise<Book | null> {
     const db = await getDatabase();
     const row = await db.getFirstAsync<BookRow>(
-      `SELECT id, sagaId, name, orderIndex, uri, type, importedAt, lastOpenedAt
+      `SELECT ${BOOK_COLUMNS}
        FROM books ORDER BY datetime(lastOpenedAt) DESC LIMIT 1`,
     );
     return row ? mapBookRow(row) : null;
@@ -81,7 +111,7 @@ export const bookRepository = {
   async listRecentBooks(limit = 20): Promise<Book[]> {
     const db = await getDatabase();
     const rows = await db.getAllAsync<BookRow>(
-      `SELECT id, sagaId, name, orderIndex, uri, type, importedAt, lastOpenedAt
+      `SELECT ${BOOK_COLUMNS}
        FROM books ORDER BY datetime(lastOpenedAt) DESC LIMIT ?`,
       [limit],
     );
@@ -91,7 +121,7 @@ export const bookRepository = {
   async listBooksInSaga(sagaId: string): Promise<Book[]> {
     const db = await getDatabase();
     const rows = await db.getAllAsync<BookRow>(
-      `SELECT id, sagaId, name, orderIndex, uri, type, importedAt, lastOpenedAt
+      `SELECT ${BOOK_COLUMNS}
        FROM books WHERE sagaId = ? ORDER BY orderIndex ASC`,
       [sagaId],
     );

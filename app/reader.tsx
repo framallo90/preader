@@ -11,6 +11,7 @@ import { ReaderBlockCard } from '../src/components/ReaderBlockCard';
 import { useAppSettings } from '../src/hooks/useAppSettings';
 import { useReaderController } from '../src/hooks/useReaderController';
 import { DocumentParseError, getFriendlyParseErrorMessage } from '../src/services/documentParser';
+import { persistBookMetadata } from '../src/services/bookMetadataService';
 import { extractChapterContext } from '../src/services/claudeService';
 import { getParserForDocument } from '../src/services/parserRegistry';
 import { bookRepository } from '../src/storage/bookRepository';
@@ -137,6 +138,8 @@ export default function ReaderScreen() {
         };
         if (chapters.length > 0) await chapterRepository.saveChaptersForBook(book.id, chapters);
         await parsedDocumentRepository.saveParsedDocument(book, parsedWithChapters);
+        // Metadata real (título, autor, portada) extraída en el parseo fresco.
+        if (parsed.metadata) void persistBookMetadata(book.id, parsed.metadata);
         if (!isMounted) return;
         setDocumentRecord(book);
         setSavedProgress(progress);
@@ -466,7 +469,7 @@ export default function ReaderScreen() {
       <View style={[styles.summaryCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
         <View style={styles.summaryHeader}>
           <View style={styles.summaryCopy}>
-            <Text style={[styles.fileName, { color: colors.text }]} numberOfLines={1}>{documentRecord.name}</Text>
+            <Text style={[styles.fileName, { color: colors.text }]} numberOfLines={1}>{documentRecord.title ?? documentRecord.name}</Text>
             {currentChapter ? (
               <Text style={[styles.chapterTitle, { color: colors.primary }]} numberOfLines={1}>{currentChapter.title}</Text>
             ) : null}

@@ -1,6 +1,7 @@
 import { SQLiteDatabase, openDatabaseAsync } from 'expo-sqlite';
 
 const DATABASE_NAME = 'pdf-voice-reader.db';
+const CURRENT_DB_VERSION = 1;
 let databasePromise: Promise<SQLiteDatabase> | null = null;
 
 export async function getDatabase() {
@@ -109,4 +110,35 @@ export async function initializeDatabase() {
       value TEXT NOT NULL
     );
   `);
+
+  await runMigrations(db);
+}
+
+/**
+ * Migraciones versionadas con PRAGMA user_version.
+ * CREATE TABLE IF NOT EXISTS no altera tablas existentes, así que todo
+ * cambio de schema sobre instalaciones previas debe declararse acá.
+ */
+async function runMigrations(db: SQLiteDatabase) {
+  const row = await db.getFirstAsync<{ user_version: number }>('PRAGMA user_version');
+  const version = row?.user_version ?? 0;
+
+  if (version < 1) {
+    // v1: metadata de libro (título y autor reales + portada extraída).
+    await addColumnIfMissing(db, 'books', 'title', 'TEXT');
+    await addColumnIfMissing(db, 'books', 'author', 'TEXT');
+    await addColumnIfMissing(db, 'books', 'coverUri', 'TEXT');
+  }
+
+  if (version < CURRENT_DB_VERSION) {
+    await db.execAsync(`PRAGMA user_version = ${CURRENT_DB_VERSION}`);
+  }
+}
+
+async function addColumnIfMissing(db: SQLiteDatabase, table: string, column: string, type: string) {
+  try {
+    await db.execAsync(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  } catch {
+    // La columna ya existe (instalación que corrió esta migración a medias).
+  }
 }

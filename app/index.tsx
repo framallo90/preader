@@ -10,6 +10,7 @@ import {
   documentAudioPlaybackService,
   DocumentPlaybackSnapshot,
 } from '../src/services/documentAudioPlaybackService';
+import { removeBookCover } from '../src/services/bookMetadataService';
 import { filePickerService } from '../src/services/filePickerService';
 import { clearBookAudio } from '../src/services/openaiTtsService';
 import { bookProgressRepository } from '../src/storage/bookProgressRepository';
@@ -136,6 +137,7 @@ export default function HomeScreen() {
                     await documentAudioPlaybackService.stopAndUnload();
                   }
                   await clearBookAudio(document.id);
+                  await removeBookCover(document.id);
                   await filePickerService.deleteStoredDocument(document.uri);
                   await bookRepository.removeBook(document.id);
                   await loadRecentDocuments();
@@ -194,7 +196,7 @@ export default function HomeScreen() {
       {playbackCardVisible && activePlaybackDocument ? (
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <Text style={[styles.cardEyebrow, { color: colors.primary }]}>{playbackStatusLabel}</Text>
-          <Text style={[styles.continueTitle, { color: colors.text }]}>{activePlaybackDocument.name}</Text>
+          <Text style={[styles.continueTitle, { color: colors.text }]}>{activePlaybackDocument.title ?? activePlaybackDocument.name}</Text>
           <Text style={[styles.sectionHint, { color: colors.textMuted }]}>
             El audio sigue vivo fuera del lector. Puedes volver a esta pantalla o controlarlo desde la notificacion del sistema.
           </Text>
@@ -205,7 +207,7 @@ export default function HomeScreen() {
       {lastOpenedDocument ? (
         <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <Text style={[styles.cardEyebrow, { color: colors.primary }]}>Seguir leyendo</Text>
-          <Text style={[styles.continueTitle, { color: colors.text }]}>{lastOpenedDocument.name}</Text>
+          <Text style={[styles.continueTitle, { color: colors.text }]}>{lastOpenedDocument.title ?? lastOpenedDocument.name}</Text>
           <Text style={[styles.sectionHint, { color: colors.textMuted }]}>
             Retoma el documento mas reciente desde el ultimo bloque guardado, sin volver a importarlo.
           </Text>

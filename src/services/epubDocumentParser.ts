@@ -1,7 +1,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import JSZip from 'jszip';
 
-import { DocumentParser, ParsedDocument } from '../types/document';
+import { DocumentMetadata, DocumentParser, ParsedDocument } from '../types/document';
 import { buildTextBlocks, normalizeExtractedText } from '../utils/textBlocks';
 import { detectChapters } from '../utils/chapterDetector';
 import { DocumentParseError } from './documentParser';
@@ -59,6 +59,54 @@ function parseSpineOrder(opfContent: string, opfDir: string): string[] {
   return hrefs;
 }
 
+function decodeXmlEntities(value: string): string {
+  return value
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .trim();
+}
+
+/**
+ * Extrae título, autor y la ruta de la portada desde el OPF.
+ * Soporta EPUB 3 (item properties="cover-image") y EPUB 2 (meta name="cover").
+ */
+function parseOpfMetadata(opfContent: string): { title: string | null; author: string | null; coverHref: string | null } {
+  const titleMatch = /<dc:title[^>]*>([\s\S]*?)<\/dc:title>/i.exec(opfContent);
+  const authorMatch = /<dc:creator[^>]*>([\s\S]*?)<\/dc:creator>/i.exec(opfContent);
+
+  let coverHref: string | null = null;
+
+  // EPUB 3: <item ... properties="...cover-image..." href="..."/>
+  const coverItemTag = /<item[^>]+properties="[^"]*cover-image[^"]*"[^>]*>/i.exec(opfContent)?.[0];
+  if (coverItemTag) {
+    coverHref = /href="([^"]+)"/i.exec(coverItemTag)?.[1] ?? null;
+  }
+
+  // EPUB 2: <meta name="cover" content="idDeItem"/> → buscar el item por id
+  if (!coverHref) {
+    const coverId =
+      /<meta[^>]+name="cover"[^>]+content="([^"]+)"/i.exec(opfContent)?.[1] ??
+      /<meta[^>]+content="([^"]+)"[^>]+name="cover"/i.exec(opfContent)?.[1] ??
+      null;
+
+    if (coverId) {
+      const itemTag = new RegExp(`<item[^>]+id="${coverId}"[^>]*>`, 'i').exec(opfContent)?.[0];
+      if (itemTag) {
+        coverHref = /href="([^"]+)"/i.exec(itemTag)?.[1] ?? null;
+      }
+    }
+  }
+
+  return {
+    title: titleMatch ? decodeXmlEntities(titleMatch[1]) || null : null,
+    author: authorMatch ? decodeXmlEntities(authorMatch[1]) || null : null,
+    coverHref,
+  };
+}
+
 class EpubDocumentParser implements DocumentParser {
   async parse(uri: string): Promise<ParsedDocument> {
     const fileInfo = await FileSystem.getInfoAsync(uri);
@@ -102,6 +150,28 @@ class EpubDocumentParser implements DocumentParser {
         throw new DocumentParseError('parse_failed', 'El EPUB no tiene contenido en el spine.');
       }
 
+      // Metadata real del libro: título, autor y portada.
+      const { title, author, coverHref } = parseOpfMetadata(opfContent);
+      let coverBase64: string | null = null;
+      let coverExtension: string | null = null;
+
+      if (coverHref) {
+        const coverPath = opfDir ? `${opfDir}/${coverHref}` : coverHref;
+        const coverFile = zip.file(coverPath) ?? zip.file(coverHref);
+        if (coverFile) {
+          try {
+            coverBase64 = await coverFile.async('base64');
+            const rawExtension = coverHref.split('.').pop()?.toLowerCase() ?? 'jpg';
+            coverExtension = `.${rawExtension === 'jpeg' ? 'jpg' : rawExtension}`;
+          } catch {
+            coverBase64 = null;
+            coverExtension = null;
+          }
+        }
+      }
+
+      const metadata: DocumentMetadata = { title, author, coverBase64, coverExtension };
+
       // Extraer texto de cada archivo en orden del spine
       const textParts: string[] = [];
 
@@ -141,6 +211,7 @@ class EpubDocumentParser implements DocumentParser {
         fullText,
         blocks,
         chapters,
+        metadata,
       };
     } catch (error) {
       if (error instanceof DocumentParseError) throw error;
