@@ -129,6 +129,9 @@ export default function LoginScreen() {
               <TouchableOpacity onPress={() => setMode('reset')}>
                 <Text style={[styles.link, { color: colors.textMuted }]}>Olvidé mi contraseña</Text>
               </TouchableOpacity>
+              <TouchableOpacity onPress={() => router.replace('/')}>
+                <Text style={[styles.link, { color: colors.textMuted }]}>Continuar sin cuenta →</Text>
+              </TouchableOpacity>
             </>
           ) : (
             <TouchableOpacity onPress={() => setMode('login')}>

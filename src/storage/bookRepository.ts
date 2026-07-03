@@ -99,6 +99,15 @@ export const bookRepository = {
     return row ? mapBookRow(row) : null;
   },
 
+  async getBookByUri(uri: string): Promise<Book | null> {
+    const db = await getDatabase();
+    const row = await db.getFirstAsync<BookRow>(
+      `SELECT ${BOOK_COLUMNS} FROM books WHERE uri = ?`,
+      [uri],
+    );
+    return row ? mapBookRow(row) : null;
+  },
+
   async getLastOpenedBook(): Promise<Book | null> {
     const db = await getDatabase();
     const row = await db.getFirstAsync<BookRow>(

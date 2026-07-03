@@ -81,6 +81,11 @@ export const filePickerService = {
   },
 
   async deleteStoredDocument(uri: string): Promise<void> {
+    // Solo se borran copias internas de la app. Los libros descubiertos
+    // por escaneo (content://) son archivos DEL USUARIO: jamás se tocan.
+    if (!FileSystem.documentDirectory || !uri.startsWith(FileSystem.documentDirectory)) {
+      return;
+    }
     await FileSystem.deleteAsync(uri, { idempotent: true });
   },
 };

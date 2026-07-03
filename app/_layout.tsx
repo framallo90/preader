@@ -31,9 +31,9 @@ function RootNavigator() {
         setIsAuthenticated(true);
         authenticatedUserIdRef.current = session.user.id;
         await premiumService.initialize(session.user.id);
-      } else {
-        router.replace('/login');
       }
+      // Sin sesión la app funciona igual (lectura, voz del sistema,
+      // progreso). El login aparece recién al querer algo premium.
       setAuthChecked(true);
     });
 
@@ -53,7 +53,7 @@ function RootNavigator() {
         setIsAuthenticated(false);
         premiumService.teardown();
         if (wasAuthenticated) {
-          router.replace('/login');
+          router.replace('/');
         }
       }
     });

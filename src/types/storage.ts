@@ -79,6 +79,8 @@ export type AppSettings = {
   defaultVoiceId: string | null;
   keepScreenAwakeWhileReading: boolean;
   reopenLastDocumentOnLaunch: boolean;
+  /** Carpetas SAF autorizadas que se escanean en busca de libros. */
+  libraryFolders: string[];
 };
 
 export const DEFAULT_SETTINGS: AppSettings = {
@@ -88,4 +90,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
   defaultVoiceId: null,
   keepScreenAwakeWhileReading: false,
   reopenLastDocumentOnLaunch: false,
+  libraryFolders: [],
 };

@@ -52,6 +52,13 @@ export const settingsRepository = {
           row.value,
         );
       }
+
+      if (row.key === 'libraryFolders') {
+        const parsed = parseValue('libraryFolders', row.value);
+        nextSettings.libraryFolders = Array.isArray(parsed)
+          ? parsed.filter((item): item is string => typeof item === 'string')
+          : [];
+      }
     }
 
     return nextSettings;

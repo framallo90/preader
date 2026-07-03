@@ -12,6 +12,7 @@ import { useAppSettings } from '../src/hooks/useAppSettings';
 import { useReaderController } from '../src/hooks/useReaderController';
 import { DocumentParseError, getFriendlyParseErrorMessage } from '../src/services/documentParser';
 import { persistBookMetadata } from '../src/services/bookMetadataService';
+import { ensureLocalPdfCopy } from '../src/services/libraryScanService';
 import { extractChapterContext } from '../src/services/claudeService';
 import { getParserForDocument } from '../src/services/parserRegistry';
 import { bookRepository } from '../src/storage/bookRepository';
@@ -126,22 +127,32 @@ export default function ReaderScreen() {
           setIsUsingCachedText(true);
           return;
         }
-        const parser = getParserForDocument(book.type, book.name);
-        const parsed = await parser.parse(book.uri);
+        // Libros descubiertos por escaneo (content://): el extractor PDF
+        // nativo necesita file://, así que se materializa una copia local
+        // la primera vez y se actualiza la URI del libro.
+        let effectiveBook = book;
+        const isPdf = book.type === 'application/pdf' || /\.pdf$/i.test(book.name);
+        if (book.uri.startsWith('content://') && isPdf) {
+          const localUri = await ensureLocalPdfCopy(book.id, book.uri);
+          effectiveBook = { ...book, uri: localUri };
+          await bookRepository.saveBook(effectiveBook);
+        }
+        const parser = getParserForDocument(effectiveBook.type, effectiveBook.name);
+        const parsed = await parser.parse(effectiveBook.uri);
         const chapters = detectChapters(book.id, parsed.fullText);
         const parsedWithChapters: ParsedDocument = {
           ...parsed,
           id: book.id,
           fileName: book.name,
-          sourceUri: book.uri,
+          sourceUri: effectiveBook.uri,
           chapters,
         };
         if (chapters.length > 0) await chapterRepository.saveChaptersForBook(book.id, chapters);
-        await parsedDocumentRepository.saveParsedDocument(book, parsedWithChapters);
+        await parsedDocumentRepository.saveParsedDocument(effectiveBook, parsedWithChapters);
         // Metadata real (título, autor, portada) extraída en el parseo fresco.
         if (parsed.metadata) void persistBookMetadata(book.id, parsed.metadata);
         if (!isMounted) return;
-        setDocumentRecord(book);
+        setDocumentRecord(effectiveBook);
         setSavedProgress(progress);
         setParsedDocument(parsedWithChapters);
       } catch (error) {

@@ -155,8 +155,16 @@ When `currentChapter` changes while reading:
 - `documentAudioPlaybackService` is a singleton — one `expo-audio` player instance app-wide.
 - Writing files >~300 lines with the Write tool risks silent truncation. Use bash + Python for large file writes.
 
+### Library model (ReadEra-style)
+
+- **Content fingerprint**: `books.id` = `createBookFingerprint()` (SHA-256 of first 256KB + size, `bk_...`). Progress, chapters, context and TTS cache survive file renames/moves/re-downloads. Manual re-import upserts into the same row.
+- **Folder scanning**: `libraryScanService.scanLibraryFolders()` runs on Home focus over SAF folders stored in `settings.libraryFolders`. Scanned books reference the file in place (`content://`); PDFs get a lazy local copy on first open (`ensureLocalPdfCopy`) because the native extractor needs `file://`. Deleted scanned books go to an ignore list (`library.ignoredBookIds` in settings table) so scans don't re-add them.
+- **Metadata**: parsers return optional `metadata` (title/author/cover). `persistBookMetadata` writes the cover to `documentDirectory/covers/{bookId}` and updates the book row (COALESCE — never overwrites with null).
+- **No account required**: the app boots to Home without a session. Login is only prompted from the subscription flow. Auth events only navigate on real login/logout transitions.
+- **DB migrations**: `PRAGMA user_version` in `database.ts` (`runMigrations`). Any schema change on existing tables must be added there.
+
 ### What still needs to be wired
 
-1. **Free-tier TTS in reader** — `nativeTtsService` exists but `documentAudioPlaybackService` still calls OpenAI TTS unconditionally. Non-premium users need routing through `nativeTtsService` instead.
+1. **Free-tier TTS in reader** — `nativeTtsService` exists but `documentAudioPlaybackService` still calls OpenAI TTS unconditionally. Non-premium users need routing through `nativeTtsService` instead (they currently get a friendly premium message on play).
 2. **Character wiki screen** — `characterRepository` accumulates characters per saga; no UI screen yet.
 3. **Streaming chat** — `chatWithSagaContext` returns the full response at once. Streaming via SSE would improve UX.

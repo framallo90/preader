@@ -7,6 +7,7 @@ import { OptionPickerModal } from '../src/components/OptionPickerModal';
 import { Screen } from '../src/components/Screen';
 import { useAppSettings } from '../src/hooks/useAppSettings';
 import { authService } from '../src/services/authService';
+import { getDisplayNameFromSafUri, requestLibraryFolder } from '../src/services/libraryScanService';
 import { premiumService, PremiumListener } from '../src/services/premiumService';
 import { clampRounded } from '../src/utils/math';
 
@@ -30,11 +31,31 @@ export default function SettingsScreen() {
   const { colors, settings, updateSettings } = useAppSettings();
   const [isVoicePickerVisible, setIsVoicePickerVisible] = useState(false);
   const [isPremium, setIsPremium] = useState(premiumService.isPremium);
+  const [hasSession, setHasSession] = useState(false);
 
   useEffect(() => {
     const listener: PremiumListener = (premium) => { setIsPremium(premium); };
     return premiumService.subscribe(listener);
   }, []);
+
+  useEffect(() => {
+    void authService.getSession().then((session) => setHasSession(Boolean(session)));
+  }, []);
+
+  const handleAddLibraryFolder = useCallback(async () => {
+    const folderUri = await requestLibraryFolder();
+    if (!folderUri || settings.libraryFolders.includes(folderUri)) return;
+    await updateSettings({ libraryFolders: [...settings.libraryFolders, folderUri] });
+  }, [settings.libraryFolders, updateSettings]);
+
+  const handleRemoveLibraryFolder = useCallback(
+    async (folderUri: string) => {
+      await updateSettings({
+        libraryFolders: settings.libraryFolders.filter((item) => item !== folderUri),
+      });
+    },
+    [settings.libraryFolders, updateSettings],
+  );
 
   const handleLogout = useCallback(() => {
     Alert.alert('Cerrar sesión', '¿Seguro que querés salir?', [
@@ -263,6 +284,47 @@ export default function SettingsScreen() {
       </View>
 
       <View style={styles.sectionGroup}>
+        <Text style={[styles.sectionLabel, { color: colors.textMuted }]}>Biblioteca</Text>
+        <View style={[styles.sectionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+          <View style={styles.settingRow}>
+            <View style={styles.settingCopy}>
+              <Text style={[styles.settingTitle, { color: colors.text }]}>Carpetas escaneadas</Text>
+              <Text style={[styles.settingHint, { color: colors.textMuted }]}>
+                Los libros de estas carpetas se agregan solos a la biblioteca al abrir la app.
+              </Text>
+            </View>
+            <AppButton
+              label="Agregar"
+              onPress={() => { void handleAddLibraryFolder(); }}
+              variant="secondary"
+              colors={colors}
+              compact
+            />
+          </View>
+          {settings.libraryFolders.map((folderUri) => (
+            <View key={folderUri}>
+              <View style={[styles.divider, { backgroundColor: colors.border }]} />
+              <View style={styles.settingRow}>
+                <View style={styles.settingCopy}>
+                  <Text style={[styles.settingTitle, { color: colors.text }]} numberOfLines={1}>
+                    {getDisplayNameFromSafUri(folderUri)}
+                  </Text>
+                </View>
+                <AppButton
+                  label="Quitar"
+                  onPress={() => { void handleRemoveLibraryFolder(folderUri); }}
+                  variant="ghost"
+                  colors={colors}
+                  compact
+                  labelStyle={{ color: colors.danger }}
+                />
+              </View>
+            </View>
+          ))}
+        </View>
+      </View>
+
+      <View style={styles.sectionGroup}>
         <Text style={[styles.sectionLabel, { color: colors.textMuted }]}>Cuenta</Text>
         <View style={[styles.sectionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <View style={styles.settingRow}>
@@ -290,16 +352,28 @@ export default function SettingsScreen() {
             <View style={styles.settingCopy}>
               <Text style={[styles.settingTitle, { color: colors.text }]}>Sesión</Text>
               <Text style={[styles.settingHint, { color: colors.textMuted }]}>
-                Cerrá sesión para cambiar de cuenta o liberar almacenamiento.
+                {hasSession
+                  ? 'Cerrá sesión para cambiar de cuenta.'
+                  : 'No hace falta cuenta para leer. Se usa solo para Premium.'}
               </Text>
             </View>
-            <AppButton
-              label="Salir"
-              onPress={handleLogout}
-              variant="secondary"
-              colors={colors}
-              compact
-            />
+            {hasSession ? (
+              <AppButton
+                label="Salir"
+                onPress={handleLogout}
+                variant="secondary"
+                colors={colors}
+                compact
+              />
+            ) : (
+              <AppButton
+                label="Iniciar sesión"
+                onPress={() => router.push('/login')}
+                variant="secondary"
+                colors={colors}
+                compact
+              />
+            )}
           </View>
         </View>
       </View>

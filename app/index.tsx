@@ -11,6 +11,7 @@ import {
   DocumentPlaybackSnapshot,
 } from '../src/services/documentAudioPlaybackService';
 import { removeBookCover } from '../src/services/bookMetadataService';
+import { addIgnoredBook, clearIgnoredBook, scanLibraryFolders } from '../src/services/libraryScanService';
 import { filePickerService } from '../src/services/filePickerService';
 import { clearBookAudio } from '../src/services/openaiTtsService';
 import { bookProgressRepository } from '../src/storage/bookProgressRepository';
@@ -59,8 +60,19 @@ export default function HomeScreen() {
 
   useFocusEffect(
     useCallback(() => {
-      void loadRecentDocuments();
-    }, [loadRecentDocuments]),
+      void (async () => {
+        // Biblioteca por descubrimiento: los libros nuevos en las carpetas
+        // autorizadas se agregan solos antes de refrescar la lista.
+        if (settings.libraryFolders.length > 0) {
+          try {
+            await scanLibraryFolders(settings.libraryFolders);
+          } catch {
+            // El escaneo nunca debe romper el Home.
+          }
+        }
+        await loadRecentDocuments();
+      })();
+    }, [loadRecentDocuments, settings.libraryFolders]),
   );
 
   const openReader = useCallback((documentId: string, replace = false) => {
@@ -108,6 +120,8 @@ export default function HomeScreen() {
     try {
       const selectedDocument = await filePickerService.pickDocument();
       if (!selectedDocument) return;
+      // Importarlo a mano anula un borrado previo del mismo contenido.
+      await clearIgnoredBook(selectedDocument.id);
       await bookRepository.saveBook(selectedDocument);
       openReader(selectedDocument.id);
     } catch (error) {
@@ -139,6 +153,9 @@ export default function HomeScreen() {
                   await clearBookAudio(document.id);
                   await removeBookCover(document.id);
                   await filePickerService.deleteStoredDocument(document.uri);
+                  // Si el archivo sigue en una carpeta escaneada, que el
+                  // próximo escaneo no lo vuelva a agregar solo.
+                  await addIgnoredBook(document.id);
                   await bookRepository.removeBook(document.id);
                   await loadRecentDocuments();
                 } catch (error) {

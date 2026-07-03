@@ -44,6 +44,13 @@ export default function SubscriptionScreen() {
   }, []);
 
   const handleSubscribe = async (plan: Plan) => {
+    // Sin cuenta: el pago necesita identidad — primero login.
+    const session = await authService.getSession();
+    if (!session) {
+      router.push('/login');
+      return;
+    }
+
     setLoading(plan);
     try {
       const url = await createPaymentPreference(plan);

@@ -10,17 +10,37 @@ const FINGERPRINT_SAMPLE_BYTES = 256 * 1024;
  * re-descargas, así que el progreso, los capítulos, el contexto y el
  * cache de TTS sobreviven aunque el archivo cambie de nombre o de lugar.
  */
-export async function createBookFingerprint(uri: string, size?: number | null): Promise<string> {
-  const sample = await FileSystem.readAsStringAsync(uri, {
-    encoding: FileSystem.EncodingType.Base64,
-    position: 0,
-    length: FINGERPRINT_SAMPLE_BYTES,
-  });
+export async function createBookFingerprint(
+  uri: string,
+  size?: number | null,
+  fallbackKey?: string,
+): Promise<string> {
+  let sample = '';
 
-  const digest = await Crypto.digestStringAsync(
-    Crypto.CryptoDigestAlgorithm.SHA256,
-    `${sample}:${size ?? 0}`,
-  );
+  try {
+    sample = await FileSystem.readAsStringAsync(uri, {
+      encoding: FileSystem.EncodingType.Base64,
+      position: 0,
+      length: FINGERPRINT_SAMPLE_BYTES,
+    });
+  } catch {
+    // Algunos content:// de SAF no soportan lectura parcial.
+    // Para archivos chicos leemos todo; para grandes usamos el fallback.
+    if (size != null && size > 0 && size <= 8 * 1024 * 1024) {
+      try {
+        const whole = await FileSystem.readAsStringAsync(uri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+        sample = whole.slice(0, Math.ceil((FINGERPRINT_SAMPLE_BYTES * 4) / 3));
+      } catch {
+        sample = '';
+      }
+    }
+  }
+
+  const identity = sample ? `${sample}:${size ?? 0}` : `fallback:${fallbackKey ?? uri}:${size ?? 0}`;
+
+  const digest = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, identity);
 
   return `bk_${digest.slice(0, 24)}`;
 }
