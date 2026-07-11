@@ -123,7 +123,15 @@ export function useReaderController({
 
     const serviceSnapshot = documentAudioPlaybackService.getSnapshot();
 
-    if (document && serviceSnapshot.documentId === document.id && serviceSnapshot.duration > 0) {
+    // La posición del audio manda SOLO si está sonando ahora. Un audio cargado
+    // pero pausado hace rato no debe pisar el progreso guardado (p. ej. si
+    // después seguiste leyendo páginas y volviste a entrar).
+    if (
+      document &&
+      serviceSnapshot.documentId === document.id &&
+      serviceSnapshot.duration > 0 &&
+      serviceSnapshot.isPlaying
+    ) {
       const chunkLength = Math.max(
         serviceSnapshot.chunkEndChar - serviceSnapshot.chunkStartChar,
         1,
@@ -283,6 +291,19 @@ export function useReaderController({
     await persistAbsoluteChar(absoluteCharIndexRef.current, true);
   }, [persistAbsoluteChar]);
 
+  /**
+   * Sincroniza la posición SIN tocar el audio (la usa el lector visual de
+   * páginas). Es clave que pase por acá: el guardado final al salir escribe
+   * la posición del controlador — si no se actualiza, pisa el progreso.
+   */
+  const syncPosition = useCallback(
+    async (blockIndex: number, charIndex: number) => {
+      const absoluteCharIndex = getAbsoluteCharIndex(documentRef.current, blockIndex, charIndex);
+      await persistAbsoluteChar(absoluteCharIndex, true);
+    },
+    [persistAbsoluteChar],
+  );
+
   return {
     currentBlockIndex,
     currentCharIndex,
@@ -294,6 +315,7 @@ export function useReaderController({
     play,
     stop,
     shutdown,
+    syncPosition,
     restartFromCurrent,
     nextBlock,
     previousBlock,

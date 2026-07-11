@@ -7,8 +7,14 @@ import { OptionPickerModal } from '../src/components/OptionPickerModal';
 import { Screen } from '../src/components/Screen';
 import { useAppSettings } from '../src/hooks/useAppSettings';
 import { authService } from '../src/services/authService';
-import { getDisplayNameFromSafUri, requestLibraryFolder } from '../src/services/libraryScanService';
+import { Image } from 'expo-image';
+
+import { getDisplayNameFromSafUri, requestLibraryFolder, restoreIgnoredBooks } from '../src/services/libraryScanService';
+import { clearAllAudio } from '../src/services/openaiTtsService';
+import { parsedDocumentRepository } from '../src/storage/parsedDocumentRepository';
+import { documentAudioPlaybackService } from '../src/services/documentAudioPlaybackService';
 import { premiumService, PremiumListener } from '../src/services/premiumService';
+import { PERSONAL_MODE } from '../src/config/appMode';
 import { clampRounded } from '../src/utils/math';
 
 const MIN_RATE = 0.6;
@@ -321,6 +327,69 @@ export default function SettingsScreen() {
               </View>
             </View>
           ))}
+          <View style={[styles.divider, { backgroundColor: colors.border }]} />
+          <View style={styles.settingRow}>
+            <View style={styles.settingCopy}>
+              <Text style={[styles.settingTitle, { color: colors.text }]}>Libros ocultos</Text>
+              <Text style={[styles.settingHint, { color: colors.textMuted }]}>
+                Los libros que borraste no se re-agregan solos. Restaurálos para que el escaneo los sume de nuevo.
+              </Text>
+            </View>
+            <AppButton
+              label="Restaurar"
+              onPress={() => {
+                void restoreIgnoredBooks().then((count) => {
+                  Alert.alert(
+                    'Libros restaurados',
+                    count > 0
+                      ? `${count} libro${count === 1 ? '' : 's'} volverán a aparecer al volver al inicio.`
+                      : 'No había libros ocultos.',
+                  );
+                });
+              }}
+              variant="secondary"
+              colors={colors}
+              compact
+            />
+          </View>
+          <View style={[styles.divider, { backgroundColor: colors.border }]} />
+          <View style={styles.settingRow}>
+            <View style={styles.settingCopy}>
+              <Text style={[styles.settingTitle, { color: colors.text }]}>Borrar caché</Text>
+              <Text style={[styles.settingHint, { color: colors.textMuted }]}>
+                Texto procesado, páginas y audio descargados. NO borra libros ni tu progreso: al reabrir, cada libro se vuelve a procesar.
+              </Text>
+            </View>
+            <AppButton
+              label="Borrar"
+              onPress={() => {
+                Alert.alert(
+                  '¿Borrar caché?',
+                  'Se borra el texto procesado, las páginas y el audio descargados. Tus libros y tu progreso quedan intactos.',
+                  [
+                    { text: 'Cancelar', style: 'cancel' },
+                    {
+                      text: 'Borrar caché',
+                      style: 'destructive',
+                      onPress: () => {
+                        void (async () => {
+                          await documentAudioPlaybackService.stopAndUnload().catch(() => {});
+                          await parsedDocumentRepository.clearAllParsedDocuments();
+                          await clearAllAudio();
+                          await Image.clearDiskCache().catch(() => {});
+                          Alert.alert('Listo', 'Caché borrado. Abrí un libro y se re-procesa solo.');
+                        })();
+                      },
+                    },
+                  ],
+                );
+              }}
+              variant="secondary"
+              colors={colors}
+              compact
+              labelStyle={{ color: colors.danger }}
+            />
+          </View>
         </View>
       </View>
 
@@ -350,14 +419,18 @@ export default function SettingsScreen() {
           <View style={[styles.divider, { backgroundColor: colors.border }]} />
           <View style={styles.settingRow}>
             <View style={styles.settingCopy}>
-              <Text style={[styles.settingTitle, { color: colors.text }]}>Sesión</Text>
+              <Text style={[styles.settingTitle, { color: colors.text }]}>
+                {PERSONAL_MODE ? 'Modo uso propio' : 'Sesión'}
+              </Text>
               <Text style={[styles.settingHint, { color: colors.textMuted }]}>
-                {hasSession
-                  ? 'Cerrá sesión para cambiar de cuenta.'
-                  : 'No hace falta cuenta para leer. Se usa solo para Premium.'}
+                {PERSONAL_MODE
+                  ? 'Sin cuenta: leés y escuchás sin iniciar sesión.'
+                  : hasSession
+                    ? 'Cerrá sesión para cambiar de cuenta.'
+                    : 'No hace falta cuenta para leer. Se usa solo para Premium.'}
               </Text>
             </View>
-            {hasSession ? (
+            {PERSONAL_MODE ? null : hasSession ? (
               <AppButton
                 label="Salir"
                 onPress={handleLogout}

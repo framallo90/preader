@@ -11,7 +11,6 @@ import { getAbsoluteCharIndex, getPositionFromAbsoluteChar } from '../utils/docu
 import { clamp } from '../utils/math';
 import { SynthesisChunk, buildSynthesisChunks } from '../utils/synthesisSegments';
 import { audioSessionService } from './audioSessionService';
-import { preprocessTextForTTS } from './claudeService';
 import { synthesizeSpeech, DEFAULT_VOICE, DEFAULT_MODEL, TtsVoice, TtsModel } from './openaiTtsService';
 
 export type PlaybackSnapshot = {
@@ -57,8 +56,11 @@ function getChunkLength(chunk: SynthesisChunk | null) {
   return Math.max(chunk.endChar - chunk.startChar, 1);
 }
 
-function buildChunkId(documentId: string, chunkIndex: number, voiceId: string) {
-  return `${documentId}--chunk-${chunkIndex}--${voiceId}`;
+function buildChunkId(documentId: string, chunk: SynthesisChunk, voiceId: string) {
+  // Incluye el rango de caracteres del tramo: si cambia el chunking (tamaño de
+  // tramo), la clave cambia y no se reutiliza un WAV viejo por un tramo distinto.
+  const len = chunk.endChar - chunk.startChar;
+  return `${documentId}--chunk-${chunk.index}-${chunk.startChar}-${len}--${voiceId}`;
 }
 
 class DocumentAudioPlaybackService {
@@ -150,6 +152,10 @@ class DocumentAudioPlaybackService {
     void this.persistProgressFromStatus(status, status.didJustFinish || justPaused);
 
     if (status.didJustFinish && !isLastChunk) {
+      // Marca el hueco entre tramos como "preparando" YA: si no, por un instante
+      // isPlaying=false sin isPreparing y la UI muestra ▶ como si estuviera
+      // parado — un toque ahí reiniciaba el tramo anterior (play bugueado).
+      this.updateSnapshot({ isPreparing: true });
       void this.advanceToNextChunk();
     }
   };
@@ -217,7 +223,7 @@ class DocumentAudioPlaybackService {
     sessionId: number,
     silent = false,
   ): Promise<string | null> {
-    const chunkId = buildChunkId(document.id, chunk.index, voiceId);
+    const chunkId = buildChunkId(document.id, chunk, voiceId);
     const existing = this.chunkPreparationPromises.get(chunkId);
     if (existing) return existing;
 
@@ -225,10 +231,13 @@ class DocumentAudioPlaybackService {
       this.updateSnapshot({ documentId: document.id, voiceId, isPreparing: true, preparationProgress: 0, errorMessage: null });
     }
 
-    const rawText = chunk.segments.map((s) => s.text).join('\n\n');
-    const promise = preprocessTextForTTS(rawText)
-      .catch(() => rawText) // fallback al texto original si falla el preprocesamiento
-      .then((processedText) => synthesizeSpeech(chunkId, processedText, voiceId as TtsVoice, DEFAULT_MODEL))
+    // Texto ORIGINAL del tramo (no reconstruido): así fluye natural, con las
+    // pausas sólo en los párrafos reales. Reconstruir uniendo oraciones con "\n\n"
+    // hacía que fal pausara entre cada oración (y a mitad de oraciones largas
+    // partidas) → sonaba cortado "como si hubiera un punto". El texto ya viene
+    // limpio y normalizado del parser, y sin LLM de por medio (latencia extra).
+    const rawText = document.fullText.slice(chunk.startChar, chunk.endChar);
+    const promise = synthesizeSpeech(chunkId, rawText, voiceId as TtsVoice, DEFAULT_MODEL)
       .then((mp3Uri) => {
         if (!this.isSessionActive(sessionId)) return null;
         if (!silent) this.updateSnapshot({ sourceUri: mp3Uri, isPreparing: false, preparationProgress: 1 });
@@ -265,6 +274,7 @@ class DocumentAudioPlaybackService {
     voiceId: string,
     absoluteCharIndex: number,
     sessionId: number,
+    targetIndexOverride?: number,
   ) {
     await audioSessionService.ensureReady();
     if (!this.isSessionActive(sessionId)) return null;
@@ -275,7 +285,13 @@ class DocumentAudioPlaybackService {
     if (this.activeChunks.length === 0) throw new Error('No se pudieron preparar tramos de audio.');
 
     const player = this.ensurePlayer();
-    const targetIndex = this.getChunkIndexForAbsoluteChar(absoluteCharIndex);
+    // El avance de tramo pasa el índice EXPLÍCITO: buscarlo por offset podía
+    // devolver el tramo anterior si los offsets quedaron solapados, y eso
+    // re-reproducía el mismo tramo en loop infinito.
+    const targetIndex =
+      targetIndexOverride !== undefined
+        ? clamp(targetIndexOverride, 0, this.activeChunks.length - 1)
+        : this.getChunkIndexForAbsoluteChar(absoluteCharIndex);
     const targetChunk = this.activeChunks[targetIndex];
     const mp3Uri = await this.prepareChunk(document, targetChunk, voiceId, sessionId);
 
@@ -319,9 +335,14 @@ class DocumentAudioPlaybackService {
   }
 
   private async advanceToNextChunk() {
+    console.log('[audio] avanzando de tramo', this.activeChunkIndex, '->', this.activeChunkIndex + 1);
     if (this.advancingPromise || !this.activeDocument) return;
     const nextChunk = this.activeChunks[this.activeChunkIndex + 1];
-    if (!nextChunk) return;
+    if (!nextChunk) {
+      // Sin tramo siguiente: no dejar el "Preparando…" pegado.
+      this.updateSnapshot({ isPreparing: false });
+      return;
+    }
 
     const doc = this.activeDocument;
     const voiceId = this.activeVoiceId;
@@ -331,10 +352,14 @@ class DocumentAudioPlaybackService {
     const expectedIndex = this.activeChunkIndex;
 
     const task = (async () => {
-      if (!this.isSessionActive(sessionId) || this.activeChunkIndex !== expectedIndex) return;
-      await this.ensureChunkLoaded(doc, voiceId, nextChunk.startChar, sessionId);
+      if (!this.isSessionActive(sessionId) || this.activeChunkIndex !== expectedIndex) {
+        // Otro flujo tomó el control: soltar el estado de "preparando".
+        if (this.isSessionActive(sessionId)) this.updateSnapshot({ isPreparing: false });
+        return;
+      }
+      await this.ensureChunkLoaded(doc, voiceId, nextChunk.startChar, sessionId, expectedIndex + 1);
       if (!this.isSessionActive(sessionId) || !this.player) return;
-      this.player.playbackRate = rate;
+      this.player.setPlaybackRate(rate);
       this.player.setActiveForLockScreen(true, metadata ?? { title: doc.fileName, artist: 'intelliReader' });
       await this.player.seekTo(0);
       if (!this.isSessionActive(sessionId)) return;
@@ -384,7 +409,7 @@ class DocumentAudioPlaybackService {
     await audioSessionService.ensureNotificationPermission();
     if (!this.isSessionActive(sessionId) || !this.player) return;
 
-    this.player.playbackRate = rate;
+    this.player.setPlaybackRate(rate);
     this.player.setActiveForLockScreen(true, metadata ?? { title: document.fileName, artist: 'intelliReader' });
     await this.seekWithinActiveChunk(absoluteCharIndex);
     if (!this.isSessionActive(sessionId)) return;
@@ -410,7 +435,41 @@ class DocumentAudioPlaybackService {
 
   setPlaybackRate(rate: number) {
     this.activePlaybackRate = rate;
-    if (this.player) this.player.playbackRate = rate;
+    if (this.player) this.player.setPlaybackRate(rate);
+  }
+
+  /**
+   * Retrocede N segundos dentro del tramo actual (urgencias: teléfono, puerta,
+   * quedarse dormido). Clampa al inicio del tramo.
+   */
+  async rewindBy(seconds: number) {
+    await this.seekBy(-seconds);
+  }
+
+  /**
+   * Salta ± N segundos dentro del tramo actual. Si el salto cae al final del
+   * tramo, pasa directo al siguiente (saltar EXACTO al fin del archivo dejaba
+   * el player en un limbo "terminado sin evento" y el audio quedaba pensando).
+   */
+  async seekBy(deltaSeconds: number) {
+    if (!this.player || !this.player.currentStatus.isLoaded) return;
+    const status = this.player.currentStatus;
+    const duration = status.duration || 0;
+    const target = status.currentTime + deltaSeconds;
+
+    if (deltaSeconds > 0 && duration > 0 && target >= duration - 0.75) {
+      const hasNext = this.activeChunkIndex < this.activeChunks.length - 1;
+      if (hasNext) {
+        this.updateSnapshot({ isPreparing: true });
+        await this.advanceToNextChunk();
+        return;
+      }
+      // Último tramo: quedarse justo antes del final, sin caer al limbo.
+      await this.player.seekTo(Math.max(0, duration - 0.75));
+      return;
+    }
+
+    await this.player.seekTo(Math.max(0, Math.min(duration > 0 ? duration - 0.25 : target, target)));
   }
 
   async stopAndUnload() {

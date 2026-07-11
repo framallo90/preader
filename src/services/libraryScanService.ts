@@ -66,6 +66,21 @@ export async function clearIgnoredBook(bookId: string): Promise<void> {
   }
 }
 
+/**
+ * Vacía la lista de ignorados: los libros borrados que sigan en carpetas
+ * escaneadas vuelven a aparecer en el próximo escaneo. Devuelve cuántos había.
+ */
+export async function getIgnoredBooksCount(): Promise<number> {
+  return (await getIgnoredBookIds()).size;
+}
+
+export async function restoreIgnoredBooks(): Promise<number> {
+  const ids = await getIgnoredBookIds();
+  const count = ids.size;
+  if (count > 0) await saveIgnoredBookIds(new Set());
+  return count;
+}
+
 /** Pide al usuario que elija una carpeta. Devuelve su URI SAF o null. */
 export async function requestLibraryFolder(): Promise<string | null> {
   const permission = await StorageAccessFramework.requestDirectoryPermissionsAsync();
@@ -102,7 +117,9 @@ export async function scanLibraryFolders(folderUris: string[]): Promise<number> 
     let entries: string[] = [];
     try {
       entries = await StorageAccessFramework.readDirectoryAsync(folderUri);
-    } catch {
+      console.log(`[scan] carpeta ${folderUri.slice(-30)}: ${entries.length} entradas`);
+    } catch (error) {
+      console.warn('[scan] no se pudo leer la carpeta:', error instanceof Error ? error.message : error);
       // Permiso revocado o carpeta eliminada: se ignora esta carpeta.
       continue;
     }
@@ -146,7 +163,9 @@ export async function scanLibraryFolders(folderUris: string[]): Promise<number> 
         };
         await bookRepository.saveBook(book);
         added += 1;
-      } catch {
+        console.log(`[scan] agregado: ${displayName}`);
+      } catch (error) {
+        console.warn(`[scan] fallo ${displayName}:`, error instanceof Error ? error.message : error);
         // Un archivo ilegible no debe frenar el resto del escaneo.
         continue;
       }

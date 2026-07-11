@@ -35,6 +35,37 @@ export function cleanPdfTabArtifacts(text: string): string {
 }
 
 /**
+ * Limpieza local (instantánea, sin LLM) de artefactos típicos de PDFs de libros,
+ * para que el TTS no lea basura y el texto en pantalla se vea bien. Reemplaza lo
+ * que antes hacía el preprocesado con Llama, sin su latencia. Es conservador:
+ * borra pies/números de página sueltos y arregla espacios de puntuación; no toca
+ * el contenido de las oraciones.
+ */
+export function cleanPdfProse(text: string): string {
+  return text
+    .split('\n')
+    .map((line) => {
+      const trimmed = line.trim();
+      // No tocar encabezados de capítulo.
+      if (POV_CHAPTER_PATTERN.test(trimmed) || SPECIAL_CHAPTER_PATTERN.test(trimmed)) {
+        return line;
+      }
+      // Líneas que son sólo un pie de conversión (URL de sitio de descarga).
+      if (/^(?:https?:\/\/|www\.)\S+/i.test(trimmed)) return '';
+      // "Página 42", "Pág. 7" en su propia línea.
+      if (/^p[áa]g(?:ina|\.)?\s*\d+$/i.test(trimmed)) return '';
+      // Número de página suelto (una línea que es sólo dígitos).
+      if (/^\d{1,4}$/.test(trimmed)) return '';
+      return line;
+    })
+    .join('\n')
+    // Espacio sobrante antes de signos de puntuación (artefacto de extracción).
+    .replace(/[ \t]+([,.;:!?…])/g, '$1')
+    // Puntos suspensivos separados por espacios → uno solo.
+    .replace(/\.\s+\.\s+\./g, '…');
+}
+
+/**
  * Detecta capítulos en el texto extraído de un PDF de ASOIAF.
  * Retorna un array de ChapterInfo con posición, personaje POV y número.
  */

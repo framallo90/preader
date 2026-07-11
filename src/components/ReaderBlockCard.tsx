@@ -1,4 +1,5 @@
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { memo } from 'react';
+import { Pressable, StyleSheet, Text } from 'react-native';
 
 import { TextBlock } from '../types/document';
 import { ThemeColors } from '../utils/theme';
@@ -13,7 +14,12 @@ type ReaderBlockCardProps = {
   onPress: () => void;
 };
 
-export function ReaderBlockCard({
+/**
+ * Un bloque de texto para lectura. Sin cajas ni bordes: el texto fluye como en un
+ * libro. El bloque activo se tiñe sutil (posición actual) y la palabra que suena
+ * se resalta. Tocar un bloque salta la lectura a ese punto.
+ */
+function ReaderBlockCardBase({
   block,
   isActive,
   colors,
@@ -21,7 +27,7 @@ export function ReaderBlockCard({
   wordRange,
   onPress,
 }: ReaderBlockCardProps) {
-  const lineHeight = Math.round(fontSize * 1.55);
+  const lineHeight = Math.round(fontSize * 1.68);
   const activeWord =
     isActive && wordRange
       ? {
@@ -34,68 +40,52 @@ export function ReaderBlockCard({
   return (
     <Pressable
       onPress={onPress}
-      style={[
-        styles.card,
-        {
-          backgroundColor: isActive ? colors.readerAccent : 'transparent',
-          borderColor: isActive ? colors.primary : 'transparent',
-        },
-      ]}
+      style={[styles.block, isActive ? { backgroundColor: colors.readerAccent } : null]}
     >
-      {isActive ? (
-        <Text style={[styles.blockLabel, { color: colors.textMuted }]}>Bloque {block.index + 1}</Text>
-      ) : null}
-      <View>
-        <Text
-          style={[
-            styles.blockText,
-            {
-              color: colors.text,
-              fontSize,
-              lineHeight,
-            },
-          ]}
-        >
-          {activeWord ? (
-            <>
-              {activeWord.before}
-              <Text
-                style={[
-                  styles.activeWord,
-                  {
-                    backgroundColor: colors.highlight,
-                    color: colors.highlightText,
-                  },
-                ]}
-              >
-                {activeWord.current}
-              </Text>
-              {activeWord.after}
-            </>
-          ) : (
-            block.text
-          )}
-        </Text>
-      </View>
+      <Text style={[styles.text, { color: colors.text, fontSize, lineHeight }]}>
+        {activeWord ? (
+          <>
+            {activeWord.before}
+            <Text
+              style={[
+                styles.activeWord,
+                { backgroundColor: colors.highlight, color: colors.highlightText },
+              ]}
+            >
+              {activeWord.current}
+            </Text>
+            {activeWord.after}
+          </>
+        ) : (
+          block.text
+        )}
+      </Text>
     </Pressable>
   );
 }
 
+/**
+ * Memoizado: sin esto, cada tick del resaltado re-renderiza TODOS los bloques
+ * visibles y la lista se pone lenta. Ignoramos `onPress` (cambia por render) y
+ * comparamos sólo lo que afecta el dibujo. Así sólo el bloque activo se redibuja.
+ */
+export const ReaderBlockCard = memo(
+  ReaderBlockCardBase,
+  (prev, next) =>
+    prev.block === next.block &&
+    prev.isActive === next.isActive &&
+    prev.fontSize === next.fontSize &&
+    prev.colors === next.colors &&
+    prev.wordRange === next.wordRange,
+);
+
 const styles = StyleSheet.create({
-  card: {
-    borderWidth: 1,
-    borderRadius: 18,
-    paddingHorizontal: 10,
-    paddingVertical: 10,
-    gap: 5,
+  block: {
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
   },
-  blockLabel: {
-    fontSize: 11,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 0.4,
-  },
-  blockText: {
+  text: {
     fontWeight: '400',
   },
   activeWord: {

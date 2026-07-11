@@ -29,7 +29,7 @@ export function getFriendlyParseErrorMessage(error: unknown) {
       case 'no_extractable_text':
         return 'Este PDF no contiene texto extraible. Para leerlo haria falta OCR, que no forma parte de esta primera version.';
       case 'document_too_large':
-        return 'Este PDF es demasiado grande para que esta version lo procese de forma segura en memoria. Estoy priorizando estabilidad para evitar cierres de la app.';
+        return 'Este libro es demasiado grande (miles de paginas) para procesarlo en el telefono sin quedarse sin memoria. Los volumenes enormes hay que dividirlos en partes o procesarlos en un servidor.';
       case 'extractor_unavailable':
         return 'Esta APK no incluye el extractor PDF nativo o la instalacion quedo desactualizada. Rehace la build con EAS e instala la APK nueva.';
       case 'unsupported_format':

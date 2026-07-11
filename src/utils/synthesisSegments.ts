@@ -1,9 +1,12 @@
-const DEFAULT_MAX_SEGMENT_CHARS = 1800;
+const DEFAULT_MAX_SEGMENT_CHARS = 1200;
 const DEFAULT_MAX_PARAGRAPHS = 5;
-// OpenAI TTS acepta un máximo de 4096 caracteres por request.
-// Dejamos margen porque el preprocesamiento con Claude puede alargar levemente el texto.
-const DEFAULT_MAX_CHUNK_CHARS = 3600;
-const DEFAULT_MAX_CHUNK_SEGMENTS = 5;
+// CLAVE para que suene natural: los tramos se cortan SÓLO en fin de oración
+// (. ! ? …), NUNCA en medio. Un tamaño moderado da pocos cortes (fluido) y un
+// primer audio ágil; el prefetch del siguiente mantiene la continuidad.
+const DEFAULT_MAX_CHUNK_CHARS = 1500;
+const DEFAULT_MAX_CHUNK_SEGMENTS = 4;
+// Sólo una oración descomunal (rarísimo) se subdivide, y en pausas naturales (, ; :).
+const HARD_SENTENCE_LIMIT = 2200;
 
 export type SynthesisSegment = {
   index: number;
@@ -20,30 +23,27 @@ export type SynthesisChunk = {
 };
 
 function splitLongSentence(sentence: string, maxChars: number) {
-  const words = sentence.split(/\s+/).filter(Boolean);
+  // Sólo se usa para una oración DESCOMUNAL: parte en pausas naturales
+  // (coma, punto y coma, dos puntos), no en medio de una palabra o idea.
+  const clauses = sentence.match(/[^,;:]+[,;:]*\s*/g) ?? [sentence];
   const parts: string[] = [];
   let current = '';
 
-  words.forEach((word) => {
-    const candidate = current ? `${current} ${word}` : word;
-
-    if (candidate.length <= maxChars) {
+  for (const clause of clauses) {
+    const candidate = current + clause;
+    if (!current || candidate.length <= maxChars) {
       current = candidate;
-      return;
-    }
-
-    if (current) {
+    } else {
       parts.push(current.trim());
+      current = clause;
     }
-
-    current = word;
-  });
+  }
 
   if (current.trim()) {
     parts.push(current.trim());
   }
 
-  return parts;
+  return parts.length > 0 ? parts : [sentence.trim()];
 }
 
 function splitLongParagraph(paragraph: string, maxChars: number) {
@@ -51,34 +51,37 @@ function splitLongParagraph(paragraph: string, maxChars: number) {
     return [paragraph];
   }
 
+  // Corta SÓLO en fin de oración (. ! ? …), NUNCA en ; : , ni en medio de palabra.
   const sentences = paragraph
-    .split(/(?<=[.!?;:])\s+/)
+    .split(/(?<=[.!?…])\s+/)
     .map((sentence) => sentence.trim())
     .filter(Boolean);
 
   if (sentences.length <= 1) {
-    return splitLongSentence(paragraph, maxChars);
+    return paragraph.length > HARD_SENTENCE_LIMIT
+      ? splitLongSentence(paragraph, HARD_SENTENCE_LIMIT)
+      : [paragraph];
   }
 
   const parts: string[] = [];
   let current = '';
 
   sentences.forEach((sentence) => {
+    // Cada oración se mantiene ENTERA; sólo una descomunal se subdivide.
     const sentenceParts =
-      sentence.length > maxChars ? splitLongSentence(sentence, maxChars) : [sentence];
+      sentence.length > HARD_SENTENCE_LIMIT
+        ? splitLongSentence(sentence, HARD_SENTENCE_LIMIT)
+        : [sentence];
 
     sentenceParts.forEach((part) => {
       const candidate = current ? `${current} ${part}` : part;
 
-      if (candidate.length <= maxChars) {
+      if (!current || candidate.length <= maxChars) {
         current = candidate;
         return;
       }
 
-      if (current.trim()) {
-        parts.push(current.trim());
-      }
-
+      parts.push(current.trim());
       current = part;
     });
   });

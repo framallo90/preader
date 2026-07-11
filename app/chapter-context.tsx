@@ -4,6 +4,7 @@ import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 import { Screen } from '../src/components/Screen';
 import { useAppSettings } from '../src/hooks/useAppSettings';
+import { formatShortDate } from '../src/utils/formatters';
 import { chapterContextRepository } from '../src/storage/chapterContextRepository';
 import { chapterRepository } from '../src/storage/chapterRepository';
 import { Chapter, ChapterContext } from '../src/types/storage';
@@ -81,7 +82,7 @@ export default function ChapterContextScreen() {
         ) : null}
         {context.extractedAt ? (
           <Text style={[styles.extractedAt, { color: colors.textMuted }]}>
-            Extraido el {new Date(context.extractedAt).toLocaleDateString('es-AR')}
+            Extraido el {formatShortDate(context.extractedAt)}
           </Text>
         ) : null}
       </View>

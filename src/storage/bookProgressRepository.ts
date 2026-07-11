@@ -58,4 +58,10 @@ export const bookProgressRepository = {
       ],
     );
   },
+
+  /** Borra el progreso del libro: la próxima apertura arranca desde el principio. */
+  async resetProgress(bookId: string): Promise<void> {
+    const db = await getDatabase();
+    await db.runAsync('DELETE FROM reading_progress WHERE bookId = ?', [bookId]);
+  },
 };

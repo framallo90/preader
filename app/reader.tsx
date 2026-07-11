@@ -1,8 +1,9 @@
 import Slider from '@react-native-community/slider';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, AppState, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppButton } from '../src/components/AppButton';
@@ -13,6 +14,13 @@ import { useReaderController } from '../src/hooks/useReaderController';
 import { DocumentParseError, getFriendlyParseErrorMessage } from '../src/services/documentParser';
 import { persistBookMetadata } from '../src/services/bookMetadataService';
 import { ensureLocalPdfCopy } from '../src/services/libraryScanService';
+import { documentAudioPlaybackService } from '../src/services/documentAudioPlaybackService';
+import { ServerBookInfo, getBookInfo, isServerConfigured, processBookOnServer } from '../src/services/bardoServerService';
+import { PdfPageList, PdfPageListHandle } from '../src/components/PdfPageList';
+import { buildTextBlocks } from '../src/utils/textBlocks';
+import { getAbsoluteCharIndex, getPositionFromAbsoluteChar } from '../src/utils/documentProgress';
+import { charForPage, pageForChar } from '../src/utils/pageMap';
+import { getDisplayTitle } from '../src/utils/bookDisplay';
 import { extractChapterContext } from '../src/services/claudeService';
 import { getParserForDocument } from '../src/services/parserRegistry';
 import { bookRepository } from '../src/storage/bookRepository';
@@ -73,12 +81,27 @@ function getStatusColors(colors: ThemeColors, tone: StatusTone) {
 }
 
 export default function ReaderScreen() {
-  const { documentId } = useLocalSearchParams<{ documentId?: string }>();
+  const { documentId, mode } = useLocalSearchParams<{ documentId?: string; mode?: string }>();
   const { colors, settings, updateSettings } = useAppSettings();
   const [documentRecord, setDocumentRecord] = useState<Book | null>(null);
   const [parsedDocument, setParsedDocument] = useState<ParsedDocument | null>(null);
   const [savedProgress, setSavedProgress] = useState<ReadingProgress | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [loadingStatus, setLoadingStatus] = useState('Abriendo el documento…');
+  // Dos experiencias sobre la MISMA posición: leer (texto limpio, sin chrome de
+  // audio) o escuchar (reproductor). Si ya hay audio sonando de este libro, se
+  // entra directo en modo audio.
+  // Vista única: SIEMPRE se lee (páginas del PDF o texto) y el audio se
+  // controla con la barra flotante. La vieja "pantalla de escucha" murió:
+  // escuchar mientras ves el libro real es mejor. viewMode queda fijo.
+  const viewMode = 'read' as 'read' | 'listen';
+  // Modo lectura visual (páginas reales del PDF renderizadas por el server).
+  const [serverPageInfo, setServerPageInfo] = useState<ServerBookInfo | null>(null);
+  const [pdfPageForUi, setPdfPageForUi] = useState(0);
+  // Pantalla completa en modo lectura: tocás la página y desaparece el chrome.
+  const [isImmersive, setIsImmersive] = useState(false);
+  const currentPdfPageRef = useRef(0);
+  const pdfListRef = useRef<PdfPageListHandle>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [speechError, setSpeechError] = useState<string | null>(null);
   const [isVoicePickerVisible, setIsVoicePickerVisible] = useState(false);
@@ -103,6 +126,7 @@ export default function ReaderScreen() {
         return;
       }
       setIsLoading(true);
+      setLoadingStatus('Abriendo el documento…');
       setParseError(null);
       setSpeechError(null);
       setIsUsingCachedText(false);
@@ -113,6 +137,8 @@ export default function ReaderScreen() {
         ]);
         if (!book) throw new DocumentParseError('missing_file', 'El documento ya no figura en la base local de recientes.');
         await bookRepository.touchBook(book.id);
+        // Título disponible ya durante la carga (para el header y para saber qué se abre).
+        if (isMounted) setDocumentRecord(book);
         await runtimeStateRepository.armReaderLoadGuard(book.id);
         isGuardArmed = true;
         const cachedParsed = await parsedDocumentRepository.getParsedDocument(book);
@@ -127,6 +153,39 @@ export default function ReaderScreen() {
           setIsUsingCachedText(true);
           return;
         }
+        // Camino preferido: procesar en el server propio (bardo-api). El server
+        // extrae y limpia MUCHO mejor y más rápido que el teléfono, y habilita
+        // libros gigantes que localmente harían OOM. Si falla, fallback local.
+        if (isServerConfigured()) {
+          try {
+            const serverResult = await processBookOnServer(book.uri, book.name, book.type, book.id, (label) => {
+              if (isMounted) setLoadingStatus(label);
+            });
+            const blocks = buildTextBlocks(serverResult.fullText);
+            if (blocks.length > 0) {
+              const chapters = detectChapters(book.id, serverResult.fullText);
+              const parsedFromServer: ParsedDocument = {
+                id: book.id,
+                fileName: book.name,
+                sourceUri: book.uri,
+                fullText: serverResult.fullText,
+                blocks,
+                chapters,
+              };
+              if (chapters.length > 0) await chapterRepository.saveChaptersForBook(book.id, chapters);
+              await parsedDocumentRepository.saveParsedDocument(book, parsedFromServer);
+              if (!isMounted) return;
+              setDocumentRecord(book);
+              setSavedProgress(progress);
+              setParsedDocument(parsedFromServer);
+              return;
+            }
+          } catch {
+            // Server caído, sin red o formato no soportado: se procesa local.
+            if (isMounted) setLoadingStatus('Servidor no disponible, procesando en el teléfono…');
+          }
+        }
+
         // Libros descubiertos por escaneo (content://): el extractor PDF
         // nativo necesita file://, así que se materializa una copia local
         // la primera vez y se actualiza la URI del libro.
@@ -196,6 +255,91 @@ export default function ReaderScreen() {
     onProgressChange: persistProgress,
   });
 
+  // Detiene y descarga el audio (cierra lo que se está escuchando).
+  const handleStop = useCallback(async () => {
+    await documentAudioPlaybackService.stopAndUnload();
+  }, []);
+
+  // Estable (prop del visor memoizado): alterna pantalla completa.
+  const handleToggleImmersive = useCallback(() => {
+    setIsImmersive((v) => !v);
+  }, []);
+
+  // Si es un PDF procesado por el server, hay lector visual de páginas.
+  useEffect(() => {
+    if (!documentRecord || !parsedDocument) return;
+    const isPdf = documentRecord.type === 'application/pdf' || /\.pdf$/i.test(documentRecord.name);
+    if (!isPdf) {
+      setServerPageInfo(null);
+      return;
+    }
+    let mounted = true;
+    void getBookInfo(documentRecord.id).then((info) => {
+      if (mounted) setServerPageInfo(info);
+    });
+    return () => { mounted = false; };
+  }, [documentRecord, parsedDocument]);
+
+  // "Escuchar" desde el Home: arranca la voz solo (una vez, al estar cargado).
+  const autoListenRef = useRef(false);
+  useEffect(() => {
+    if (mode !== 'listen' || autoListenRef.current || !parsedDocument || isLoading) return;
+    autoListenRef.current = true;
+    void reader.play();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode, parsedDocument, isLoading]);
+
+  // Página inicial: donde quedó la lectura. Con pageOffsets el mapeo es exacto;
+  // sin ellos (paquete viejo) cae al proporcional.
+  const initialPdfPage = useMemo(() => {
+    if (!serverPageInfo || serverPageInfo.pages <= 0) return 0;
+    if (serverPageInfo.pageOffsets && parsedDocument) {
+      const abs = getAbsoluteCharIndex(
+        parsedDocument,
+        savedProgress?.blockIndex ?? 0,
+        savedProgress?.charIndex ?? 0,
+      );
+      return pageForChar(abs, serverPageInfo.pageOffsets);
+    }
+    const pct = savedProgress?.percentage ?? 0;
+    const page = Math.floor((pct / 100) * serverPageInfo.pages);
+    return Math.min(serverPageInfo.pages - 1, Math.max(0, page));
+  }, [serverPageInfo, savedProgress, parsedDocument]);
+
+  useEffect(() => {
+    currentPdfPageRef.current = initialPdfPage;
+    setPdfPageForUi(initialPdfPage);
+  }, [initialPdfPage]);
+
+  // Ref del estado de reproducción para usar en callbacks sin desestabilizarlos.
+  // Cubre también el hueco entre tramos (isPreparing): en ese momento el audio
+  // "sigue" aunque isPlaying sea false, y el scroll no debe pisar la posición.
+  const isPlayingRef = useRef(false);
+  useEffect(() => {
+    isPlayingRef.current = reader.isPlaying || reader.isPreparing;
+  }, [reader.isPlaying, reader.isPreparing]);
+
+  // Scroll de páginas → progreso. IMPORTANTE: pasa por reader.syncPosition (el
+  // controlador) y no por un write directo — al salir del lector, el controlador
+  // hace un guardado final con SU posición, y si no está sincronizada pisa el
+  // progreso del scroll (bug del "siempre vuelve a la página vieja").
+  // Mientras SUENA el audio, la posición la manda el audio (no el scroll): así
+  // el auto-seguimiento no pelea con la voz.
+  const handlePdfPageChange = useCallback(
+    (pageIndex: number) => {
+      currentPdfPageRef.current = pageIndex;
+      setPdfPageForUi(pageIndex);
+      if (isPlayingRef.current) return;
+      if (!parsedDocument || !serverPageInfo || serverPageInfo.pages <= 0) return;
+      const abs = serverPageInfo.pageOffsets
+        ? charForPage(pageIndex, serverPageInfo.pageOffsets, parsedDocument.fullText.length)
+        : Math.round(((pageIndex + 0.5) / serverPageInfo.pages) * parsedDocument.fullText.length);
+      const pos = getPositionFromAbsoluteChar(parsedDocument, abs);
+      void reader.syncPosition(pos.blockIndex, pos.charIndex);
+    },
+    [parsedDocument, serverPageInfo, reader.syncPosition],
+  );
+
   const currentAbsoluteChar = useMemo(() => {
     if (!parsedDocument) return 0;
     const block = parsedDocument.blocks[reader.currentBlockIndex];
@@ -210,6 +354,39 @@ export default function ReaderScreen() {
       ) ?? parsedDocument.chapters[parsedDocument.chapters.length - 1]
     );
   }, [parsedDocument, currentAbsoluteChar]);
+
+  // Página por donde va la VOZ (para marcarla y seguirla mientras suena).
+  // Adelanto (~4 s de habla): la posición interpolada del audio corre unos
+  // segundos DETRÁS de la voz real (pausas + silencios del WAV), así que sin
+  // esto la hoja pasaba tarde. Con el adelanto, pasa apenas la voz llega.
+  const AUDIO_PAGE_LOOKAHEAD_CHARS = 80;
+
+  const audioPage = useMemo(() => {
+    if (!serverPageInfo || serverPageInfo.pages <= 0) return null;
+    if (!parsedDocument || parsedDocument.fullText.length === 0) return null;
+    const biased = Math.min(parsedDocument.fullText.length, currentAbsoluteChar + AUDIO_PAGE_LOOKAHEAD_CHARS);
+    if (serverPageInfo.pageOffsets) {
+      return pageForChar(biased, serverPageInfo.pageOffsets);
+    }
+    const page = Math.floor((biased / parsedDocument.fullText.length) * serverPageInfo.pages);
+    return Math.min(serverPageInfo.pages - 1, Math.max(0, page));
+  }, [serverPageInfo, parsedDocument, currentAbsoluteChar]);
+
+  // Auto-seguimiento: si estabas en la página que la voz leía, pasa de página
+  // con ella. Si te fuiste a mirar otra parte, no te molesta.
+  const prevAudioPageRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (audioPage === null || !reader.isPlaying) {
+      prevAudioPageRef.current = audioPage;
+      return;
+    }
+    const prev = prevAudioPageRef.current;
+    prevAudioPageRef.current = audioPage;
+    if (prev === null || prev === audioPage) return;
+    if (currentPdfPageRef.current === prev) {
+      pdfListRef.current?.scrollToPage(audioPage);
+    }
+  }, [audioPage, reader.isPlaying]);
 
   useEffect(() => {
     if (!currentChapter || !parsedDocument || !documentRecord) return;
@@ -318,12 +495,15 @@ export default function ReaderScreen() {
 
   useEffect(() => {
     const shouldKeepAwake = settings.keepScreenAwakeWhileReading && reader.isPlaying;
-    if (shouldKeepAwake) {
-      void activateKeepAwakeAsync(KEEP_AWAKE_TAG);
+    // Sólo activamos con la app en primer plano: si no, el módulo nativo rechaza
+    // con "current activity no longer available" y ensucia la consola. El audio
+    // sigue igual en background (expo-audio), así que no se pierde nada.
+    if (shouldKeepAwake && AppState.currentState === 'active') {
+      void activateKeepAwakeAsync(KEEP_AWAKE_TAG).catch(() => {});
     } else {
-      void deactivateKeepAwake(KEEP_AWAKE_TAG);
+      void deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
     }
-    return () => { void deactivateKeepAwake(KEEP_AWAKE_TAG); };
+    return () => { void deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {}); };
   }, [reader.isPlaying, settings.keepScreenAwakeWhileReading]);
 
   useEffect(() => {
@@ -437,16 +617,16 @@ export default function ReaderScreen() {
   useEffect(() => {
     return () => {
       void shutdownRef.current();
-      void deactivateKeepAwake(KEEP_AWAKE_TAG);
+      void deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
     };
   }, []);
 
   if (isLoading) {
     return (
       <SafeAreaView style={[styles.centeredContainer, { backgroundColor: colors.background }]}>
-        <Stack.Screen options={{ title: 'Lector' }} />
+        <Stack.Screen options={{ title: documentRecord ? getDisplayTitle(documentRecord) : 'Lector' }} />
         <ActivityIndicator color={colors.primary} size="large" />
-        <Text style={[styles.loadingText, { color: colors.text }]}>Abriendo el documento...</Text>
+        <Text style={[styles.loadingText, { color: colors.text }]}>{loadingStatus}</Text>
       </SafeAreaView>
     );
   }
@@ -454,7 +634,7 @@ export default function ReaderScreen() {
   if (parseError || !parsedDocument || !documentRecord) {
     return (
       <SafeAreaView style={[styles.centeredContainer, { backgroundColor: colors.background }]}>
-        <Stack.Screen options={{ title: 'Lector' }} />
+        <Stack.Screen options={{ title: documentRecord ? getDisplayTitle(documentRecord) : 'Lector' }} />
         <View style={[styles.errorCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
           <View style={[styles.statusBadge, { backgroundColor: statusColors.backgroundColor, borderColor: statusColors.borderColor }]}>
             <Text style={[styles.statusBadgeText, { color: statusColors.textColor }]}>{readerStatus.label}</Text>
@@ -475,8 +655,15 @@ export default function ReaderScreen() {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-      <Stack.Screen options={{ title: 'Lector' }} />
+      <StatusBar hidden={isImmersive} />
+      <Stack.Screen
+        options={{
+          title: documentRecord ? getDisplayTitle(documentRecord) : 'Lector',
+          headerShown: !isImmersive,
+        }}
+      />
 
+      {viewMode === 'listen' ? (
       <View style={[styles.summaryCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
         <View style={styles.summaryHeader}>
           <View style={styles.summaryCopy}>
@@ -517,42 +704,32 @@ export default function ReaderScreen() {
           </View>
         ) : null}
       </View>
-
-      {chapterBanner && !reader.isPlaying ? (
-        <TouchableOpacity
-          style={[styles.chapterBanner, { backgroundColor: colors.accent, borderColor: colors.primary }]}
-          onPress={() => setChapterBanner(null)}
-          activeOpacity={0.85}
-        >
-          <View style={styles.chapterBannerHeader}>
-            <Text style={[styles.chapterBannerTitle, { color: colors.text }]}>{chapterBanner.title}</Text>
-            {chapterBanner.povCharacter ? (
-              <View style={[styles.povBadge, { backgroundColor: colors.primary }]}>
-                <Text style={[styles.povBadgeText, { color: colors.background }]}>POV</Text>
-              </View>
-            ) : null}
-          </View>
-          {chapterBanner.beforeSummary ? (
-            <Text style={[styles.chapterBannerBody, { color: colors.textMuted }]} numberOfLines={3}>
-              {chapterBanner.beforeSummary}
-            </Text>
-          ) : null}
-          <View style={styles.chapterBannerFooter}>
-            <Text style={[styles.chapterBannerDismiss, { color: colors.textMuted }]}>Toca para cerrar</Text>
-            {chapterBanner.previousChapterId && chapterBanner.beforeSummary ? (
-              <TouchableOpacity onPress={() => {
-                const prevId = chapterBanner.previousChapterId;
-                setChapterBanner(null);
-                router.push(`/chapter-context?chapterId=${prevId}`);
-              }}>
-                <Text style={[styles.chapterBannerLink, { color: colors.primary }]}>Ver contexto completo →</Text>
-              </TouchableOpacity>
-            ) : null}
-          </View>
-        </TouchableOpacity>
       ) : null}
 
-      <View style={[styles.readerStage, { backgroundColor: colors.readerSurface, borderColor: colors.border }]}>
+      {/* El recap de capítulo ya no aparece solo (era invasivo y se cerraba con
+          cualquier toque): ahora vive a demanda en "Más ajustes → Contexto". La
+          extracción en background sigue igual (alimenta la wiki y el chat). */}
+
+      <View
+        style={[
+          styles.readerStage,
+          { backgroundColor: colors.readerSurface, borderColor: colors.border },
+          viewMode === 'read' && isImmersive ? styles.readerStageImmersive : null,
+        ]}
+      >
+        {viewMode === 'read' && serverPageInfo ? (
+          <PdfPageList
+            ref={pdfListRef}
+            bookId={documentRecord.id}
+            pageCount={serverPageInfo.pages}
+            pageAspect={serverPageInfo.pageAspect}
+            initialPage={initialPdfPage}
+            colors={colors}
+            onPageChange={handlePdfPageChange}
+            onTap={handleToggleImmersive}
+            speakingPage={reader.isPlaying ? audioPage : null}
+          />
+        ) : (
         <FlatList
           style={styles.readerList}
           ref={listRef}
@@ -576,8 +753,97 @@ export default function ReaderScreen() {
             />
           )}
         />
+        )}
+        {viewMode === 'read' && serverPageInfo && serverPageInfo.pages > 0 && !isImmersive ? (
+          // Scrubber semi-transparente: aparece con el chrome (tap) y permite
+          // saltar páginas viendo la numeración.
+          <View style={[styles.pageScrubber, { backgroundColor: colors.surface }]}>
+            <Text style={[styles.pageScrubberLabel, { color: colors.text }]}>
+              {pdfPageForUi + 1} / {serverPageInfo.pages}
+            </Text>
+            <Slider
+              style={styles.pageScrubberSlider}
+              minimumValue={0}
+              maximumValue={Math.max(serverPageInfo.pages - 1, 0)}
+              step={1}
+              value={pdfPageForUi}
+              minimumTrackTintColor={colors.primary}
+              maximumTrackTintColor={colors.border}
+              thumbTintColor={colors.primary}
+              onSlidingComplete={(value) => {
+                pdfListRef.current?.scrollToPage(Math.round(value));
+              }}
+            />
+          </View>
+        ) : null}
+        {viewMode === 'read' && (isImmersive || !serverPageInfo) ? (
+          <View pointerEvents="none" style={styles.readOverlay}>
+            <Text style={styles.readOverlayText}>
+              {serverPageInfo && serverPageInfo.pages > 0
+                ? `${Math.round(((pdfPageForUi + 1) / serverPageInfo.pages) * 100)}% · pág. ${pdfPageForUi + 1}/${serverPageInfo.pages}`
+                : `${reader.progressPercentage.toFixed(0)}%`}
+            </Text>
+          </View>
+        ) : null}
+
+        {/* Chip: por dónde va la voz (tap = saltar a esa página). */}
+        {reader.isPlaying && audioPage !== null && audioPage !== pdfPageForUi ? (
+          <TouchableOpacity
+            style={styles.audioPageChip}
+            onPress={() => pdfListRef.current?.scrollToPage(audioPage)}
+          >
+            <Text style={styles.audioPageChipText}>🔊 pág. {audioPage + 1} →</Text>
+          </TouchableOpacity>
+        ) : null}
+
+        {/* Controles de audio: parar · atrás · adelante (el play vive en el FAB).
+            Visibles con el chrome (tap) o mientras suena. */}
+        {!isImmersive || reader.isPlaying || reader.isPreparing ? (
+          <View style={styles.audioBar} pointerEvents="box-none">
+            {speechError ? (
+              <Text style={styles.audioBarError} numberOfLines={2}>{speechError}</Text>
+            ) : null}
+            <View style={styles.audioBarRow}>
+              <AppButton
+                label="■"
+                onPress={() => { void handleStop(); }}
+                variant="ghost"
+                colors={colors}
+                compact
+                labelStyle={styles.audioBarGhostLabel}
+              />
+              <AppButton
+                label="↩ 15"
+                onPress={() => { void documentAudioPlaybackService.seekBy(-15); }}
+                variant="secondary"
+                colors={colors}
+                compact
+              />
+              <AppButton
+                label="15 ↪"
+                onPress={() => { void documentAudioPlaybackService.seekBy(15); }}
+                variant="secondary"
+                colors={colors}
+                compact
+              />
+            </View>
+          </View>
+        ) : null}
+
+        {/* Play grande, SIEMPRE visible (el viejo "Escuchar", ahora flotante). */}
+        <TouchableOpacity
+          style={[styles.playFab, { backgroundColor: colors.primary }]}
+          onPress={() => { void handleTogglePlayback(); }}
+          disabled={reader.isPreparing}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.playFabIcon}>
+            {reader.isPlaying ? '❚❚' : reader.isPreparing ? '…' : '▶'}
+          </Text>
+        </TouchableOpacity>
       </View>
 
+      {viewMode === 'listen' ? (
       <View style={[styles.controlPanel, { backgroundColor: colors.surface, borderColor: colors.border }]}>
         <View style={styles.controlsRow}>
           <View style={styles.sideControl}>
@@ -601,11 +867,20 @@ export default function ReaderScreen() {
         </View>
 
         <View style={styles.controlsFooter}>
-          {activeBlock ? (
-            <Text style={[styles.resumeText, { color: colors.textMuted }]} numberOfLines={1}>
-              Bloque {activeBlock.index + 1}{reader.currentCharIndex > 0 ? `, pos ${reader.currentCharIndex}` : ''}
-            </Text>
-          ) : <View />}
+          <AppButton
+            label="Detener"
+            onPress={() => { void handleStop(); }}
+            variant="ghost"
+            colors={colors}
+            compact
+          />
+          <AppButton
+            label="↩ 30 s"
+            onPress={() => { void documentAudioPlaybackService.rewindBy(30); }}
+            variant="secondary"
+            colors={colors}
+            compact
+          />
           <AppButton
             label={areSecondaryControlsVisible ? 'Ocultar ajustes' : 'Mas ajustes'}
             onPress={() => setAreSecondaryControlsVisible((c) => !c)}
@@ -627,6 +902,25 @@ export default function ReaderScreen() {
                 compact
               />
             </View>
+
+            {currentChapter && (parsedDocument.chapters?.length ?? 0) > 0 ? (
+              <View style={styles.settingRow}>
+                <Text style={[styles.settingLabel, { color: colors.textMuted }]}>Contexto</Text>
+                <AppButton
+                  label="¿Qué pasó antes?"
+                  onPress={() => {
+                    const prev = parsedDocument.chapters?.find(
+                      (ch) => ch.orderIndex === currentChapter.orderIndex - 1,
+                    );
+                    if (prev) router.push(`/chapter-context?chapterId=${prev.id}`);
+                  }}
+                  variant="secondary"
+                  colors={colors}
+                  compact
+                  disabled={currentChapter.orderIndex === 0}
+                />
+              </View>
+            ) : null}
 
             {hasChapters ? (
               <View style={styles.settingRow}>
@@ -684,6 +978,7 @@ export default function ReaderScreen() {
           </View>
         ) : null}
       </View>
+      ) : null}
 
       <OptionPickerModal
         title="Elige una voz"
@@ -736,9 +1031,84 @@ const styles = StyleSheet.create({
   chapterBannerDismiss: { fontSize: 11 },
   chapterBannerLink: { fontSize: 12, fontWeight: '600' },
   readerStage: { flex: 1, marginHorizontal: 10, marginTop: 10, marginBottom: 10, borderWidth: 1, borderRadius: 26, overflow: 'hidden' },
+  readerStageImmersive: { marginHorizontal: 0, marginTop: 0, marginBottom: 0, borderWidth: 0, borderRadius: 0 },
   readerList: { flex: 1 },
   listContent: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 24, gap: 4 },
   controlPanel: { borderTopWidth: 1, paddingHorizontal: 14, paddingTop: 10, paddingBottom: 10, gap: 8 },
+  modeToggle: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 12, paddingVertical: 6 },
+  modeToggleText: { fontSize: 13, fontWeight: '700' },
+  // Indicador de avance flotante, casi transparente: informa sin molestar.
+  // Autocontenido (oscuro + blanco): no se pierde sobre páginas blancas.
+  readOverlay: {
+    position: 'absolute',
+    top: 8,
+    right: 12,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 3,
+    backgroundColor: 'rgba(20,20,20,0.5)',
+  },
+  readOverlayText: { fontSize: 11, fontWeight: '600', color: '#ffffff' },
+  audioBar: { position: 'absolute', left: 12, right: 86, bottom: 12, alignItems: 'center', gap: 6 },
+  playFab: {
+    position: 'absolute',
+    right: 14,
+    bottom: 12,
+    width: 58,
+    height: 58,
+    borderRadius: 29,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOpacity: 0.3,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 3 },
+  },
+  playFabIcon: { fontSize: 22, color: '#ffffff', fontWeight: '700' },
+  audioPageChip: {
+    position: 'absolute',
+    bottom: 80,
+    right: 14,
+    backgroundColor: 'rgba(20,20,20,0.65)',
+    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+  },
+  audioPageChipText: { color: '#ffffff', fontSize: 12, fontWeight: '600' },
+  audioBarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(20,20,20,0.6)',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  audioBarMain: { minWidth: 128 },
+  audioBarGhostLabel: { color: '#ffffff' },
+  audioBarError: {
+    color: '#ffffff',
+    backgroundColor: 'rgba(160,40,30,0.9)',
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    fontSize: 12,
+  },
+  pageScrubber: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    opacity: 0.88,
+  },
+  pageScrubberLabel: { fontSize: 12, fontWeight: '700', minWidth: 64 },
+  pageScrubberSlider: { flex: 1, height: 32 },
   controlsRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   sideControl: { flex: 0.9 },
   mainControl: { flex: 1.2 },

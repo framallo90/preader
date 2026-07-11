@@ -11,6 +11,8 @@ type RecentDocumentCardProps = {
   progress?: number; // 0-100, undefined = sin progreso guardado
   onOpen: () => void;
   onDelete: () => void;
+  /** Mantener apretado: menú de opciones (reiniciar progreso, etc.). */
+  onLongPress?: () => void;
 };
 
 // Paleta editorial para portadas generadas (tonos del brand board).
@@ -37,6 +39,7 @@ export function RecentDocumentCard({
   progress,
   onOpen,
   onDelete,
+  onLongPress,
 }: RecentDocumentCardProps) {
   const hasProgress = progress !== undefined && progress > 0;
   const displayTitle = document.title ?? document.name;
@@ -44,6 +47,7 @@ export function RecentDocumentCard({
   return (
     <Pressable
       onPress={onOpen}
+      onLongPress={onLongPress}
       style={[
         styles.card,
         {

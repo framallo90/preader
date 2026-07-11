@@ -5,6 +5,14 @@ import * as FileSystem from 'expo-file-system/legacy';
 const FINGERPRINT_SAMPLE_BYTES = 256 * 1024;
 
 /**
+ * No leemos el contenido de archivos más grandes que esto para la huella.
+ * En content:// de SAF la lectura parcial (length) suele ignorarse y se lee el
+ * archivo ENTERO en memoria; un PDF grande haría OOM y cerraría la app durante
+ * el escaneo de la carpeta. Los archivos grandes usan huella por nombre+tamaño.
+ */
+const MAX_FINGERPRINT_READ_BYTES = 8 * 1024 * 1024;
+
+/**
  * Huella de contenido del libro (estilo ReadEra): hash de los primeros
  * 256 KB del archivo + su tamaño. Es estable ante renombres, movidas y
  * re-descargas, así que el progreso, los capítulos, el contexto y el
@@ -17,24 +25,26 @@ export async function createBookFingerprint(
 ): Promise<string> {
   let sample = '';
 
-  try {
-    sample = await FileSystem.readAsStringAsync(uri, {
-      encoding: FileSystem.EncodingType.Base64,
-      position: 0,
-      length: FINGERPRINT_SAMPLE_BYTES,
-    });
-  } catch {
-    // Algunos content:// de SAF no soportan lectura parcial.
-    // Para archivos chicos leemos todo; para grandes usamos el fallback.
-    if (size != null && size > 0 && size <= 8 * 1024 * 1024) {
-      try {
-        const whole = await FileSystem.readAsStringAsync(uri, {
-          encoding: FileSystem.EncodingType.Base64,
-        });
-        sample = whole.slice(0, Math.ceil((FINGERPRINT_SAMPLE_BYTES * 4) / 3));
-      } catch {
-        sample = '';
+  // Solo leemos contenido de archivos razonablemente chicos. Si el archivo es
+  // grande (o de tamaño desconocido), NO leemos nada y usamos huella por
+  // nombre+tamaño: evita el OOM que cerraba la app al escanear carpetas con
+  // libros enormes. La lectura parcial no es confiable en content:// de SAF.
+  const canReadContent = size != null && size > 0 && size <= MAX_FINGERPRINT_READ_BYTES;
+
+  if (canReadContent) {
+    try {
+      sample = await FileSystem.readAsStringAsync(uri, {
+        encoding: FileSystem.EncodingType.Base64,
+        position: 0,
+        length: FINGERPRINT_SAMPLE_BYTES,
+      });
+      // Si SAF ignoró el length y leyó de más, recortamos para no hashear todo.
+      const maxBase64 = Math.ceil((FINGERPRINT_SAMPLE_BYTES * 4) / 3) + 4;
+      if (sample.length > maxBase64) {
+        sample = sample.slice(0, maxBase64);
       }
+    } catch {
+      sample = '';
     }
   }
 

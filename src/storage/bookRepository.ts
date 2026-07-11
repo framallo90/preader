@@ -1,4 +1,5 @@
 import { getDatabase } from './database';
+import { parsedDocumentRepository } from './parsedDocumentRepository';
 import { Book } from '../types/storage';
 
 type BookRow = {
@@ -142,7 +143,8 @@ export const bookRepository = {
     // CASCADE elimina chapters; reading_progress y parsed_document_cache
     // no tienen FK, así que se limpian explícitamente para no dejar huérfanos.
     await db.runAsync('DELETE FROM reading_progress WHERE bookId = ?', [bookId]);
-    await db.runAsync('DELETE FROM parsed_document_cache WHERE bookId = ?', [bookId]);
+    // Limpia el caché parseado en SQLite y sus archivos en disco (libros grandes).
+    await parsedDocumentRepository.removeParsedDocument(bookId);
     await db.runAsync('DELETE FROM books WHERE id = ?', [bookId]);
   },
 };
