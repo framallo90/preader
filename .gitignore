@@ -43,3 +43,8 @@ src/config/apiKeys.ts
 # generated native folders
 /ios
 /android
+modules/**/android/.gradle/
+modules/**/android/build/
+
+# datos de la app exportados a mano, no es parte del código
+/IntelliReader/
