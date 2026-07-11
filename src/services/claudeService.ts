@@ -1,15 +1,22 @@
 /**
  * claudeService.ts
  *
- * Todas las llamadas a Claude pasan por la Edge Function de Supabase.
- * La API key NUNCA está en el APK — vive en los secrets de la función.
- * La función verifica premium antes de hacer el proxy.
+ * En modo uso propio, el "rol de Claude" (preprocesado para TTS, contexto de
+ * capítulos y chat) lo cubre un LLM open vía Hugging Face Inference Providers,
+ * con el endpoint OpenAI-compatible del router. El token vive en apiKeys.ts
+ * (gitignoreado), nunca en el repo.
+ *
+ * El nombre del archivo se mantiene por compatibilidad con los imports existentes.
  */
 
-import { supabase } from '../config/supabase';
+import { HF_TOKEN } from '../config/apiKeys';
 
-const MODEL = 'claude-haiku-4-5-20251001';
-const CHAT_MODEL = 'claude-sonnet-4-5';
+const HF_CHAT_URL = 'https://router.huggingface.co/v1/chat/completions';
+
+// Modelo para preprocesado/contexto (tareas de edición y extracción).
+const MODEL = 'meta-llama/Llama-3.3-70B-Instruct';
+// Modelo para el chat compañero (mismo por ahora; se puede subir/bajar).
+const CHAT_MODEL = 'meta-llama/Llama-3.3-70B-Instruct';
 
 export type ChatMessage = {
   role: 'user' | 'assistant';
@@ -23,9 +30,9 @@ export type ChapterContextResult = {
   keyEvents: string[];
 };
 
-type ClaudeApiResponse = {
-  content: Array<{ type: string; text: string }>;
-  error?: string;
+type ChatCompletionResponse = {
+  choices?: Array<{ message?: { content?: string } }>;
+  error?: unknown;
 };
 
 async function callClaude(
@@ -34,21 +41,27 @@ async function callClaude(
   model = MODEL,
   maxTokens = 1024,
 ): Promise<string> {
-  const { data, error } = await supabase.functions.invoke('claude', {
-    body: {
+  const response = await fetch(HF_CHAT_URL, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${HF_TOKEN}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
       model,
       max_tokens: maxTokens,
-      system: systemPrompt,
-      messages,
-    },
+      // El endpoint es OpenAI-compatible: el system va como primer mensaje.
+      messages: [{ role: 'system', content: systemPrompt }, ...messages],
+    }),
   });
 
-  if (error) throw new Error(`Claude proxy error: ${error.message}`);
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '');
+    throw new Error(`LLM proxy error ${response.status}: ${detail.slice(0, 200)}`);
+  }
 
-  const response = data as ClaudeApiResponse;
-  if (response.error) throw new Error(`Claude API error: ${response.error}`);
-
-  return response.content?.[0]?.text ?? '';
+  const data = (await response.json()) as ChatCompletionResponse;
+  return data.choices?.[0]?.message?.content ?? '';
 }
 
 /**

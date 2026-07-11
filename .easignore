@@ -1,0 +1,45 @@
+# .easignore — controla qué se sube al build de EAS.
+# Si existe, EAS lo usa en lugar de .gitignore. Es un espejo de .gitignore
+# PERO deja subir src/config/apiKeys.ts (que git ignora), porque el build de
+# uso propio necesita las keys embebidas. NO commitear las keys al repo.
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+dist-*/
+web-build/
+expo-env.d.ts
+
+# Native
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macOS
+.DS_Store
+*.pem
+
+# local env files
+.env*.local
+
+# typescript
+*.tsbuildinfo
+
+# generated native folders
+/ios
+/android

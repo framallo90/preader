@@ -14,6 +14,7 @@ import { Screen } from '../src/components/Screen';
 import { useAppSettings } from '../src/hooks/useAppSettings';
 import { authService } from '../src/services/authService';
 import { premiumService, PremiumListener } from '../src/services/premiumService';
+import { PERSONAL_MODE } from '../src/config/appMode';
 import { supabase } from '../src/config/supabase';
 
 type Plan = 'monthly' | 'yearly';
@@ -44,6 +45,8 @@ export default function SubscriptionScreen() {
   }, []);
 
   const handleSubscribe = async (plan: Plan) => {
+    // En modo uso propio no hay pagos ni login (ya es premium).
+    if (PERSONAL_MODE) return;
     // Sin cuenta: el pago necesita identidad — primero login.
     const session = await authService.getSession();
     if (!session) {

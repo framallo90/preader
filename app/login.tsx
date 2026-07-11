@@ -1,4 +1,4 @@
-import { router } from 'expo-router';
+import { Redirect, router } from 'expo-router';
 import { useState } from 'react';
 import {
   Alert,
@@ -15,6 +15,7 @@ import {
 import { AppButton } from '../src/components/AppButton';
 import { useAppSettings } from '../src/hooks/useAppSettings';
 import { authService } from '../src/services/authService';
+import { PERSONAL_MODE } from '../src/config/appMode';
 
 type Mode = 'login' | 'register' | 'reset';
 
@@ -24,6 +25,12 @@ export default function LoginScreen() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+
+  // Modo uso propio: no hay cuentas ni login. Si algo cae en /login
+  // (deep link, estado de navegación restaurado, etc.), se vuelve a Home.
+  if (PERSONAL_MODE) {
+    return <Redirect href="/" />;
+  }
 
   const handleSubmit = async () => {
     const trimmedEmail = email.trim().toLowerCase();

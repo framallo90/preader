@@ -1,4 +1,5 @@
 import { authService, Profile } from './authService';
+import { PERSONAL_MODE } from '../config/appMode';
 
 export type PremiumListener = (isPremium: boolean) => void;
 
@@ -8,16 +9,20 @@ export type PremiumListener = (isPremium: boolean) => void;
  * actualiza la tabla profiles → Supabase Realtime notifica → aquí se refleja).
  */
 class PremiumService {
-  private _isPremium = false;
+  // En modo personal la app es de uso propio: premium siempre activo, sin login.
+  private _isPremium = PERSONAL_MODE;
   private _profile: Profile | null = null;
   private _listeners = new Set<PremiumListener>();
   private _unsubscribeRealtime: (() => void) | null = null;
   private _activeUserId: string | null = null;
 
-  get isPremium() { return this._isPremium; }
+  get isPremium() { return PERSONAL_MODE || this._isPremium; }
   get profile() { return this._profile; }
 
   async initialize(userId: string) {
+    // Uso propio: nada de Supabase/realtime, premium ya está activo.
+    if (PERSONAL_MODE) return;
+
     // Evita suscripciones realtime duplicadas si se llama más de una vez
     // para el mismo usuario (p. ej. eventos repetidos de auth).
     if (this._activeUserId === userId && this._unsubscribeRealtime) {
@@ -43,6 +48,9 @@ class PremiumService {
   }
 
   teardown() {
+    // En modo personal no hay logout que baje el premium.
+    if (PERSONAL_MODE) return;
+
     this._unsubscribeRealtime?.();
     this._unsubscribeRealtime = null;
     this._activeUserId = null;
