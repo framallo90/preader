@@ -154,10 +154,12 @@ app.get('/books/:id/page/:n', async (req, res) => {
     if (!existsSync(cached)) {
       const source = readdirSync(dir).find((f) => f.startsWith('source.'));
       if (!source) return res.status(404).json({ error: 'source_missing' });
-      // Render atómico: escribe a un tmp y recién al terminar lo renombra al
-      // path final. Si el proceso muere a mitad (timeout), nunca queda un PNG
-      // parcial servido para siempre con Cache-Control immutable.
-      const tmp = `${cached}.tmp-${process.pid}-${pageIndex}`;
+      // Render atómico: escribe a un tmp ÚNICO por request y recién al terminar
+      // lo renombra al path final. Si el proceso muere a mitad (timeout), nunca
+      // queda un PNG parcial servido para siempre con Cache-Control immutable.
+      // El sufijo aleatorio evita que dos renders concurrentes de la MISMA
+      // página+ancho pisen el mismo tmp (pid y pageIndex no alcanzaban).
+      const tmp = `${cached}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
       await acquireRenderSlot();
       try {
         await execFileAsync(
