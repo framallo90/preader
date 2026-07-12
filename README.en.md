@@ -190,8 +190,6 @@ src/
     pageMap.ts            # pageForChar / charForPage (voice↔page sync)
     *.test.ts              # Vitest tests for the pure functions above
 server/                  # Own backend (see architecture section)
-modules/
-  voice-synthesizer/     # Legacy native module, unused
 ```
 
 ---
