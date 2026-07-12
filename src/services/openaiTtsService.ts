@@ -54,8 +54,9 @@ async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: numbe
  */
 async function downloadWithTimeout(url: string, dest: string, timeoutMs: number) {
   let timedOut = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
-    setTimeout(() => {
+    timer = setTimeout(() => {
       timedOut = true;
       reject(new Error(`La descarga del audio tardó demasiado (>${Math.round(timeoutMs / 1000)}s).`));
     }, timeoutMs);
@@ -63,8 +64,12 @@ async function downloadWithTimeout(url: string, dest: string, timeoutMs: number)
   try {
     return await Promise.race([FileSystem.downloadAsync(url, dest), timeout]);
   } catch (error) {
+    // La descarga nativa puede seguir viva y escribir dest tarde: lo borramos
+    // para no dejar (ni servir luego) un WAV parcial cacheado.
     if (timedOut) await FileSystem.deleteAsync(dest, { idempotent: true }).catch(() => {});
     throw error;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

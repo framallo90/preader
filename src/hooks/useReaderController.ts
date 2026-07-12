@@ -25,7 +25,7 @@ type UseReaderControllerParams = {
 function buildMetadata(document: ParsedDocument) {
   return {
     title: document.fileName,
-    artist: 'PDF Voice Reader',
+    artist: 'Bardo',
   };
 }
 

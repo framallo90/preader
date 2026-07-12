@@ -72,6 +72,11 @@ class DocumentAudioPlaybackService {
   private activeSourceKey: string | null = null;
   private activeDocument: ParsedDocument | null = null;
   private activeChunks: SynthesisChunk[] = [];
+  // Cache de tramos por documento: buildSynthesisChunks es determinista pero
+  // caro (recorre los 2.5M chars). Sin esto se recalculaba en CADA avance de
+  // tramo, causando un hitch audible en cada frontera.
+  private chunksCacheDocId: string | null = null;
+  private chunksCache: SynthesisChunk[] = [];
   private activeChunkIndex = 0;
   private activePlaybackRate = 1;
   private activeVoiceId: string = DEFAULT_VOICE;
@@ -143,6 +148,10 @@ class DocumentAudioPlaybackService {
       chunkCount: this.activeChunks.length,
       chunkStartChar: activeChunk?.startChar ?? 0,
       chunkEndChar: activeChunk?.endChar ?? 0,
+      // Invariante: si YA está sonando, no puede seguir "preparando". Cierra de
+      // raíz todos los caminos donde isPreparing quedaba pegado (prefetch en
+      // vuelo reusado, guard de advancingPromise) y congelaba el FAB en "…".
+      ...(status.playing ? { isPreparing: false } : null),
     });
 
     // Forzamos persistencia solo al terminar o en la TRANSICIÓN a pausa,
@@ -280,7 +289,11 @@ class DocumentAudioPlaybackService {
     if (!this.isSessionActive(sessionId)) return null;
 
     this.activeDocument = document;
-    this.activeChunks = buildSynthesisChunks(document.fullText);
+    if (this.chunksCacheDocId !== document.id) {
+      this.chunksCache = buildSynthesisChunks(document.fullText);
+      this.chunksCacheDocId = document.id;
+    }
+    this.activeChunks = this.chunksCache;
 
     if (this.activeChunks.length === 0) throw new Error('No se pudieron preparar tramos de audio.');
 
@@ -336,7 +349,13 @@ class DocumentAudioPlaybackService {
 
   private async advanceToNextChunk() {
     console.log('[audio] avanzando de tramo', this.activeChunkIndex, '->', this.activeChunkIndex + 1);
-    if (this.advancingPromise || !this.activeDocument) return;
+    // Si ya hay un avance en curso, o no hay documento, salimos — pero soltando
+    // el "Preparando…" que el caller (p.ej. seekBy) pudo haber seteado, para que
+    // el FAB no quede congelado en "…".
+    if (this.advancingPromise || !this.activeDocument) {
+      if (this.snapshot.isPreparing && this.snapshot.isPlaying) this.updateSnapshot({ isPreparing: false });
+      return;
+    }
     const nextChunk = this.activeChunks[this.activeChunkIndex + 1];
     if (!nextChunk) {
       // Sin tramo siguiente: no dejar el "Preparando…" pegado.
@@ -360,7 +379,7 @@ class DocumentAudioPlaybackService {
       await this.ensureChunkLoaded(doc, voiceId, nextChunk.startChar, sessionId, expectedIndex + 1);
       if (!this.isSessionActive(sessionId) || !this.player) return;
       this.player.setPlaybackRate(rate);
-      this.player.setActiveForLockScreen(true, metadata ?? { title: doc.fileName, artist: 'intelliReader' });
+      this.player.setActiveForLockScreen(true, metadata ?? { title: doc.fileName, artist: 'Bardo' });
       await this.player.seekTo(0);
       if (!this.isSessionActive(sessionId)) return;
       this.player.play();
@@ -410,7 +429,7 @@ class DocumentAudioPlaybackService {
     if (!this.isSessionActive(sessionId) || !this.player) return;
 
     this.player.setPlaybackRate(rate);
-    this.player.setActiveForLockScreen(true, metadata ?? { title: document.fileName, artist: 'intelliReader' });
+    this.player.setActiveForLockScreen(true, metadata ?? { title: document.fileName, artist: 'Bardo' });
     await this.seekWithinActiveChunk(absoluteCharIndex);
     if (!this.isSessionActive(sessionId)) return;
     this.player.play();
