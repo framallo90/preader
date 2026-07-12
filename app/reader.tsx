@@ -3,7 +3,7 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Stack, router, useLocalSearchParams } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, AppState, FlatList, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppButton } from '../src/components/AppButton';
@@ -21,6 +21,7 @@ import { buildTextBlocks } from '../src/utils/textBlocks';
 import { getAbsoluteCharIndex, getPositionFromAbsoluteChar } from '../src/utils/documentProgress';
 import { charForPage, pageForChar } from '../src/utils/pageMap';
 import { getDisplayTitle } from '../src/utils/bookDisplay';
+import { DEFAULT_VOICE_ID, VALID_VOICE_IDS } from '../src/config/voices';
 import { extractChapterContext } from '../src/services/claudeService';
 import { getParserForDocument } from '../src/services/parserRegistry';
 import { bookRepository } from '../src/storage/bookRepository';
@@ -39,16 +40,6 @@ import { ThemeColors } from '../src/utils/theme';
 const KEEP_AWAKE_TAG = 'reader-screen';
 const MIN_RATE = 0.6;
 const MAX_RATE = 1.6;
-
-const OPENAI_VOICE_OPTIONS = [
-  { value: 'onyx', label: 'Onyx', description: 'Voz masculina profunda y narrativa (por defecto).' },
-  { value: 'nova', label: 'Nova', description: 'Voz femenina clara y energica.' },
-  { value: 'alloy', label: 'Alloy', description: 'Voz neutra y versatil.' },
-  { value: 'echo', label: 'Echo', description: 'Voz masculina expresiva.' },
-  { value: 'fable', label: 'Fable', description: 'Voz masculina calida y dramatica.' },
-  { value: 'shimmer', label: 'Shimmer', description: 'Voz femenina suave.' },
-];
-const VALID_OPENAI_VOICES = new Set(OPENAI_VOICE_OPTIONS.map((v) => v.value));
 
 type StatusTone = 'primary' | 'neutral' | 'warning' | 'danger';
 
@@ -88,13 +79,8 @@ export default function ReaderScreen() {
   const [savedProgress, setSavedProgress] = useState<ReadingProgress | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadingStatus, setLoadingStatus] = useState('Abriendo el documento…');
-  // Dos experiencias sobre la MISMA posición: leer (texto limpio, sin chrome de
-  // audio) o escuchar (reproductor). Si ya hay audio sonando de este libro, se
-  // entra directo en modo audio.
-  // Vista única: SIEMPRE se lee (páginas del PDF o texto) y el audio se
-  // controla con la barra flotante. La vieja "pantalla de escucha" murió:
-  // escuchar mientras ves el libro real es mejor. viewMode queda fijo.
-  const viewMode = 'read' as 'read' | 'listen';
+  // Vista única: SIEMPRE se ve el libro (páginas del PDF o texto) y el audio se
+  // controla con la barra flotante + el menú ⋯. No hay "pantalla de escucha".
   // Modo lectura visual (páginas reales del PDF renderizadas por el server).
   const [serverPageInfo, setServerPageInfo] = useState<ServerBookInfo | null>(null);
   const [pdfPageForUi, setPdfPageForUi] = useState(0);
@@ -104,9 +90,8 @@ export default function ReaderScreen() {
   const pdfListRef = useRef<PdfPageListHandle>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [speechError, setSpeechError] = useState<string | null>(null);
-  const [isVoicePickerVisible, setIsVoicePickerVisible] = useState(false);
   const [isSleepTimerPickerVisible, setIsSleepTimerPickerVisible] = useState(false);
-  const [areSecondaryControlsVisible, setAreSecondaryControlsVisible] = useState(false);
+  const [isMenuVisible, setIsMenuVisible] = useState(false);
   const [sleepTimerMinutes, setSleepTimerMinutes] = useState<number | null>(null);
   const [sleepDeadlineAt, setSleepDeadlineAt] = useState<number | null>(null);
   const [clockNow, setClockNow] = useState(Date.now());
@@ -242,7 +227,7 @@ export default function ReaderScreen() {
 
   const effectiveVoiceId = useMemo(() => {
     const saved = settings.defaultVoiceId;
-    return saved && VALID_OPENAI_VOICES.has(saved) ? saved : 'onyx';
+    return saved && VALID_VOICE_IDS.has(saved) ? saved : DEFAULT_VOICE_ID;
   }, [settings.defaultVoiceId]);
 
   const reader = useReaderController({
@@ -554,11 +539,6 @@ export default function ReaderScreen() {
     { value: '30', label: '30 minutos', description: 'Se detiene sola despues de treinta minutos.' },
   ], []);
 
-  const selectedVoiceLabel = useMemo(
-    () => OPENAI_VOICE_OPTIONS.find((v) => v.value === effectiveVoiceId)?.label ?? 'Onyx',
-    [effectiveVoiceId],
-  );
-
   const sleepTimerLabel = useMemo(() => formatRemainingTime(sleepDeadlineAt, clockNow), [clockNow, sleepDeadlineAt]);
 
   const readerStatus = useMemo(() => {
@@ -577,15 +557,6 @@ export default function ReaderScreen() {
       await updateSettings({ defaultRate: nextRate });
     },
     [settings.defaultRate, updateSettings],
-  );
-
-  const handleVoiceChange = useCallback(
-    async (voiceValue: string) => {
-      setIsVoicePickerVisible(false);
-      await updateSettings({ defaultVoiceId: voiceValue });
-      if (reader.isPlaying) await reader.restartFromCurrent();
-    },
-    [reader, updateSettings],
   );
 
   const handleSleepTimerChange = useCallback((optionValue: string) => {
@@ -647,8 +618,6 @@ export default function ReaderScreen() {
     );
   }
 
-  const activeBlock = parsedDocument.blocks[reader.currentBlockIndex];
-  const playButtonLabel = reader.isPlaying ? 'Pausar' : reader.isPreparing ? 'Preparando...' : reader.currentCharIndex > 0 || reader.currentBlockIndex > 0 ? 'Reanudar' : 'Escuchar';
   const hasChapters = Boolean(parsedDocument.chapters?.length);
   const hasPreviousChapter = hasChapters && Boolean(currentChapter && currentChapter.orderIndex > 0);
   const hasNextChapter = hasChapters && Boolean(currentChapter && currentChapter.orderIndex < (parsedDocument.chapters?.length ?? 0) - 1);
@@ -660,64 +629,28 @@ export default function ReaderScreen() {
         options={{
           title: documentRecord ? getDisplayTitle(documentRecord) : 'Lector',
           headerShown: !isImmersive,
+          headerRight: () => (
+            <TouchableOpacity
+              onPress={() => setIsMenuVisible(true)}
+              accessibilityRole="button"
+              accessibilityLabel="Opciones del libro"
+              hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+              style={[styles.headerMenuButton, { borderColor: colors.border, backgroundColor: colors.surface }]}
+            >
+              <Text style={[styles.headerMenuLabel, { color: colors.text }]}>Menú</Text>
+            </TouchableOpacity>
+          ),
         }}
       />
-
-      {viewMode === 'listen' ? (
-      <View style={[styles.summaryCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-        <View style={styles.summaryHeader}>
-          <View style={styles.summaryCopy}>
-            <Text style={[styles.fileName, { color: colors.text }]} numberOfLines={1}>{documentRecord.title ?? documentRecord.name}</Text>
-            {currentChapter ? (
-              <Text style={[styles.chapterTitle, { color: colors.primary }]} numberOfLines={1}>{currentChapter.title}</Text>
-            ) : null}
-            <Text style={[styles.summaryText, { color: colors.textMuted }]}>
-              Bloque {reader.currentBlockIndex + 1} de {parsedDocument.blocks.length} — {reader.progressPercentage.toFixed(1)}%
-            </Text>
-          </View>
-          <View style={[styles.statusBadge, { backgroundColor: statusColors.backgroundColor, borderColor: statusColors.borderColor }]}>
-            <Text style={[styles.statusBadgeText, { color: statusColors.textColor }]}>{readerStatus.label}</Text>
-          </View>
-        </View>
-
-        <View style={[styles.progressTrack, { backgroundColor: colors.surfaceMuted }]}>
-          <View style={[styles.progressFill, { backgroundColor: colors.primary, width: `${Math.max(0, Math.min(reader.progressPercentage, 100))}%` }]} />
-        </View>
-
-        {isUsingCachedText ? <Text style={[styles.cacheLabel, { color: colors.textMuted }]}>Cache local lista para abrir mas rapido.</Text> : null}
-
-        {reader.isPreparing ? (
-          <View style={[styles.noticeBox, { backgroundColor: colors.surfaceMuted }]}>
-            <Text style={[styles.warningText, { color: colors.text }]}>
-              Preparando audio local por tramos para una reproduccion mas estable.
-            </Text>
-            <View style={[styles.preparingTrack, { backgroundColor: colors.border }]}>
-              <View style={[styles.preparingFill, { backgroundColor: colors.primary, width: `${Math.max(6, Math.min(reader.preparationProgress * 100, 100))}%` }]} />
-            </View>
-            <Text style={[styles.cacheLabel, { color: colors.textMuted }]}>{Math.round(reader.preparationProgress * 100)}% listo</Text>
-          </View>
-        ) : null}
-
-        {speechError ? (
-          <View style={[styles.noticeBox, { backgroundColor: colors.surfaceMuted }]}>
-            <Text style={[styles.warningText, { color: colors.danger }]}>{speechError}</Text>
-          </View>
-        ) : null}
-      </View>
-      ) : null}
-
-      {/* El recap de capítulo ya no aparece solo (era invasivo y se cerraba con
-          cualquier toque): ahora vive a demanda en "Más ajustes → Contexto". La
-          extracción en background sigue igual (alimenta la wiki y el chat). */}
 
       <View
         style={[
           styles.readerStage,
           { backgroundColor: colors.readerSurface, borderColor: colors.border },
-          viewMode === 'read' && isImmersive ? styles.readerStageImmersive : null,
+          isImmersive ? styles.readerStageImmersive : null,
         ]}
       >
-        {viewMode === 'read' && serverPageInfo ? (
+        {serverPageInfo ? (
           <PdfPageList
             ref={pdfListRef}
             bookId={documentRecord.id}
@@ -754,7 +687,7 @@ export default function ReaderScreen() {
           )}
         />
         )}
-        {viewMode === 'read' && serverPageInfo && serverPageInfo.pages > 0 && !isImmersive ? (
+        {serverPageInfo && serverPageInfo.pages > 0 && !isImmersive ? (
           // Scrubber semi-transparente: aparece con el chrome (tap) y permite
           // saltar páginas viendo la numeración.
           <View style={[styles.pageScrubber, { backgroundColor: colors.surface }]}>
@@ -776,7 +709,7 @@ export default function ReaderScreen() {
             />
           </View>
         ) : null}
-        {viewMode === 'read' && (isImmersive || !serverPageInfo) ? (
+        {(isImmersive || !serverPageInfo) ? (
           <View pointerEvents="none" style={styles.readOverlay}>
             <Text style={styles.readOverlayText}>
               {serverPageInfo && serverPageInfo.pages > 0
@@ -843,84 +776,13 @@ export default function ReaderScreen() {
         </TouchableOpacity>
       </View>
 
-      {viewMode === 'listen' ? (
-      <View style={[styles.controlPanel, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-        <View style={styles.controlsRow}>
-          <View style={styles.sideControl}>
-            <AppButton label="Anterior" onPress={() => { void reader.previousBlock(); }} variant="secondary" colors={colors} compact fullWidth disabled={reader.isPreparing} />
-          </View>
-          <View style={styles.mainControl}>
-            <AppButton
-              label={playButtonLabel}
-              onPress={() => { void handleTogglePlayback(); }}
-              colors={colors}
-              compact
-              fullWidth
-              style={styles.playButton}
-              labelStyle={styles.playButtonLabel}
-              disabled={reader.isPreparing}
-            />
-          </View>
-          <View style={styles.sideControl}>
-            <AppButton label="Siguiente" onPress={() => { void reader.nextBlock(); }} variant="secondary" colors={colors} compact fullWidth disabled={reader.isPreparing} />
-          </View>
-        </View>
-
-        <View style={styles.controlsFooter}>
-          <AppButton
-            label="Detener"
-            onPress={() => { void handleStop(); }}
-            variant="ghost"
-            colors={colors}
-            compact
-          />
-          <AppButton
-            label="↩ 30 s"
-            onPress={() => { void documentAudioPlaybackService.rewindBy(30); }}
-            variant="secondary"
-            colors={colors}
-            compact
-          />
-          <AppButton
-            label={areSecondaryControlsVisible ? 'Ocultar ajustes' : 'Mas ajustes'}
-            onPress={() => setAreSecondaryControlsVisible((c) => !c)}
-            variant="ghost"
-            colors={colors}
-            compact
-          />
-        </View>
-
-        {areSecondaryControlsVisible ? (
-          <View style={[styles.secondaryControlsCard, { backgroundColor: colors.surfaceMuted }]}>
-            <View style={styles.settingRow}>
-              <Text style={[styles.settingLabel, { color: colors.textMuted }]}>Asistente</Text>
-              <AppButton
-                label="Abrir chat"
-                onPress={() => { router.push(`/chat?bookId=${documentRecord.id}`); }}
-                variant="secondary"
-                colors={colors}
-                compact
-              />
-            </View>
-
-            {currentChapter && (parsedDocument.chapters?.length ?? 0) > 0 ? (
-              <View style={styles.settingRow}>
-                <Text style={[styles.settingLabel, { color: colors.textMuted }]}>Contexto</Text>
-                <AppButton
-                  label="¿Qué pasó antes?"
-                  onPress={() => {
-                    const prev = parsedDocument.chapters?.find(
-                      (ch) => ch.orderIndex === currentChapter.orderIndex - 1,
-                    );
-                    if (prev) router.push(`/chapter-context?chapterId=${prev.id}`);
-                  }}
-                  variant="secondary"
-                  colors={colors}
-                  compact
-                  disabled={currentChapter.orderIndex === 0}
-                />
-              </View>
-            ) : null}
+      {/* Menú de opciones del lector (⋯ en la barra de audio). Rescata al diseño
+          single-view lo útil que antes vivía en el panel de "modo escucha":
+          capítulos, recap, chat, salto, velocidad y temporizador. */}
+      <Modal visible={isMenuVisible} transparent animationType="fade" onRequestClose={() => setIsMenuVisible(false)}>
+        <TouchableOpacity style={styles.menuBackdrop} activeOpacity={1} onPress={() => setIsMenuVisible(false)}>
+          <TouchableOpacity activeOpacity={1} style={[styles.menuSheet, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <View style={styles.menuHandle} />
 
             {hasChapters ? (
               <View style={styles.settingRow}>
@@ -935,24 +797,6 @@ export default function ReaderScreen() {
               </View>
             ) : null}
 
-            <View style={styles.sliderGroup}>
-              <View style={styles.sliderHeader}>
-                <Text style={[styles.settingLabel, { color: colors.textMuted }]}>Salto rapido</Text>
-                <Text style={[styles.sliderLabel, { color: colors.textMuted }]}>Bloque {reader.currentBlockIndex + 1}</Text>
-              </View>
-              <Slider
-                value={reader.currentBlockIndex}
-                minimumValue={0}
-                maximumValue={Math.max(parsedDocument.blocks.length - 1, 0)}
-                step={1}
-                minimumTrackTintColor={colors.primary}
-                maximumTrackTintColor={colors.border}
-                thumbTintColor={colors.primary}
-                disabled={reader.isPreparing}
-                onSlidingComplete={(value) => { void handleSeekBlock(Math.round(value)); }}
-              />
-            </View>
-
             <View style={styles.settingRow}>
               <Text style={[styles.settingLabel, { color: colors.textMuted }]}>Velocidad</Text>
               <View style={styles.inlineActions}>
@@ -963,32 +807,50 @@ export default function ReaderScreen() {
             </View>
 
             <View style={styles.settingRow}>
-              <Text style={[styles.settingLabel, { color: colors.textMuted }]}>Voz</Text>
-              <AppButton label={selectedVoiceLabel} onPress={() => setIsVoicePickerVisible(true)} variant="secondary" colors={colors} compact disabled={reader.isPreparing} />
+              <Text style={[styles.settingLabel, { color: colors.textMuted }]}>Temporizador de sueño</Text>
+              <AppButton
+                label={sleepTimerMinutes ? sleepTimerLabel : 'Off'}
+                onPress={() => { setIsMenuVisible(false); setIsSleepTimerPickerVisible(true); }}
+                variant="secondary"
+                colors={colors}
+                compact
+              />
             </View>
+
+            {currentChapter && (parsedDocument.chapters?.length ?? 0) > 0 ? (
+              <View style={styles.settingRow}>
+                <Text style={[styles.settingLabel, { color: colors.textMuted }]}>¿Qué pasó antes?</Text>
+                <AppButton
+                  label="Ver recap"
+                  onPress={() => {
+                    const prev = parsedDocument.chapters?.find((ch) => ch.orderIndex === currentChapter.orderIndex - 1);
+                    setIsMenuVisible(false);
+                    if (prev) router.push(`/chapter-context?chapterId=${prev.id}`);
+                  }}
+                  variant="secondary"
+                  colors={colors}
+                  compact
+                  disabled={currentChapter.orderIndex === 0}
+                />
+              </View>
+            ) : null}
 
             <View style={styles.settingRow}>
-              <Text style={[styles.settingLabel, { color: colors.textMuted }]}>Temporizador</Text>
-              <AppButton label={sleepTimerLabel} onPress={() => setIsSleepTimerPickerVisible(true)} variant="secondary" colors={colors} compact disabled={reader.isPreparing} />
+              <Text style={[styles.settingLabel, { color: colors.textMuted }]}>Chat del libro</Text>
+              <AppButton
+                label="Abrir"
+                onPress={() => { setIsMenuVisible(false); router.push(`/chat?bookId=${documentRecord.id}`); }}
+                variant="secondary"
+                colors={colors}
+                compact
+              />
             </View>
 
-            {sleepTimerMinutes ? (
-              <Text style={[styles.resumeText, { color: colors.textMuted }]}>Temporizador activo: {sleepTimerMinutes} min</Text>
-            ) : null}
-          </View>
-        ) : null}
-      </View>
-      ) : null}
+            <AppButton label="Cerrar" onPress={() => setIsMenuVisible(false)} variant="ghost" colors={colors} compact fullWidth />
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
 
-      <OptionPickerModal
-        title="Elige una voz"
-        visible={isVoicePickerVisible}
-        colors={colors}
-        selectedValue={effectiveVoiceId}
-        options={OPENAI_VOICE_OPTIONS}
-        onClose={() => setIsVoicePickerVisible(false)}
-        onSelect={(value) => { void handleVoiceChange(value); }}
-      />
       <OptionPickerModal
         title="Temporizador de sueno"
         visible={isSleepTimerPickerVisible}
@@ -1076,6 +938,11 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
   },
   audioPageChipText: { color: '#ffffff', fontSize: 12, fontWeight: '600' },
+  menuBackdrop: { flex: 1, backgroundColor: 'rgba(0,0,0,0.45)', justifyContent: 'flex-end' },
+  menuSheet: { borderTopWidth: 1, borderRadius: 20, borderBottomLeftRadius: 0, borderBottomRightRadius: 0, paddingHorizontal: 16, paddingTop: 8, paddingBottom: 28, gap: 8 },
+  menuHandle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: 'rgba(127,127,127,0.4)', marginBottom: 6 },
+  headerMenuButton: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 14, paddingVertical: 6, marginRight: 4 },
+  headerMenuLabel: { fontSize: 14, fontWeight: '700' },
   audioBarRow: {
     flexDirection: 'row',
     alignItems: 'center',

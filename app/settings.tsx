@@ -16,22 +16,12 @@ import { documentAudioPlaybackService } from '../src/services/documentAudioPlayb
 import { premiumService, PremiumListener } from '../src/services/premiumService';
 import { PERSONAL_MODE } from '../src/config/appMode';
 import { clampRounded } from '../src/utils/math';
+import { VOICE_OPTIONS, VALID_VOICE_IDS, DEFAULT_VOICE_ID, getVoiceLabel } from '../src/config/voices';
 
 const MIN_RATE = 0.6;
 const MAX_RATE = 1.6;
 const MIN_FONT_SIZE = 16;
 const MAX_FONT_SIZE = 28;
-
-// Voces disponibles en OpenAI TTS (coincide con reader.tsx)
-const OPENAI_VOICE_OPTIONS = [
-  { value: 'onyx', label: 'Onyx', description: 'Voz masculina profunda y narrativa (por defecto).' },
-  { value: 'nova', label: 'Nova', description: 'Voz femenina clara y energica.' },
-  { value: 'alloy', label: 'Alloy', description: 'Voz neutra y versatil.' },
-  { value: 'echo', label: 'Echo', description: 'Voz masculina expresiva.' },
-  { value: 'fable', label: 'Fable', description: 'Voz masculina calida y dramatica.' },
-  { value: 'shimmer', label: 'Shimmer', description: 'Voz femenina suave.' },
-];
-const VALID_OPENAI_VOICES = new Set(OPENAI_VOICE_OPTIONS.map((v) => v.value));
 
 export default function SettingsScreen() {
   const { colors, settings, updateSettings } = useAppSettings();
@@ -76,13 +66,10 @@ export default function SettingsScreen() {
 
   const effectiveVoiceId = useMemo(() => {
     const saved = settings.defaultVoiceId;
-    return saved && VALID_OPENAI_VOICES.has(saved) ? saved : 'onyx';
+    return saved && VALID_VOICE_IDS.has(saved) ? saved : DEFAULT_VOICE_ID;
   }, [settings.defaultVoiceId]);
 
-  const selectedVoiceLabel = useMemo(
-    () => OPENAI_VOICE_OPTIONS.find((v) => v.value === effectiveVoiceId)?.label ?? 'Onyx',
-    [effectiveVoiceId],
-  );
+  const selectedVoiceLabel = useMemo(() => getVoiceLabel(effectiveVoiceId), [effectiveVoiceId]);
 
   const updateRate = useCallback(
     async (delta: number) => {
@@ -220,7 +207,7 @@ export default function SettingsScreen() {
 
           <View style={styles.settingRow}>
             <View style={styles.settingCopy}>
-              <Text style={[styles.settingTitle, { color: colors.text }]}>Voz OpenAI TTS</Text>
+              <Text style={[styles.settingTitle, { color: colors.text }]}>Voz de narración</Text>
               <Text style={[styles.settingHint, { color: colors.textMuted }]}>
                 Voz usada para generar el audio. Se cachea por voz, cambiarla regenera el audio.
               </Text>
@@ -462,29 +449,26 @@ export default function SettingsScreen() {
       >
         <Text style={[styles.notesTitle, { color: colors.text }]}>Notas de esta version</Text>
         <Text style={[styles.noteText, { color: colors.textMuted }]}>
-          El audio se genera con OpenAI TTS (tts-1-hd) y se cachea localmente. La primera
-          reproduccion requiere conexion; despues funciona sin red.
+          El audio se genera con una voz de alta calidad y se cachea localmente. La primera
+          reproduccion de cada tramo requiere conexion; despues funciona sin red.
         </Text>
         <Text style={[styles.noteText, { color: colors.textMuted }]}>
-          Cambiar de voz en ajustes provoca que el proximo tramo regenere audio con la nueva voz.
+          Cambiar de voz provoca que el proximo tramo regenere audio con la nueva voz.
           Los tramos con la voz anterior siguen en cache.
         </Text>
         <Text style={[styles.noteText, { color: colors.textMuted }]}>
-          El texto de cada tramo pasa por Claude Haiku antes de la sintesis para limpiar artefactos
-          de conversion y mejorar la pronunciacion.
-        </Text>
-        <Text style={[styles.noteText, { color: colors.textMuted }]}>
           Al terminar cada capitulo se extrae contexto automaticamente en background (personajes,
-          resumen, eventos clave). El banner del siguiente capitulo muestra el resumen.
+          resumen, eventos clave). Podes ver el recap desde el menu (⋯) del lector, o preguntar
+          en el chat del libro.
         </Text>
       </View>
 
       <OptionPickerModal
-        title="Voz OpenAI TTS"
+        title="Voz de narración"
         visible={isVoicePickerVisible}
         colors={colors}
         selectedValue={effectiveVoiceId}
-        options={OPENAI_VOICE_OPTIONS}
+        options={VOICE_OPTIONS}
         onClose={() => setIsVoicePickerVisible(false)}
         onSelect={(value) => {
           setIsVoicePickerVisible(false);
