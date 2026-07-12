@@ -304,6 +304,11 @@ export default function ReaderScreen() {
     isPlayingRef.current = reader.isPlaying || reader.isPreparing;
   }, [reader.isPlaying, reader.isPreparing]);
 
+  // Ref al controlador para leerlo desde intervals/timeouts sin re-crearlos en
+  // cada render (reader es un objeto nuevo por render).
+  const readerRef = useRef(reader);
+  readerRef.current = reader;
+
   // Scroll de páginas → progreso. IMPORTANTE: pasa por reader.syncPosition (el
   // controlador) y no por un write directo — al salir del lector, el controlador
   // hace un guardado final con SU posición, y si no está sincronizada pisa el
@@ -324,6 +329,24 @@ export default function ReaderScreen() {
     },
     [parsedDocument, serverPageInfo, reader.syncPosition],
   );
+
+  // Modo texto (EPUB/TXT/DOCX): timestamp del ultimo scroll manual para que el
+  // auto-scroll de la voz no secuestre la pantalla mientras leés por delante.
+  const textScrolledAtRef = useRef(0);
+
+  // Scroll manual en la lista de texto → guarda progreso (el bloque de arriba).
+  // Sin esto, quien lee en silencio deslizando volvia al inicio al reabrir.
+  // Identidad estable (RN prohíbe cambiar onViewableItemsChanged en caliente):
+  // lee el controlador por ref, deps vacías.
+  const handleTextViewable = useCallback(
+    ({ viewableItems }: { viewableItems: Array<{ index: number | null }> }) => {
+      if (isPlayingRef.current) return; // sonando manda el audio, no el scroll
+      const topIndex = viewableItems.find((v) => v.index !== null)?.index;
+      if (typeof topIndex === 'number') void readerRef.current.syncPosition(topIndex, 0);
+    },
+    [],
+  );
+  const textViewabilityConfig = useRef({ itemVisiblePercentThreshold: 30 }).current;
 
   const currentAbsoluteChar = useMemo(() => {
     if (!parsedDocument) return 0;
@@ -472,11 +495,16 @@ export default function ReaderScreen() {
 
   useEffect(() => {
     if (!parsedDocument || parsedDocument.blocks.length === 0) return;
+    // Seguir a la voz SOLO si esta sonando y el usuario no scrolleo hace poco.
+    // Antes secuestraba la pantalla en cada bloque aunque estuvieras leyendo
+    // por delante de la narracion.
+    if (!reader.isPlaying) return;
+    if (Date.now() - textScrolledAtRef.current < 4000) return;
     const timer = setTimeout(() => {
       listRef.current?.scrollToIndex({ index: reader.currentBlockIndex, animated: true, viewPosition: 0.18 });
     }, 80);
     return () => clearTimeout(timer);
-  }, [parsedDocument, reader.currentBlockIndex]);
+  }, [parsedDocument, reader.currentBlockIndex, reader.isPlaying]);
 
   useEffect(() => {
     const shouldKeepAwake = settings.keepScreenAwakeWhileReading && reader.isPlaying;
@@ -491,6 +519,10 @@ export default function ReaderScreen() {
     return () => { void deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {}); };
   }, [reader.isPlaying, settings.keepScreenAwakeWhileReading]);
 
+  // El interval SOLO depende de sleepDeadlineAt. Antes las deps incluían el
+  // objeto `reader` (nuevo en cada render), asi que durante la reproduccion se
+  // recreaba varias veces por segundo y nunca cumplia el segundo → el
+  // temporizador de sueño no paraba la voz jamas. Ahora lee reader por ref.
   useEffect(() => {
     if (!sleepDeadlineAt) return;
     setClockNow(Date.now());
@@ -500,11 +532,12 @@ export default function ReaderScreen() {
       if (nextNow >= sleepDeadlineAt) {
         setSleepDeadlineAt(null);
         setSleepTimerMinutes(null);
-        if (reader.isPlaying) void reader.stop();
+        const r = readerRef.current;
+        if (r.isPlaying) void r.stop();
       }
     }, 1000);
     return () => clearInterval(interval);
-  }, [reader, reader.isPlaying, sleepDeadlineAt]);
+  }, [sleepDeadlineAt]);
 
   const findBlockForChar = useCallback(
     (targetChar: number) => {
@@ -670,6 +703,9 @@ export default function ReaderScreen() {
           keyExtractor={(item) => item.index.toString()}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
+          onScrollBeginDrag={() => { textScrolledAtRef.current = Date.now(); }}
+          onViewableItemsChanged={handleTextViewable}
+          viewabilityConfig={textViewabilityConfig}
           onScrollToIndexFailed={(info) => {
             setTimeout(() => {
               listRef.current?.scrollToIndex({ index: info.index, animated: true, viewPosition: 0.18 });
@@ -763,17 +799,23 @@ export default function ReaderScreen() {
           </View>
         ) : null}
 
-        {/* Play grande, SIEMPRE visible (el viejo "Escuchar", ahora flotante). */}
-        <TouchableOpacity
-          style={[styles.playFab, { backgroundColor: colors.primary }]}
-          onPress={() => { void handleTogglePlayback(); }}
-          disabled={reader.isPreparing}
-          activeOpacity={0.8}
-        >
-          <Text style={styles.playFabIcon}>
-            {reader.isPlaying ? '❚❚' : reader.isPreparing ? '…' : '▶'}
-          </Text>
-        </TouchableOpacity>
+        {/* Play flotante. En pantalla completa se oculta si no hay audio, para
+            que la lectura quede limpia y no tape el numero/marcador de pagina
+            (que vive abajo a la izquierda). */}
+        {!isImmersive || reader.isPlaying || reader.isPreparing ? (
+          <TouchableOpacity
+            style={[styles.playFab, { backgroundColor: colors.primary }]}
+            onPress={() => { void handleTogglePlayback(); }}
+            disabled={reader.isPreparing}
+            activeOpacity={0.8}
+            accessibilityRole="button"
+            accessibilityLabel={reader.isPlaying ? 'Pausar narración' : 'Escuchar en voz alta'}
+          >
+            <Text style={styles.playFabIcon}>
+              {reader.isPlaying ? '❚❚' : reader.isPreparing ? '…' : '▶'}
+            </Text>
+          </TouchableOpacity>
+        ) : null}
       </View>
 
       {/* Menú de opciones del lector (⋯ en la barra de audio). Rescata al diseño
@@ -786,7 +828,7 @@ export default function ReaderScreen() {
 
             {hasChapters ? (
               <View style={styles.settingRow}>
-                <Text style={[styles.settingLabel, { color: colors.textMuted }]}>Capitulo</Text>
+                <Text style={[styles.settingLabel, { color: colors.textMuted }]}>Capítulo</Text>
                 <View style={styles.inlineActions}>
                   <AppButton label="← Cap." onPress={handlePreviousChapter} variant="ghost" colors={colors} compact disabled={!hasPreviousChapter || reader.isPreparing} />
                   <Text style={[styles.inlineValue, { color: colors.text, fontSize: 12 }]} numberOfLines={1}>

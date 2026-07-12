@@ -152,7 +152,7 @@ const styles = StyleSheet.create({
   pageNumber: {
     position: 'absolute',
     bottom: 10,
-    right: 12,
+    left: 12,
     fontSize: 11,
     fontWeight: '600',
     color: '#ffffff',
