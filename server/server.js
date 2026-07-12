@@ -13,15 +13,16 @@ import 'dotenv/config';
 import express from 'express';
 import multer from 'multer';
 import { execFile } from 'node:child_process';
+import { timingSafeEqual } from 'node:crypto';
 import { createReadStream, existsSync, readdirSync } from 'node:fs';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
 const execFileAsync = promisify(execFile);
 
 import { createBookFingerprint } from './fingerprint.js';
-import { BOOKS_DIR, PIPELINE_VERSION, STORAGE_DIR, bookDir, enqueueBook, readStatus } from './pipeline.js';
+import { BOOKS_DIR, PIPELINE_VERSION, STORAGE_DIR, bookDir, enqueueBook, isValidBookId, reconcileInterrupted, readStatus } from './pipeline.js';
 
 const PORT = Number(process.env.PORT ?? 3010);
 const TOKEN = process.env.BARDO_TOKEN ?? '';
@@ -37,26 +38,39 @@ await mkdir(BOOKS_DIR, { recursive: true });
 const uploadsDir = path.join(STORAGE_DIR, 'uploads');
 await mkdir(uploadsDir, { recursive: true });
 
+// Reanima zombies de un reinicio previo (ver reconcileInterrupted).
+await reconcileInterrupted();
+
 const upload = multer({ dest: uploadsDir, limits: { fileSize: MAX_UPLOAD_BYTES } });
 const app = express();
 
-app.get('/health', (_req, res) => res.json({ ok: true, service: 'bardo-api' }));
+// Borra un archivo temporal de multer sin romper si ya no está.
+const cleanupTemp = (file) => { if (file?.path) void unlink(file.path).catch(() => {}); };
+
+// Comparación de token en tiempo constante (evita timing attack sobre el Bearer).
+const EXPECTED_AUTH = Buffer.from(`Bearer ${TOKEN}`);
+function isAuthorized(header) {
+  const got = Buffer.from(header ?? '');
+  return got.length === EXPECTED_AUTH.length && timingSafeEqual(got, EXPECTED_AUTH);
+}
+
+app.get('/health', (_req, res) => res.json({ ok: true }));
 
 app.use((req, res, next) => {
-  const header = req.headers.authorization ?? '';
-  if (header !== `Bearer ${TOKEN}`) {
+  if (!isAuthorized(req.headers.authorization)) {
     return res.status(401).json({ error: 'unauthorized' });
   }
   next();
 });
 
 app.post('/books', upload.single('file'), async (req, res) => {
+  const file = req.file;
   try {
-    const file = req.file;
     if (!file) return res.status(400).json({ error: 'missing_file' });
 
     const extension = path.extname(file.originalname || '').toLowerCase();
     if (!ALLOWED_EXTENSIONS.has(extension)) {
+      cleanupTemp(file);
       return res.status(400).json({ error: 'unsupported_format' });
     }
 
@@ -67,9 +81,11 @@ app.post('/books', upload.single('file'), async (req, res) => {
     const existing = await readStatus(bookId);
     const upToDate = existing && (existing.pipelineVersion ?? 1) >= PIPELINE_VERSION;
     if (existing && existing.status !== 'error' && (existing.status !== 'ready' || upToDate)) {
+      cleanupTemp(file); // el libro ya existe: no encolamos, hay que borrar el temp.
       return res.json({ id: bookId, status: existing.status });
     }
 
+    // enqueueBook mueve (rename) el temp a su destino final → no lo borramos acá.
     await enqueueBook({
       bookId,
       sourcePath: file.path,
@@ -79,6 +95,7 @@ app.post('/books', upload.single('file'), async (req, res) => {
     res.status(202).json({ id: bookId, status: 'queued' });
   } catch (error) {
     console.error('POST /books', error);
+    cleanupTemp(file);
     res.status(500).json({ error: 'upload_failed' });
   }
 });
@@ -97,6 +114,23 @@ app.get('/books/:id', async (req, res) => {
 const ROOT_DIR = path.dirname(new URL(import.meta.url).pathname);
 const PYTHON_BIN = path.join(ROOT_DIR, 'venv', 'bin', 'python3');
 const RENDER_SCRIPT = path.join(ROOT_DIR, 'render_page.py');
+
+// Límite de renders de página en paralelo: sin esto, arrastrar el scrubber
+// dispara una ráfaga de requests y cada uno spawnea un Python que abre el PDF
+// entero → pico de RAM que podría molestar a booklo/investy en el mismo server.
+const MAX_CONCURRENT_RENDERS = 2;
+let activeRenders = 0;
+const renderWaiters = [];
+async function acquireRenderSlot() {
+  if (activeRenders < MAX_CONCURRENT_RENDERS) { activeRenders++; return; }
+  await new Promise((resolve) => renderWaiters.push(resolve));
+  activeRenders++;
+}
+function releaseRenderSlot() {
+  activeRenders--;
+  const next = renderWaiters.shift();
+  if (next) next();
+}
 
 app.get('/books/:id/page/:n', async (req, res) => {
   try {
@@ -120,11 +154,24 @@ app.get('/books/:id/page/:n', async (req, res) => {
     if (!existsSync(cached)) {
       const source = readdirSync(dir).find((f) => f.startsWith('source.'));
       if (!source) return res.status(404).json({ error: 'source_missing' });
-      await execFileAsync(
-        'nice',
-        ['-n', '15', PYTHON_BIN, RENDER_SCRIPT, path.join(dir, source), String(pageIndex), String(bucketWidth), cached],
-        { timeout: 60_000, maxBuffer: 1024 * 1024 },
-      );
+      // Render atómico: escribe a un tmp y recién al terminar lo renombra al
+      // path final. Si el proceso muere a mitad (timeout), nunca queda un PNG
+      // parcial servido para siempre con Cache-Control immutable.
+      const tmp = `${cached}.tmp-${process.pid}-${pageIndex}`;
+      await acquireRenderSlot();
+      try {
+        await execFileAsync(
+          'nice',
+          ['-n', '15', PYTHON_BIN, RENDER_SCRIPT, path.join(dir, source), String(pageIndex), String(bucketWidth), tmp],
+          { timeout: 60_000, maxBuffer: 1024 * 1024 },
+        );
+        await rename(tmp, cached);
+      } catch (renderError) {
+        await unlink(tmp).catch(() => {});
+        throw renderError;
+      } finally {
+        releaseRenderSlot();
+      }
     }
 
     res.setHeader('Content-Type', 'image/png');

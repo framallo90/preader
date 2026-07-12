@@ -6,7 +6,7 @@
  * Estado por libro en storage/books/<id>/status.json; texto en fulltext.txt.
  */
 import { execFile } from 'node:child_process';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
@@ -29,8 +29,37 @@ export const PIPELINE_VERSION = 2;
 const queue = [];
 let processing = false;
 
+/** Un id de libro es la huella de contenido: `bk_` + hex. Nada de barras ni
+ *  `..` — así ninguna ruta puede escapar de BOOKS_DIR (path traversal). */
+export function isValidBookId(bookId) {
+  return typeof bookId === 'string' && /^bk_[a-f0-9]{8,64}$/.test(bookId);
+}
+
 export function bookDir(bookId) {
+  if (!isValidBookId(bookId)) throw new Error('invalid_book_id');
   return path.join(BOOKS_DIR, bookId);
+}
+
+/**
+ * Al arrancar, cualquier libro que quedó a mitad de proceso (queued/extracting/
+ * cleaning) por un reinicio de pm2 es un ZOMBIE: la cola vive en memoria y no se
+ * reanuda. Lo marcamos como error para que la próxima subida lo re-procese en
+ * vez de que la app haga polling infinito de un estado que nunca avanza.
+ */
+export async function reconcileInterrupted() {
+  let ids;
+  try {
+    ids = await readdir(BOOKS_DIR);
+  } catch {
+    return;
+  }
+  for (const id of ids) {
+    if (!isValidBookId(id)) continue;
+    const status = await readStatus(id);
+    if (status && ['queued', 'extracting', 'cleaning'].includes(status.status)) {
+      await writeStatus(id, { status: 'error', error: 'interrupted_restart' }).catch(() => {});
+    }
+  }
 }
 
 export async function readStatus(bookId) {
