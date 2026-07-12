@@ -98,7 +98,7 @@ export default function SettingsScreen() {
           Ajusta la experiencia a tu ritmo
         </Text>
         <Text style={[styles.headerSubtitle, { color: colors.textMuted }]}>
-          Deja listo el lector una vez y despues concentrate solo en abrir el documento y escuchar.
+          Dejá listo el lector una vez y después concentrate solo en abrir el documento y escuchar.
         </Text>
       </View>
 
@@ -145,7 +145,7 @@ export default function SettingsScreen() {
         >
           <View style={styles.settingRow}>
             <View style={styles.settingCopy}>
-              <Text style={[styles.settingTitle, { color: colors.text }]}>Tamano de fuente</Text>
+              <Text style={[styles.settingTitle, { color: colors.text }]}>Tamaño de fuente</Text>
               <Text style={[styles.settingHint, { color: colors.textMuted }]}>
                 Se aplica al texto del lector.
               </Text>
@@ -447,18 +447,18 @@ export default function SettingsScreen() {
           },
         ]}
       >
-        <Text style={[styles.notesTitle, { color: colors.text }]}>Notas de esta version</Text>
+        <Text style={[styles.notesTitle, { color: colors.text }]}>Notas de esta versión</Text>
         <Text style={[styles.noteText, { color: colors.textMuted }]}>
           El audio se genera con una voz de alta calidad y se cachea localmente. La primera
-          reproduccion de cada tramo requiere conexion; despues funciona sin red.
+          reproducción de cada tramo requiere conexión; después funciona sin red.
         </Text>
         <Text style={[styles.noteText, { color: colors.textMuted }]}>
-          Cambiar de voz provoca que el proximo tramo regenere audio con la nueva voz.
-          Los tramos con la voz anterior siguen en cache.
+          Cambiar de voz provoca que el próximo tramo regenere audio con la nueva voz.
+          Los tramos con la voz anterior siguen en caché.
         </Text>
         <Text style={[styles.noteText, { color: colors.textMuted }]}>
-          Al terminar cada capitulo se extrae contexto automaticamente en background (personajes,
-          resumen, eventos clave). Podes ver el recap desde el menu (⋯) del lector, o preguntar
+          Al terminar cada capítulo se extrae contexto automáticamente en background (personajes,
+          resumen, eventos clave). Podés ver el recap desde el botón "Menú" del lector, o preguntar
           en el chat del libro.
         </Text>
       </View>

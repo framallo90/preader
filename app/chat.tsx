@@ -146,7 +146,7 @@ export default function ChatScreen() {
       ]);
     } catch (error) {
       const errorText =
-        error instanceof Error ? error.message : 'No se pudo conectar con Claude.';
+        error instanceof Error ? error.message : 'No se pudo conectar con el asistente.';
       setMessages((prev) => [
         ...prev,
         {
@@ -223,7 +223,7 @@ export default function ChatScreen() {
       {isSending ? (
         <View style={[styles.typingRow, { borderTopColor: colors.border }]}>
           <ActivityIndicator color={colors.primary} size="small" />
-          <Text style={[styles.typingText, { color: colors.textMuted }]}>Claude está escribiendo...</Text>
+          <Text style={[styles.typingText, { color: colors.textMuted }]}>Escribiendo…</Text>
         </View>
       ) : null}
 
