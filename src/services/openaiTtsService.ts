@@ -18,6 +18,56 @@ import { FAL_KEY } from '../config/apiKeys';
 export type TtsVoice = 'alloy' | 'echo' | 'fable' | 'onyx' | 'nova' | 'shimmer';
 export type TtsModel = 'tts-1' | 'tts-1-hd';
 
+// Sin timeout, una conexión móvil que se cuelga un instante (ahorro de batería,
+// señal débil) dejaba la llamada esperando PARA SIEMPRE — y como el resultado
+// se cachea por promesa (chunkPreparationPromises en el playback service), ese
+// tramo quedaba permanentemente trabado hasta reiniciar la app. Cuanto más larga
+// la sesión de lectura, más chances de pegarle a una: por eso "se cuelga cada
+// vez más seguido".
+const FAL_REQUEST_TIMEOUT_MS = 45_000;
+const FAL_DOWNLOAD_TIMEOUT_MS = 60_000;
+const MAX_ATTEMPTS = 2;
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithTimeout(url: string, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`La síntesis de voz tardó demasiado (>${Math.round(timeoutMs / 1000)}s).`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * downloadAsync no soporta AbortController: al vencer el timeout la app sigue
+ * (el intento nativo puede terminar solo, en cuyo caso el archivo queda escrito
+ * igual), pero el flujo de JS ya no se queda esperando para siempre.
+ */
+async function downloadWithTimeout(url: string, dest: string, timeoutMs: number) {
+  let timedOut = false;
+  const timeout = new Promise<never>((_, reject) => {
+    setTimeout(() => {
+      timedOut = true;
+      reject(new Error(`La descarga del audio tardó demasiado (>${Math.round(timeoutMs / 1000)}s).`));
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([FileSystem.downloadAsync(url, dest), timeout]);
+  } catch (error) {
+    if (timedOut) await FileSystem.deleteAsync(dest, { idempotent: true }).catch(() => {});
+    throw error;
+  }
+}
+
 export const DEFAULT_VOICE: TtsVoice = 'onyx';
 export const DEFAULT_MODEL: TtsModel = 'tts-1-hd';
 
@@ -111,33 +161,46 @@ export async function synthesizeSpeech(
     throw new Error('Falta FAL_KEY en src/config/apiKeys.ts para generar la voz.');
   }
 
-  const response = await fetch(FAL_TTS_URL, {
-    method: 'POST',
-    headers: {
-      Authorization: `Key ${FAL_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({ prompt: text, voice: kokoroVoice, speed: 1 }),
-  });
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    try {
+      const response = await fetchWithTimeout(
+        FAL_TTS_URL,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Key ${FAL_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ prompt: text, voice: kokoroVoice, speed: 1 }),
+        },
+        FAL_REQUEST_TIMEOUT_MS,
+      );
 
-  if (!response.ok) {
-    const detail = await response.text().catch(() => '');
-    throw new Error(`TTS fal error ${response.status}: ${detail.slice(0, 200)}`);
+      if (!response.ok) {
+        const detail = await response.text().catch(() => '');
+        throw new Error(`TTS fal error ${response.status}: ${detail.slice(0, 200)}`);
+      }
+
+      const data = (await response.json()) as { audio?: { url?: string }; error?: unknown };
+      const audioUrl = data.audio?.url;
+      if (!audioUrl) throw new Error('fal no devolvió URL de audio.');
+
+      const download = await downloadWithTimeout(audioUrl, cachedPath, FAL_DOWNLOAD_TIMEOUT_MS);
+      if (download.status !== 200) {
+        await FileSystem.deleteAsync(cachedPath, { idempotent: true }).catch(() => {});
+        throw new Error(`No se pudo descargar el audio (HTTP ${download.status}).`);
+      }
+
+      await enforceCacheLimit();
+      return cachedPath;
+    } catch (error) {
+      lastError = error;
+      if (attempt < MAX_ATTEMPTS) await sleep(1000 * attempt);
+    }
   }
 
-  const data = (await response.json()) as { audio?: { url?: string }; error?: unknown };
-  const audioUrl = data.audio?.url;
-  if (!audioUrl) throw new Error('fal no devolvió URL de audio.');
-
-  const download = await FileSystem.downloadAsync(audioUrl, cachedPath);
-  if (download.status !== 200) {
-    await FileSystem.deleteAsync(cachedPath, { idempotent: true }).catch(() => {});
-    throw new Error(`No se pudo descargar el audio (HTTP ${download.status}).`);
-  }
-
-  await enforceCacheLimit();
-
-  return cachedPath;
+  throw lastError instanceof Error ? lastError : new Error('No se pudo generar el audio.');
 }
 
 /**
