@@ -40,6 +40,14 @@ export type PdfPageInfo = {
   hasText: boolean;
 };
 
+/** Entrada del índice del libro ya ubicada en el texto (EPUB). */
+export type TocEntry = {
+  title: string;
+  startChar: number;
+  /** 0 = nivel superior. */
+  level: number;
+};
+
 export type ParsedDocument = {
   id: string;
   fileName: string;
@@ -49,6 +57,8 @@ export type ParsedDocument = {
   chapters: ChapterInfo[];
   /** Solo en PDFs. */
   pdf?: PdfPageInfo;
+  /** Índice real del libro, cuando el formato lo trae ubicable en el texto (EPUB). */
+  toc?: TocEntry[];
   /** Presente solo en el parseo fresco; no se incluye en el cache SQLite. */
   metadata?: DocumentMetadata;
 };

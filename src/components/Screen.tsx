@@ -1,5 +1,5 @@
 import { PropsWithChildren } from 'react';
-import { ScrollView, StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
+import { KeyboardAvoidingView, ScrollView, StyleProp, StyleSheet, View, ViewStyle } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { ThemeColors } from '../utils/theme';
@@ -19,12 +19,17 @@ export function Screen({
   if (scroll) {
     return (
       <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.background }]}>
-        <ScrollView
-          showsVerticalScrollIndicator={false}
-          contentContainerStyle={[styles.scrollContent, contentContainerStyle]}
-        >
-          {children}
-        </ScrollView>
+        {/* La app es edge-to-edge: Android ya no achica la ventana cuando abre el
+            teclado, así que sin esto el campo enfocado quedaba tapado. */}
+        <KeyboardAvoidingView style={styles.fill} behavior="padding">
+          <ScrollView
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={[styles.scrollContent, contentContainerStyle]}
+          >
+            {children}
+          </ScrollView>
+        </KeyboardAvoidingView>
       </SafeAreaView>
     );
   }

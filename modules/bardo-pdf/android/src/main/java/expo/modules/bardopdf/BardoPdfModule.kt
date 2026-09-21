@@ -78,13 +78,7 @@ class BardoPdfModule : Module() {
       renderExecutor.execute {
         try {
           val renderer = rendererFor(uri)
-          var aspect: Double? = null
-          if (renderer.pageCount > 0) {
-            renderer.openPage(0).use { page ->
-              if (page.height > 0) aspect = page.width.toDouble() / page.height.toDouble()
-            }
-          }
-          promise.resolve(mapOf("pageCount" to renderer.pageCount, "pageAspect" to aspect))
+          promise.resolve(mapOf("pageCount" to renderer.pageCount, "pageAspect" to medianAspect(renderer)))
         } catch (error: Exception) {
           promise.reject("ERR_PDF_INFO", describe(error), error)
         }
@@ -265,14 +259,40 @@ class BardoPdfModule : Module() {
     return output
   }
 
+  // La tapa de un libro escaneado suele tener otro tamano que las paginas de
+  // adentro. Con la proporcion de la pagina 1 el resto quedaba con bandas a los
+  // costados; la mediana de una muestra representa al libro.
+  private fun medianAspect(renderer: PdfRenderer): Double? {
+    val aspects = ArrayList<Double>()
+    for (index in samplePageIndexes(renderer.pageCount, 9)) {
+      renderer.openPage(index).use { page ->
+        if (page.width > 0 && page.height > 0) aspects.add(page.width.toDouble() / page.height.toDouble())
+      }
+    }
+    if (aspects.isEmpty()) return null
+    aspects.sort()
+    return aspects[aspects.size / 2]
+  }
+
+  // Paginas repartidas por el libro, salteando tapa y portadilla.
+  private fun samplePageIndexes(pageCount: Int, maxSamples: Int): List<Int> {
+    if (pageCount <= 0) return emptyList()
+    val first = if (pageCount > 6) 3 else 0
+    val available = pageCount - first
+    val count = min(maxSamples, available)
+    val step = max(available / max(count, 1), 1)
+    val indexes = ArrayList<Int>()
+    var index = first
+    while (index < pageCount && indexes.size < count) {
+      indexes.add(index)
+      index += step
+    }
+    return indexes
+  }
+
   private fun detectContentBox(renderer: PdfRenderer): List<Double> {
     val pageCount = renderer.pageCount
     if (pageCount == 0) return listOf(0.0, 0.0, 1.0, 1.0)
-
-    // Muestra repartida por el libro, salteando tapa y portadilla.
-    val first = if (pageCount > 6) 3 else 0
-    val sampleCount = min(12, pageCount - first)
-    val step = max((pageCount - first) / max(sampleCount, 1), 1)
 
     var left = 1.0
     var top = 1.0
@@ -280,22 +300,19 @@ class BardoPdfModule : Module() {
     var bottom = 0.0
     var found = false
 
-    var index = first
-    var taken = 0
-    while (index < pageCount && taken < sampleCount) {
+    for (index in samplePageIndexes(pageCount, 12)) {
       val box = contentBoxOfPage(renderer, index)
       if (box != null) {
         left = min(left, box[0]); top = min(top, box[1])
         right = max(right, box[2]); bottom = max(bottom, box[3])
         found = true
       }
-      index += step
-      taken += 1
     }
 
     if (!found) return listOf(0.0, 0.0, 1.0, 1.0)
 
-    val pad = 0.015
+    // Un poco de aire: con el texto pegado al borde la pagina se ve apretada.
+    val pad = 0.03
     val result = listOf(
       max(left - pad, 0.0), max(top - pad, 0.0),
       min(right + pad, 1.0), min(bottom + pad, 1.0)
@@ -305,8 +322,12 @@ class BardoPdfModule : Module() {
     return if (gained < 0.06) listOf(0.0, 0.0, 1.0, 1.0) else result
   }
 
+  // "Tinta" = bastante mas oscuro que el PAPEL de esa pagina, no que el blanco: en
+  // un libro escaneado el papel es amarillento y contra un umbral fijo la pagina
+  // entera contaba como contenido (no se recortaba nada). Una fila o columna cuenta
+  // solo si tiene un minimo de tinta, para que motas sueltas no estiren la caja.
   private fun contentBoxOfPage(renderer: PdfRenderer, pageIndex: Int): DoubleArray? {
-    val sampleWidth = 160
+    val sampleWidth = 320
     var bitmap: Bitmap? = null
     try {
       renderer.openPage(pageIndex).use { page ->
@@ -323,24 +344,46 @@ class BardoPdfModule : Module() {
       val pixels = IntArray(width * height)
       source.getPixels(pixels, 0, width, 0, 0, width, height)
 
-      var minX = width
-      var minY = height
-      var maxX = -1
-      var maxY = -1
+      val luminance = IntArray(pixels.size)
+      val histogram = IntArray(256)
+      for (i in pixels.indices) {
+        val pixel = pixels[i]
+        val value = (Color.red(pixel) * 299 + Color.green(pixel) * 587 + Color.blue(pixel) * 114) / 1000
+        luminance[i] = value
+        histogram[value] += 1
+      }
+
+      // Color del papel: la mediana (el papel ocupa casi toda la pagina).
+      var seen = 0
+      var paper = 255
+      for (value in 0..255) {
+        seen += histogram[value]
+        if (seen >= pixels.size / 2) { paper = value; break }
+      }
+      val inkThreshold = (paper - 45).coerceIn(40, 225)
+
+      val columnInk = IntArray(width)
+      val rowInk = IntArray(height)
       for (y in 0 until height) {
         val row = y * width
         for (x in 0 until width) {
-          val pixel = pixels[row + x]
-          val luminance = (Color.red(pixel) * 299 + Color.green(pixel) * 587 + Color.blue(pixel) * 114) / 1000
-          if (luminance < 225) {
-            if (x < minX) minX = x
-            if (x > maxX) maxX = x
-            if (y < minY) minY = y
-            if (y > maxY) maxY = y
+          if (luminance[row + x] < inkThreshold) {
+            columnInk[x] += 1
+            rowInk[y] += 1
           }
         }
       }
-      if (maxX < 0) return null // pagina en blanco
+
+      val minColumnInk = max(2, height / 120)
+      val minRowInk = max(2, width / 120)
+      var minX = -1
+      var maxX = -1
+      for (x in 0 until width) if (columnInk[x] >= minColumnInk) { if (minX < 0) minX = x; maxX = x }
+      var minY = -1
+      var maxY = -1
+      for (y in 0 until height) if (rowInk[y] >= minRowInk) { if (minY < 0) minY = y; maxY = y }
+      if (minX < 0 || minY < 0) return null // pagina en blanco
+
       return doubleArrayOf(
         minX.toDouble() / width, minY.toDouble() / height,
         (maxX + 1).toDouble() / width, (maxY + 1).toDouble() / height

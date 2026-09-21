@@ -1,3 +1,5 @@
+import { Span, paragraphSpans, spanLength, splitSpan } from './textSpans';
+
 const DEFAULT_MAX_SEGMENT_CHARS = 450;
 const DEFAULT_MAX_PARAGRAPHS = 3;
 // CLAVE para que suene natural: los tramos se cortan SÓLO en fin de oración
@@ -31,35 +33,6 @@ export type SynthesisChunk = {
  * las encontraba, caía a un offset aproximado y el error se acumulaba hasta
  * cortar tramos A MITAD DE PALABRA ("plenitu" | "d. Un alma…").
  */
-type Span = { start: number; end: number };
-
-const spanLength = (span: Span) => span.end - span.start;
-
-/** Rango sin los espacios de las puntas. */
-function trimSpan(text: string, start: number, end: number): Span | null {
-  let from = start;
-  let to = end;
-  while (from < to && /\s/.test(text[from])) from += 1;
-  while (to > from && /\s/.test(text[to - 1])) to -= 1;
-  return to > from ? { start: from, end: to } : null;
-}
-
-/** Parte un rango en los puntos donde `boundary` matchea (el match queda a la izquierda). */
-function splitSpan(text: string, span: Span, boundary: RegExp): Span[] {
-  const parts: Span[] = [];
-  const source = text.slice(span.start, span.end);
-  let cursor = 0;
-  for (const match of source.matchAll(boundary)) {
-    const cut = (match.index ?? 0) + match[0].length;
-    const part = trimSpan(text, span.start + cursor, span.start + cut);
-    if (part) parts.push(part);
-    cursor = cut;
-  }
-  const rest = trimSpan(text, span.start + cursor, span.end);
-  if (rest) parts.push(rest);
-  return parts;
-}
-
 // Fin de oración: puntuación final, comillas/paréntesis de cierre, y después espacio.
 const SENTENCE_BOUNDARY = /[.!?…]+["'»”’)\]]*(?=\s)/g;
 // Pausas naturales dentro de una oración descomunal.
@@ -96,10 +69,7 @@ function splitLongParagraph(text: string, paragraph: Span, maxChars: number): Sp
 }
 
 function buildSegmentSpans(fullText: string, maxChars: number, maxParagraphs: number): Span[] {
-  const whole = trimSpan(fullText, 0, fullText.length);
-  if (!whole) return [];
-
-  const pieces = splitSpan(fullText, whole, /\n{2,}/g).flatMap((paragraph) =>
+  const pieces = paragraphSpans(fullText).flatMap((paragraph) =>
     splitLongParagraph(fullText, paragraph, maxChars),
   );
 

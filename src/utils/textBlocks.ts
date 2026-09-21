@@ -1,4 +1,5 @@
 import { TextBlock } from '../types/document';
+import { Span, paragraphSpans, spanLength, trimSpan } from './textSpans';
 
 const TARGET_BLOCK_LENGTH = 280;
 const HARD_BLOCK_LENGTH = 420;
@@ -6,9 +7,16 @@ const MIN_BLOCK_LENGTH = 110;
 const SENTENCE_PATTERN = /[^.!?]+[.!?]+[\])'"\u00BB\u201D]*|[^.!?]+$/g;
 const HYPHENATED_LINE_BREAK_PATTERN = /([A-Za-z\u00C0-\u024F])-\n([A-Za-z\u00C0-\u024F])/g;
 
-function splitIntoSentences(paragraph: string) {
-  const matches = paragraph.match(SENTENCE_PATTERN);
-  return matches?.map((sentence) => sentence.trim()).filter(Boolean) ?? [paragraph];
+/** Oraciones de un párrafo, como rangos sobre el texto original. */
+function sentenceSpans(fullText: string, paragraph: Span): Span[] {
+  const source = fullText.slice(paragraph.start, paragraph.end);
+  const spans: Span[] = [];
+  for (const match of source.matchAll(SENTENCE_PATTERN)) {
+    const from = paragraph.start + (match.index ?? 0);
+    const span = trimSpan(fullText, from, from + match[0].length);
+    if (span) spans.push(span);
+  }
+  return spans.length > 0 ? spans : [paragraph];
 }
 
 function findSplitPoint(value: string, maxLength: number) {
@@ -18,25 +26,25 @@ function findSplitPoint(value: string, maxLength: number) {
     slice.lastIndexOf('; '),
     slice.lastIndexOf(', '),
     slice.lastIndexOf(' '),
+    slice.lastIndexOf('\n'),
   );
 
   return preferredSplit > 80 ? preferredSplit + 1 : maxLength;
 }
 
-function chunkLongSentence(sentence: string) {
-  const parts: string[] = [];
-  let remaining = sentence.trim();
+/** Una oración más larga que un bloque se parte en pausas naturales. */
+function chunkLongSentence(fullText: string, sentence: Span): Span[] {
+  const parts: Span[] = [];
+  let remaining: Span | null = sentence;
 
-  while (remaining.length > HARD_BLOCK_LENGTH) {
-    const splitPoint = findSplitPoint(remaining, HARD_BLOCK_LENGTH);
-    parts.push(remaining.slice(0, splitPoint).trim());
-    remaining = remaining.slice(splitPoint).trim();
+  while (remaining && spanLength(remaining) > HARD_BLOCK_LENGTH) {
+    const splitPoint = findSplitPoint(fullText.slice(remaining.start, remaining.end), HARD_BLOCK_LENGTH);
+    const part = trimSpan(fullText, remaining.start, remaining.start + splitPoint);
+    if (part) parts.push(part);
+    remaining = trimSpan(fullText, remaining.start + splitPoint, remaining.end);
   }
 
-  if (remaining) {
-    parts.push(remaining);
-  }
-
+  if (remaining) parts.push(remaining);
   return parts;
 }
 
@@ -53,62 +61,58 @@ export function normalizeExtractedText(value: string) {
     .trim();
 }
 
+/**
+ * Bloques de lectura. Cada bloque ES un rango del texto original:
+ * `fullText.slice(startChar, endChar) === text`, siempre. De ese invariante
+ * dependen el progreso, el capítulo actual, el resaltado de la palabra que suena
+ * y la posición de marcadores y notas.
+ *
+ * La versión anterior unía oraciones con un espacio y ubicaba el resultado con
+ * indexOf. Con saltos de línea entre oraciones (cualquier PDF) no lo encontraba y
+ * caía a un offset aproximado: en un libro real, 1 de cada 4 bloques quedaba
+ * apuntando a otro lugar del texto.
+ */
 export function buildTextBlocks(fullText: string): TextBlock[] {
   if (!fullText.trim()) {
     return [];
   }
 
-  const paragraphs = fullText.split(/\n{2,}/).map((paragraph) => paragraph.trim()).filter(Boolean);
-  const blockTexts: string[] = [];
-  let currentBlock = '';
+  const blockSpans: Span[] = [];
 
-  for (const paragraph of paragraphs) {
-    const sentences = splitIntoSentences(paragraph);
+  for (const paragraph of paragraphSpans(fullText)) {
+    let current: Span | null = null;
 
-    for (const sentence of sentences) {
-      const chunks = chunkLongSentence(sentence);
-
-      for (const chunk of chunks) {
-        const nextCandidate = currentBlock ? `${currentBlock} ${chunk}` : chunk;
-
-        if (nextCandidate.length <= TARGET_BLOCK_LENGTH || currentBlock.length < MIN_BLOCK_LENGTH) {
-          currentBlock = nextCandidate;
+    for (const sentence of sentenceSpans(fullText, paragraph)) {
+      for (const chunk of chunkLongSentence(fullText, sentence)) {
+        if (!current) {
+          current = chunk;
           continue;
         }
 
-        blockTexts.push(currentBlock.trim());
-        currentBlock = chunk;
+        const candidateLength = chunk.end - current.start;
+        if (candidateLength <= TARGET_BLOCK_LENGTH || spanLength(current) < MIN_BLOCK_LENGTH) {
+          current = { start: current.start, end: chunk.end };
+          continue;
+        }
+
+        blockSpans.push(current);
+        current = chunk;
       }
     }
 
-    if (currentBlock) {
-      blockTexts.push(currentBlock.trim());
-      currentBlock = '';
-    }
+    // Un bloque nunca cruza de un párrafo a otro.
+    if (current) blockSpans.push(current);
   }
 
-  if (currentBlock) {
-    blockTexts.push(currentBlock.trim());
+  if (blockSpans.length === 0) {
+    const whole = trimSpan(fullText, 0, fullText.length);
+    if (whole) blockSpans.push(whole);
   }
 
-  if (blockTexts.length === 0) {
-    blockTexts.push(fullText.trim());
-  }
-
-  let cursor = 0;
-
-  return blockTexts.map((text, index) => {
-    const startChar = fullText.indexOf(text, cursor);
-    const safeStartChar = startChar >= 0 ? startChar : cursor;
-    const endChar = safeStartChar + text.length;
-
-    cursor = endChar;
-
-    return {
-      index,
-      text,
-      startChar: safeStartChar,
-      endChar,
-    };
-  });
+  return blockSpans.map((span, index) => ({
+    index,
+    text: fullText.slice(span.start, span.end),
+    startChar: span.start,
+    endChar: span.end,
+  }));
 }

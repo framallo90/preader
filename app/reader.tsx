@@ -31,19 +31,23 @@ import { runtimeStateRepository } from '../src/storage/runtimeStateRepository';
 import { Book, BookNote, NoteType, ReadingProgress, ReadingTheme } from '../src/types/storage';
 import { ParsedDocument, TextBlock } from '../src/types/document';
 import { detectChapters } from '../src/utils/chapterDetector';
-import { chaptersFromOutline } from '../src/utils/pdfOutline';
+import { chaptersFromOutline, chaptersFromToc } from '../src/utils/pdfOutline';
 import { clampRounded } from '../src/utils/math';
 import { SearchMatch, foldText, searchText } from '../src/utils/textSearch';
 import { ThemeColors, getReaderColors, resolveReadingMode } from '../src/utils/theme';
 
 /**
- * Capítulos del libro: primero el índice real del PDF (lo que marcó la
- * editorial); si no trae, la detección sobre el texto (encabezados POV, etc.).
+ * Capítulos del libro: primero el índice real (marcadores del PDF o índice del
+ * EPUB); si no trae, la detección sobre el texto (encabezados POV, etc.).
  */
 function resolveChapters(bookId: string, doc: ParsedDocument) {
   if (doc.pdf) {
     const fromOutline = chaptersFromOutline(bookId, doc.pdf.outline, doc.pdf.pageOffsets, doc.fullText.length);
     if (fromOutline.length > 0) return fromOutline;
+  }
+  if (doc.toc) {
+    const fromToc = chaptersFromToc(bookId, doc.toc, doc.fullText.length);
+    if (fromToc.length > 0) return fromToc;
   }
   return detectChapters(bookId, doc.fullText);
 }
@@ -244,6 +248,12 @@ export default function ReaderScreen() {
     onProgressChange: persistProgress,
   });
 
+  // Si la voz está sonando, un error anterior ya no aplica (p. ej. faltaba la
+  // voz, se instaló y el reintento anduvo): el cartel no debe quedar pegado.
+  useEffect(() => {
+    if (reader.isPlaying) setSpeechError(null);
+  }, [reader.isPlaying]);
+
   // Detiene y descarga el audio (cierra lo que se está escuchando).
   const handleStop = useCallback(async () => {
     await documentAudioPlaybackService.stopAndUnload();
@@ -320,13 +330,51 @@ export default function ReaderScreen() {
   // auto-scroll de la voz no secuestre la pantalla mientras leés por delante.
   const textScrolledAtRef = useRef(0);
 
+  // Posicionar la lista de texto en un bloque. Los bloques tienen alto variable,
+  // así que scrollToIndex a un bloque lejano (todavía no medido) falla, y estimar
+  // el offset por alto promedio queda corto o largo. Lo determinista es REMONTAR
+  // la lista anclada en el bloque destino: renderiza directamente desde ahí.
+  const [textAnchor, setTextAnchor] = useState({ index: 0, nonce: 0 });
+  // Mientras la lista se reposiciona sola, lo que queda "visible" no es una
+  // decisión del usuario y NO debe guardarse como progreso.
+  const suppressViewSyncUntilRef = useRef(0);
+  const initialTextScrollDoneRef = useRef(false);
+
+  const anchorTextAt = useCallback((index: number) => {
+    suppressViewSyncUntilRef.current = Date.now() + 1500;
+    setTextAnchor((prev) => ({ index: Math.max(0, index), nonce: prev.nonce + 1 }));
+  }, []);
+
+  // Saltos (índice, búsqueda, anotación, abrir): anclar. Seguir a la voz: el
+  // bloque siguiente ya está dibujado cerca, alcanza con un scroll animado.
+  const scrollToBlock = useCallback(
+    (index: number, animated = false) => {
+      if (!animated) {
+        anchorTextAt(index);
+        return;
+      }
+      suppressViewSyncUntilRef.current = Date.now() + 1500;
+      listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.18 });
+    },
+    [anchorTextAt],
+  );
+
+  const handleTextScrollFailed = useCallback(
+    (info: { index: number }) => {
+      anchorTextAt(info.index);
+    },
+    [anchorTextAt],
+  );
+
   // Scroll manual en la lista de texto → guarda progreso (el bloque de arriba).
-  // Sin esto, quien lee en silencio deslizando volvia al inicio al reabrir.
   // Identidad estable (RN prohíbe cambiar onViewableItemsChanged en caliente):
   // lee el controlador por ref, deps vacías.
   const handleTextViewable = useCallback(
     ({ viewableItems }: { viewableItems: Array<{ index: number | null }> }) => {
       if (isPlayingRef.current) return; // sonando manda el audio, no el scroll
+      // Al abrir, la lista arranca arriba de todo: si eso se guardara, cada
+      // reapertura pisaría el progreso con 0%. Recién cuenta el scroll del usuario.
+      if (!initialTextScrollDoneRef.current || Date.now() < suppressViewSyncUntilRef.current) return;
       const topIndex = viewableItems.find((v) => v.index !== null)?.index;
       if (typeof topIndex === 'number') void readerRef.current.syncPosition(topIndex, 0);
     },
@@ -341,13 +389,28 @@ export default function ReaderScreen() {
   }, [parsedDocument, reader.currentBlockIndex, reader.currentCharIndex]);
 
   const currentChapter = useMemo(() => {
-    if (!parsedDocument?.chapters?.length) return null;
-    return (
-      parsedDocument.chapters.find(
-        (ch) => ch.startChar <= currentAbsoluteChar && currentAbsoluteChar < ch.endChar,
-      ) ?? parsedDocument.chapters[parsedDocument.chapters.length - 1]
-    );
+    const chapters = parsedDocument?.chapters;
+    if (!chapters?.length) return null;
+    const found = chapters.find((ch) => ch.startChar <= currentAbsoluteChar && currentAbsoluteChar < ch.endChar);
+    if (found) return found;
+    // Fuera de todo capítulo: antes del primero (portadilla, prólogo sin indexar)
+    // es el primero; pasado el último, el último.
+    return currentAbsoluteChar < chapters[0].startChar ? chapters[0] : chapters[chapters.length - 1];
   }, [parsedDocument, currentAbsoluteChar]);
+
+  // Modo texto: al abrir, ir a donde quedó la lectura.
+  useEffect(() => {
+    if (!parsedDocument || parsedDocument.pdf) return;
+    initialTextScrollDoneRef.current = false;
+    const index = Math.min(Math.max(savedProgress?.blockIndex ?? 0, 0), parsedDocument.blocks.length - 1);
+    const startTimer = index > 0 ? setTimeout(() => scrollToBlock(index), 80) : null;
+    // Se habilita el guardado por scroll cuando el salto inicial ya se asentó.
+    const doneTimer = setTimeout(() => { initialTextScrollDoneRef.current = true; }, index > 0 ? 2200 : 600);
+    return () => {
+      if (startTimer) clearTimeout(startTimer);
+      clearTimeout(doneTimer);
+    };
+  }, [parsedDocument, savedProgress, scrollToBlock]);
 
   const loadNotes = useCallback(async () => {
     if (!documentId) return;
@@ -370,10 +433,10 @@ export default function ReaderScreen() {
         pdfListRef.current?.scrollToPage(pageForChar(absoluteChar, parsedDocument.pdf.pageOffsets));
       } else {
         textScrolledAtRef.current = 0;
-        listRef.current?.scrollToIndex({ index: pos.blockIndex, animated: false, viewPosition: 0.18 });
+        scrollToBlock(pos.blockIndex);
       }
     },
-    [parsedDocument],
+    [parsedDocument, scrollToBlock],
   );
 
   // Al volver de "Sobre este libro": refresca anotaciones y aplica el salto pedido.
@@ -533,11 +596,9 @@ export default function ReaderScreen() {
     // por delante de la narracion.
     if (!reader.isPlaying) return;
     if (Date.now() - textScrolledAtRef.current < 4000) return;
-    const timer = setTimeout(() => {
-      listRef.current?.scrollToIndex({ index: reader.currentBlockIndex, animated: true, viewPosition: 0.18 });
-    }, 80);
+    const timer = setTimeout(() => scrollToBlock(reader.currentBlockIndex, true), 80);
     return () => clearTimeout(timer);
-  }, [parsedDocument, reader.currentBlockIndex, reader.isPlaying]);
+  }, [parsedDocument, reader.currentBlockIndex, reader.isPlaying, scrollToBlock]);
 
   useEffect(() => {
     const shouldKeepAwake = settings.keepScreenAwakeWhileReading && reader.isPlaying;
@@ -749,6 +810,9 @@ export default function ReaderScreen() {
           />
         ) : (
         <FlatList
+          // La clave cambia en cada anclaje: la lista se remonta en ese bloque.
+          key={`text-${textAnchor.nonce}`}
+          initialScrollIndex={Math.min(textAnchor.index, parsedDocument.blocks.length - 1)}
           style={styles.readerList}
           ref={listRef}
           data={parsedDocument.blocks}
@@ -758,11 +822,7 @@ export default function ReaderScreen() {
           onScrollBeginDrag={() => { textScrolledAtRef.current = Date.now(); }}
           onViewableItemsChanged={handleTextViewable}
           viewabilityConfig={textViewabilityConfig}
-          onScrollToIndexFailed={(info) => {
-            setTimeout(() => {
-              listRef.current?.scrollToIndex({ index: info.index, animated: true, viewPosition: 0.18 });
-            }, 120);
-          }}
+          onScrollToIndexFailed={handleTextScrollFailed}
           renderItem={({ item }) => (
             <ReaderBlockCard
               block={item}
@@ -985,9 +1045,8 @@ export default function ReaderScreen() {
 
       {/* Anotar un párrafo o una página: marcador, cita o nota. */}
       <Modal visible={annotationTarget !== null} transparent animationType="fade" onRequestClose={() => setAnnotationTarget(null)}>
-        <TouchableOpacity style={styles.menuBackdrop} activeOpacity={1} onPress={() => setAnnotationTarget(null)}>
-          <TouchableOpacity activeOpacity={1} style={[styles.menuSheet, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <View style={styles.menuHandle} />
+        <TouchableOpacity style={[styles.menuBackdrop, styles.topBackdrop]} activeOpacity={1} onPress={() => setAnnotationTarget(null)}>
+          <TouchableOpacity activeOpacity={1} style={[styles.menuSheet, styles.topSheet, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <Text style={[styles.settingLabel, { color: colors.text }]}>
               {annotationTarget?.page !== null && annotationTarget?.page !== undefined ? `Página ${annotationTarget.page + 1}` : 'Este párrafo'}
             </Text>
@@ -1013,9 +1072,8 @@ export default function ReaderScreen() {
 
       {/* Buscar en el libro (sin distinguir tildes ni mayúsculas). */}
       <Modal visible={isSearchVisible} transparent animationType="fade" onRequestClose={() => setIsSearchVisible(false)}>
-        <TouchableOpacity style={styles.menuBackdrop} activeOpacity={1} onPress={() => setIsSearchVisible(false)}>
-          <TouchableOpacity activeOpacity={1} style={[styles.menuSheet, styles.searchSheet, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-            <View style={styles.menuHandle} />
+        <TouchableOpacity style={[styles.menuBackdrop, styles.topBackdrop]} activeOpacity={1} onPress={() => setIsSearchVisible(false)}>
+          <TouchableOpacity activeOpacity={1} style={[styles.menuSheet, styles.topSheet, styles.searchSheet, { backgroundColor: colors.surface, borderColor: colors.border }]}>
             <View style={styles.inlineActions}>
               <TextInput
                 value={searchQuery}
@@ -1161,7 +1219,10 @@ const styles = StyleSheet.create({
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   annotationExcerpt: { fontSize: 13, lineHeight: 19, fontStyle: 'italic' },
   annotationInput: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, fontSize: 14, minHeight: 64, textAlignVertical: 'top' },
-  searchSheet: { maxHeight: '80%' },
+  topBackdrop: { justifyContent: 'flex-start', paddingTop: 56, paddingHorizontal: 12 },
+  topSheet: { borderWidth: 1, borderRadius: 20, borderBottomLeftRadius: 20, borderBottomRightRadius: 20, paddingTop: 16, paddingBottom: 16 },
+  // Media pantalla como mucho: la otra mitad es del teclado.
+  searchSheet: { maxHeight: '48%' },
   searchInput: { flex: 1, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8, fontSize: 15 },
   searchCount: { fontSize: 12 },
   searchRow: { borderTopWidth: StyleSheet.hairlineWidth, paddingVertical: 10, gap: 3 },

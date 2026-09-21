@@ -1,110 +1,58 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import JSZip from 'jszip';
 
-import { DocumentMetadata, DocumentParser, ParsedDocument } from '../types/document';
-import { buildTextBlocks, normalizeExtractedText } from '../utils/textBlocks';
+import { DocumentMetadata, DocumentParser, ParsedDocument, TocEntry } from '../types/document';
 import { detectChapters } from '../utils/chapterDetector';
+import {
+  EpubTocEntry,
+  decodeEntities,
+  findAnchorIndex,
+  findTocPaths,
+  htmlToText,
+  parseAttributes,
+  parseManifest,
+  parseNav,
+  parseNcx,
+  parseSpinePaths,
+  resolveEpubPath,
+} from '../utils/epubStructure';
+import { buildTextBlocks, normalizeExtractedText } from '../utils/textBlocks';
 import { DocumentParseError, assertFileSizeWithinLimit } from './documentParser';
 
-/**
- * Extrae texto limpio de un string HTML de EPUB.
- * Elimina tags, scripts, y normaliza entidades HTML básicas.
- */
-function stripHtml(html: string): string {
-  return html
-    .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '')
-    .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
-    .replace(/<\/h[1-6]>/gi, '\n\n')
-    .replace(/<\/div>/gi, '\n')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&mdash;/g, '—')
-    .replace(/&laquo;/g, '«')
-    .replace(/&raquo;/g, '»')
-    .trim();
+const MAX_TOC_ENTRIES = 800;
+
+function directoryOf(path: string): string {
+  return path.includes('/') ? path.split('/').slice(0, -1).join('/') : '';
 }
 
 /**
- * Lee el archivo OPF del EPUB para obtener el orden correcto de los archivos de contenido.
- */
-function parseSpineOrder(opfContent: string, opfDir: string): string[] {
-  const idToHref = new Map<string, string>();
-
-  // Extraer manifest items
-  const manifestMatches = opfContent.matchAll(/<item[^>]+id="([^"]+)"[^>]+href="([^"]+)"/gi);
-  for (const match of manifestMatches) {
-    idToHref.set(match[1], match[2]);
-  }
-
-  // Extraer spine en orden
-  const spineMatches = opfContent.matchAll(/<itemref[^>]+idref="([^"]+)"/gi);
-  const hrefs: string[] = [];
-
-  for (const match of spineMatches) {
-    const href = idToHref.get(match[1]);
-    if (href) {
-      // Construir path relativo al directorio del OPF
-      const fullPath = opfDir ? `${opfDir}/${href}` : href;
-      hrefs.push(fullPath);
-    }
-  }
-
-  return hrefs;
-}
-
-function decodeXmlEntities(value: string): string {
-  return value
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .trim();
-}
-
-/**
- * Extrae título, autor y la ruta de la portada desde el OPF.
+ * Título, autor y portada desde el OPF.
  * Soporta EPUB 3 (item properties="cover-image") y EPUB 2 (meta name="cover").
  */
-function parseOpfMetadata(opfContent: string): { title: string | null; author: string | null; coverHref: string | null } {
-  const titleMatch = /<dc:title[^>]*>([\s\S]*?)<\/dc:title>/i.exec(opfContent);
-  const authorMatch = /<dc:creator[^>]*>([\s\S]*?)<\/dc:creator>/i.exec(opfContent);
+function parseOpfMetadata(opf: string): { title: string | null; author: string | null; coverHref: string | null } {
+  const title = /<dc:title[^>]*>([\s\S]*?)<\/dc:title>/i.exec(opf)?.[1];
+  const author = /<dc:creator[^>]*>([\s\S]*?)<\/dc:creator>/i.exec(opf)?.[1];
+  const manifest = parseManifest(opf);
 
   let coverHref: string | null = null;
-
-  // EPUB 3: <item ... properties="...cover-image..." href="..."/>
-  const coverItemTag = /<item[^>]+properties="[^"]*cover-image[^"]*"[^>]*>/i.exec(opfContent)?.[0];
-  if (coverItemTag) {
-    coverHref = /href="([^"]+)"/i.exec(coverItemTag)?.[1] ?? null;
+  for (const item of manifest.values()) {
+    if (item.properties?.split(/\s+/).includes('cover-image')) {
+      coverHref = item.href;
+      break;
+    }
   }
-
-  // EPUB 2: <meta name="cover" content="idDeItem"/> → buscar el item por id
   if (!coverHref) {
-    const coverId =
-      /<meta[^>]+name="cover"[^>]+content="([^"]+)"/i.exec(opfContent)?.[1] ??
-      /<meta[^>]+content="([^"]+)"[^>]+name="cover"/i.exec(opfContent)?.[1] ??
-      null;
-
-    if (coverId) {
-      const itemTag = new RegExp(`<item[^>]+id="${coverId}"[^>]*>`, 'i').exec(opfContent)?.[0];
-      if (itemTag) {
-        coverHref = /href="([^"]+)"/i.exec(itemTag)?.[1] ?? null;
+    for (const match of opf.matchAll(/<meta\b[^>]*>/gi)) {
+      const attrs = parseAttributes(match[0]);
+      if (attrs.name === 'cover' && attrs.content) {
+        coverHref = manifest.get(attrs.content)?.href ?? null;
+        break;
       }
     }
   }
 
-  return {
-    title: titleMatch ? decodeXmlEntities(titleMatch[1]) || null : null,
-    author: authorMatch ? decodeXmlEntities(authorMatch[1]) || null : null,
-    coverHref,
-  };
+  const clean = (value: string | undefined) => (value ? decodeEntities(value.replace(/<[^>]+>/g, '')).trim() || null : null);
+  return { title: clean(title), author: clean(author), coverHref };
 }
 
 class EpubDocumentParser implements DocumentParser {
@@ -118,93 +66,64 @@ class EpubDocumentParser implements DocumentParser {
     await assertFileSizeWithinLimit(uri);
 
     try {
-      // Leer el EPUB como base64 y pasarlo a JSZip
       const base64 = await FileSystem.readAsStringAsync(uri, {
         encoding: FileSystem.EncodingType.Base64,
       });
-
       const zip = await JSZip.loadAsync(base64, { base64: true });
 
-      // Encontrar el archivo OPF (container.xml apunta a él)
       const containerXml = await zip.file('META-INF/container.xml')?.async('string');
-
       if (!containerXml) {
         throw new DocumentParseError('parse_failed', 'El EPUB no tiene un container.xml válido.');
       }
 
-      const opfPathMatch = /full-path="([^"]+\.opf)"/i.exec(containerXml);
-
-      if (!opfPathMatch) {
+      const opfPath = /full-path\s*=\s*["']([^"']+\.opf)["']/i.exec(containerXml)?.[1];
+      if (!opfPath) {
         throw new DocumentParseError('parse_failed', 'No se encontró el archivo OPF en el EPUB.');
       }
 
-      const opfPath = opfPathMatch[1];
-      const opfDir = opfPath.includes('/') ? opfPath.split('/').slice(0, -1).join('/') : '';
-      const opfContent = await zip.file(opfPath)?.async('string');
-
-      if (!opfContent) {
+      const opfDir = directoryOf(opfPath);
+      const opf = await zip.file(opfPath)?.async('string');
+      if (!opf) {
         throw new DocumentParseError('parse_failed', 'No se pudo leer el archivo OPF del EPUB.');
       }
 
-      const spineFiles = parseSpineOrder(opfContent, opfDir);
-
-      if (spineFiles.length === 0) {
+      const spinePaths = parseSpinePaths(opf, opfDir);
+      if (spinePaths.length === 0) {
         throw new DocumentParseError('parse_failed', 'El EPUB no tiene contenido en el spine.');
       }
 
-      // Metadata real del libro: título, autor y portada.
-      const { title, author, coverHref } = parseOpfMetadata(opfContent);
-      let coverBase64: string | null = null;
-      let coverExtension: string | null = null;
+      // Texto por archivo, en orden de lectura. Se recuerda dónde empieza cada
+      // archivo dentro del texto y su HTML, para poder ubicar el índice después.
+      let fullText = '';
+      const fileStart = new Map<string, number>();
+      const fileHtml = new Map<string, string>();
 
-      if (coverHref) {
-        const coverPath = opfDir ? `${opfDir}/${coverHref}` : coverHref;
-        const coverFile = zip.file(coverPath) ?? zip.file(coverHref);
-        if (coverFile) {
-          try {
-            coverBase64 = await coverFile.async('base64');
-            const rawExtension = coverHref.split('.').pop()?.toLowerCase() ?? 'jpg';
-            coverExtension = `.${rawExtension === 'jpeg' ? 'jpg' : rawExtension}`;
-          } catch {
-            coverBase64 = null;
-            coverExtension = null;
-          }
-        }
-      }
-
-      const metadata: DocumentMetadata = { title, author, coverBase64, coverExtension };
-
-      // Extraer texto de cada archivo en orden del spine
-      const textParts: string[] = [];
-
-      for (const filePath of spineFiles) {
-        const file = zip.file(filePath);
+      for (const path of spinePaths) {
+        const file = zip.file(path);
         if (!file) continue;
-
         const html = await file.async('string');
-        const text = stripHtml(html);
-
-        if (text.trim()) {
-          textParts.push(text);
-        }
+        const text = normalizeExtractedText(htmlToText(html));
+        if (!text) continue;
+        if (fullText) fullText += '\n\n';
+        fileStart.set(path, fullText.length);
+        fileHtml.set(path, html);
+        fullText += text;
       }
-
-      const rawText = textParts.join('\n\n');
-      const fullText = normalizeExtractedText(rawText);
 
       if (!fullText) {
         throw new DocumentParseError('no_extractable_text', 'El EPUB no contiene texto legible.');
       }
 
       const blocks = buildTextBlocks(fullText);
-
       if (blocks.length === 0) {
         throw new DocumentParseError('empty_document', 'No se pudieron construir bloques legibles.');
       }
 
+      const toc = await this.readToc(zip, opf, opfDir, fullText, fileStart, fileHtml);
+      const metadata = await this.readMetadata(zip, opf, opfDir);
+
       const fileName = uri.split('/').pop() ?? 'documento.epub';
       const documentId = fileName;
-      const chapters = detectChapters(documentId, fullText);
 
       return {
         id: documentId,
@@ -212,7 +131,8 @@ class EpubDocumentParser implements DocumentParser {
         sourceUri: uri,
         fullText,
         blocks,
-        chapters,
+        chapters: detectChapters(documentId, fullText),
+        toc: toc.length > 0 ? toc : undefined,
         metadata,
       };
     } catch (error) {
@@ -221,6 +141,73 @@ class EpubDocumentParser implements DocumentParser {
       const message = error instanceof Error ? error.message : 'No se pudo leer el EPUB.';
       throw new DocumentParseError('parse_failed', message);
     }
+  }
+
+  /** Índice del libro (nav de EPUB 3 o NCX de EPUB 2) ubicado en el texto. Nunca lanza. */
+  private async readToc(
+    zip: JSZip,
+    opf: string,
+    opfDir: string,
+    fullText: string,
+    fileStart: Map<string, number>,
+    fileHtml: Map<string, string>,
+  ): Promise<TocEntry[]> {
+    try {
+      const { nav, ncx } = findTocPaths(opf, opfDir);
+      let entries: EpubTocEntry[] = [];
+      if (nav) {
+        const content = await zip.file(nav)?.async('string');
+        if (content) entries = parseNav(content, directoryOf(nav));
+      }
+      if (entries.length < 2 && ncx) {
+        const content = await zip.file(ncx)?.async('string');
+        if (content) entries = parseNcx(content, directoryOf(ncx));
+      }
+
+      const toc: TocEntry[] = [];
+      for (const entry of entries.slice(0, MAX_TOC_ENTRIES)) {
+        const start = fileStart.get(entry.file);
+        const html = fileHtml.get(entry.file);
+        if (start === undefined || !html) continue;
+
+        let offset = start;
+        if (entry.anchor) {
+          const anchorIndex = findAnchorIndex(html, entry.anchor);
+          if (anchorIndex > 0) {
+            // Largo del texto que hay ANTES del ancla, con la misma limpieza.
+            offset = start + normalizeExtractedText(htmlToText(html.slice(0, anchorIndex))).length;
+          }
+        }
+        // El corte puede caer en el espacio previo al título: se avanza a la letra.
+        while (offset < fullText.length && /\s/.test(fullText[offset])) offset += 1;
+        toc.push({ title: entry.title, startChar: Math.min(offset, fullText.length - 1), level: entry.level });
+      }
+      return toc;
+    } catch {
+      return []; // un índice ilegible no debe frenar la apertura
+    }
+  }
+
+  private async readMetadata(zip: JSZip, opf: string, opfDir: string): Promise<DocumentMetadata> {
+    const { title, author, coverHref } = parseOpfMetadata(opf);
+    let coverBase64: string | null = null;
+    let coverExtension: string | null = null;
+
+    if (coverHref) {
+      const coverFile = zip.file(resolveEpubPath(opfDir, coverHref)) ?? zip.file(coverHref);
+      if (coverFile) {
+        try {
+          coverBase64 = await coverFile.async('base64');
+          const rawExtension = coverHref.split('#')[0].split('.').pop()?.toLowerCase() ?? 'jpg';
+          coverExtension = `.${rawExtension === 'jpeg' ? 'jpg' : rawExtension}`;
+        } catch {
+          coverBase64 = null;
+          coverExtension = null;
+        }
+      }
+    }
+
+    return { title, author, coverBase64, coverExtension };
   }
 }
 

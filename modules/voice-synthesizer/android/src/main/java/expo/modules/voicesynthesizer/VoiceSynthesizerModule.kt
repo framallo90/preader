@@ -198,7 +198,18 @@ class VoiceSynthesizerModule : Module() {
     override fun onError(utteranceId: String, errorCode: Int) {
       val pending = pendingSyntheses.remove(utteranceId) ?: return
       pending.tempFile.delete()
-      pending.promise.reject("ERR_SYNTHESIS", "El motor TTS fallo durante la sintesis (codigo $errorCode).", null)
+      when (errorCode) {
+        // Sin voz instalada para el idioma, el motor cae a una voz de servidor y
+        // falla por red. Lo que el usuario tiene que hacer es instalar la voz.
+        TextToSpeech.ERROR_NOT_INSTALLED_YET,
+        TextToSpeech.ERROR_NETWORK,
+        TextToSpeech.ERROR_NETWORK_TIMEOUT -> pending.promise.reject(
+          "ERR_VOICE_NOT_INSTALLED",
+          "La voz para el idioma de este libro no esta instalada en el telefono. Abri Ajustes > Voces para descargarla y volve a intentar.",
+          null
+        )
+        else -> pending.promise.reject("ERR_SYNTHESIS", "El motor de voz fallo al generar el audio (codigo $errorCode).", null)
+      }
     }
 
     override fun onStop(utteranceId: String, interrupted: Boolean) {

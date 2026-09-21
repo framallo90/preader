@@ -68,6 +68,12 @@ export default function RootLayout() {
       }
 
       try {
+        await parsedDocumentRepository.ensureCacheVersion();
+      } catch (error) {
+        logBootRecoveryWarning('No se pudo verificar la version del cache', error);
+      }
+
+      try {
         const guard = await runtimeStateRepository.getReaderLoadGuard();
         if (guard) {
           try { await runtimeStateRepository.clearReaderLoadGuard(); } catch (error) {

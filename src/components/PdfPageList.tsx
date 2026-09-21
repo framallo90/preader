@@ -128,7 +128,13 @@ const PdfPageListInner = forwardRef(function PdfPageList(
   }: PdfPageListProps,
   ref: ForwardedRef<PdfPageListHandle>,
 ) {
-  const { width } = useWindowDimensions();
+  // El ancho de página es el del CONTENEDOR. El lector vive en una tarjeta con
+  // márgenes y borde: usando el ancho de la ventana la imagen desbordaba ~22 px y
+  // se recortaba del lado derecho. Con márgenes blancos no se notaba; con el
+  // recorte de márgenes se comía el final de cada renglón.
+  const { width: windowWidth } = useWindowDimensions();
+  const [containerWidth, setContainerWidth] = useState<number | null>(null);
+  const width = containerWidth ?? windowWidth;
   const listRef = useRef<FlatList<number>>(null);
   const currentPageRef = useRef(Math.min(Math.max(initialPage, 0), pageCount - 1));
   // Ref para no capturar un callback viejo en el onScroll.
@@ -169,7 +175,19 @@ const PdfPageListInner = forwardRef(function PdfPageList(
     [itemLength, pageCount],
   );
 
+  const handleLayout = (event: { nativeEvent: { layout: { width: number } } }) => {
+    const measured = Math.round(event.nativeEvent.layout.width);
+    if (measured > 0 && measured !== containerWidth) setContainerWidth(measured);
+  };
+
+  // Hasta medir el contenedor no se pide ninguna página (se dibujarían a un
+  // ancho equivocado y habría que tirarlas).
+  if (containerWidth === null) {
+    return <View style={styles.measure} onLayout={handleLayout} />;
+  }
+
   return (
+    <View style={styles.measure} onLayout={handleLayout}>
     <FlatList
       ref={listRef}
       // Al rotar cambia el width → remonta la lista y retoma en la página actual.
@@ -211,6 +229,7 @@ const PdfPageListInner = forwardRef(function PdfPageList(
         </Pressable>
       )}
     />
+    </View>
   );
 });
 
@@ -235,6 +254,9 @@ export const PdfPageList = memo(PdfPageListInner, (prev, next) =>
 );
 
 const styles = StyleSheet.create({
+  measure: {
+    flex: 1,
+  },
   pageWrap: {
     alignItems: 'center',
   },

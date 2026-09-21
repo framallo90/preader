@@ -442,15 +442,20 @@ class DocumentAudioPlaybackService {
       this.player.play();
     })();
 
-    this.advancingPromise = task
+    // OJO: lo que se guarda es la promesa ENCADENADA, y es contra ESA que hay que
+    // comparar al liberar. Antes se comparaba contra `task`, que nunca es igual:
+    // la guarda no se soltaba jamás y, después del primer cambio de tramo, todos
+    // los siguientes se descartaban en silencio (la voz se cortaba sola).
+    const guarded: Promise<void> = task
       .catch((err) => {
         if (!this.isSessionActive(sessionId)) return;
         // isPreparing:false también acá: un avance fallido no debe dejar el FAB en "…".
         this.updateSnapshot({ isPlaying: false, isPreparing: false, errorMessage: err instanceof Error ? err.message : 'No se pudo continuar el audio.' });
       })
-      .finally(() => { if (this.advancingPromise === task) this.advancingPromise = null; });
+      .finally(() => { if (this.advancingPromise === guarded) this.advancingPromise = null; });
 
-    await this.advancingPromise;
+    this.advancingPromise = guarded;
+    await guarded;
   }
 
   private async seekWithinActiveChunk(absoluteCharIndex: number) {

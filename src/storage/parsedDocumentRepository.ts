@@ -1,6 +1,6 @@
 import * as FileSystem from 'expo-file-system/legacy';
 
-import { ParsedDocument, PdfPageInfo, TextBlock } from '../types/document';
+import { ParsedDocument, PdfPageInfo, TextBlock, TocEntry } from '../types/document';
 import { getDatabase } from './database';
 
 // Acepta tanto Book como StoredDocument (ambos tienen id, name, uri)
@@ -14,6 +14,15 @@ type ParsedDocumentRow = {
   pdfInfoJson: string | null;
   savedAt: string;
 };
+
+// Versión de lo que se guarda en el caché. Subirla descarta TODO el caché en el
+// próximo arranque (los libros se re-procesan solos al abrirse; el progreso y las
+// anotaciones no se tocan).
+//   2 — los bloques pasaron a tener offsets exactos sobre el texto original. Los
+//       cacheados con la versión anterior apuntaban a lugares corridos del texto.
+//   3 — se guarda también el índice del EPUB.
+const PARSED_CACHE_VERSION = 3;
+const PARSED_CACHE_VERSION_KEY = 'runtime.parsedCacheVersion';
 
 // Los libros chicos se cachean inline en SQLite (rápido y transaccional). Los
 // grandes se guardan como archivos en disco: meter varios MB de texto + JSON en
@@ -40,10 +49,34 @@ function pdfInfoPath(dir: string, bookId: string): string {
   return `${dir}/${encodeURIComponent(bookId)}.pdfinfo.json`;
 }
 
-function parsePdfInfoJson(value: string | null | undefined): PdfPageInfo | undefined {
-  if (!value) return undefined;
+type DocumentInfo = { pdf?: PdfPageInfo; toc?: TocEntry[] };
+
+/** Info extra del documento (mapa de páginas del PDF, índice del EPUB). */
+function parseDocumentInfoJson(value: string | null | undefined): DocumentInfo {
+  if (!value) return {};
   try {
-    const parsed = JSON.parse(value) as Partial<PdfPageInfo> | null;
+    const parsed = JSON.parse(value) as { pdf?: unknown; toc?: unknown } | null;
+    if (!parsed) return {};
+    const toc = Array.isArray(parsed.toc)
+      ? (parsed.toc as TocEntry[]).filter(
+          (entry) => entry && typeof entry.title === 'string' && typeof entry.startChar === 'number' && typeof entry.level === 'number',
+        )
+      : undefined;
+    return { pdf: parsePdfInfo(parsed.pdf), toc: toc && toc.length > 0 ? toc : undefined };
+  } catch {
+    return {};
+  }
+}
+
+function buildDocumentInfoJson(document: ParsedDocument): string | null {
+  if (!document.pdf && !document.toc) return null;
+  return JSON.stringify({ pdf: document.pdf, toc: document.toc });
+}
+
+function parsePdfInfo(value: unknown): PdfPageInfo | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  try {
+    const parsed = value as Partial<PdfPageInfo>;
     if (!parsed || typeof parsed.pageCount !== 'number' || !Array.isArray(parsed.pageOffsets)) return undefined;
     const crop = Array.isArray(parsed.crop) && parsed.crop.length === 4 ? parsed.crop : null;
     return {
@@ -136,7 +169,7 @@ async function readDiskCache(document: DocumentRef): Promise<ParsedDocument | nu
     fullText,
     blocks,
     chapters: [],
-    pdf: parsePdfInfoJson(pdfInfoRaw),
+    ...parseDocumentInfoJson(pdfInfoRaw),
   };
 }
 
@@ -220,7 +253,7 @@ export const parsedDocumentRepository = {
           fullText: row.fullText,
           blocks,
           chapters: [],
-          pdf: parsePdfInfoJson(row.pdfInfoJson),
+          ...parseDocumentInfoJson(row.pdfInfoJson),
         };
       }
     }
@@ -231,7 +264,7 @@ export const parsedDocumentRepository = {
 
   async saveParsedDocument(document: DocumentRef, parsedDocument: ParsedDocument) {
     const blocksJson = JSON.stringify(parsedDocument.blocks);
-    const pdfInfoJson = parsedDocument.pdf ? JSON.stringify(parsedDocument.pdf) : null;
+    const pdfInfoJson = buildDocumentInfoJson(parsedDocument);
     const fitsSqlite =
       parsedDocument.fullText.length <= MAX_CACHEABLE_TEXT_LENGTH &&
       parsedDocument.blocks.length <= MAX_CACHEABLE_BLOCKS &&
@@ -269,6 +302,22 @@ export const parsedDocumentRepository = {
     } catch {
       await deleteDiskCache(document.id);
     }
+  },
+
+  /** Descarta el caché si lo escribió una versión anterior del procesamiento. */
+  async ensureCacheVersion() {
+    const db = await getDatabase();
+    const row = await db.getFirstAsync<{ value: string }>('SELECT value FROM settings WHERE key = ?', [
+      PARSED_CACHE_VERSION_KEY,
+    ]);
+    if (row?.value === String(PARSED_CACHE_VERSION)) return;
+
+    await this.clearAllParsedDocuments();
+    await db.runAsync(
+      `INSERT INTO settings (key, value) VALUES (?, ?)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      [PARSED_CACHE_VERSION_KEY, String(PARSED_CACHE_VERSION)],
+    );
   },
 
   async removeParsedDocument(documentId: string) {

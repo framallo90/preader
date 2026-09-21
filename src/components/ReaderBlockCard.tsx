@@ -1,7 +1,8 @@
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import { Pressable, StyleSheet, Text } from 'react-native';
 
 import { TextBlock } from '../types/document';
+import { prepareSpeechText } from '../utils/speechText';
 import { ThemeColors } from '../utils/theme';
 import { WordRange } from '../utils/wordRange';
 
@@ -31,12 +32,16 @@ function ReaderBlockCardBase({
   onLongPress,
 }: ReaderBlockCardProps) {
   const lineHeight = Math.round(fontSize * 1.68);
+  // Un TXT o PDF trae los renglones cortados donde terminaba la línea impresa.
+  // Se muestran unidos para que el párrafo fluya; el reemplazo es 1 a 1, así que
+  // los índices de la palabra que suena siguen valiendo.
+  const displayText = useMemo(() => prepareSpeechText(block.text), [block.text]);
   const activeWord =
     isActive && wordRange
       ? {
-          before: block.text.slice(0, wordRange.start),
-          current: block.text.slice(wordRange.start, wordRange.end),
-          after: block.text.slice(wordRange.end),
+          before: displayText.slice(0, wordRange.start),
+          current: displayText.slice(wordRange.start, wordRange.end),
+          after: displayText.slice(wordRange.end),
         }
       : null;
 
@@ -62,7 +67,7 @@ function ReaderBlockCardBase({
             {activeWord.after}
           </>
         ) : (
-          block.text
+          displayText
         )}
       </Text>
     </Pressable>

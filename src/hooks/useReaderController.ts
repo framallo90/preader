@@ -56,6 +56,7 @@ export function useReaderController({
   const currentCharIndexRef = useRef(0);
   const lastPersistedAtRef = useRef(0);
   const actionInFlightRef = useRef(false);
+  const lastServiceErrorRef = useRef<string | null>(null);
 
   useEffect(() => {
     documentRef.current = document;
@@ -178,6 +179,13 @@ export function useReaderController({
       if (!activeDocument || !isCurrentDocument) {
         return;
       }
+
+      // Un fallo al pasar de tramo ocurre fuera de play()/stop(): sin esto la voz
+      // se cortaba y la pantalla no decía nada.
+      if (snapshot.errorMessage && snapshot.errorMessage !== lastServiceErrorRef.current) {
+        onErrorRef.current?.(snapshot.errorMessage);
+      }
+      lastServiceErrorRef.current = snapshot.errorMessage;
 
       setIsPlaying(snapshot.isPlaying);
 
