@@ -50,7 +50,7 @@ describe('encabezados y pies repetidos', () => {
   );
 
   it('detecta la línea que se repite arriba de muchas páginas', () => {
-    expect(findRunningLines(pages).has('juego de tronos')).toBe(true);
+    expect(findRunningLines(pages).has('juegodetronos')).toBe(true);
   });
 
   it('la saca del texto para que la voz no la lea en cada página', () => {
@@ -69,6 +69,36 @@ describe('encabezados y pies repetidos', () => {
     const withMiddle = pages.map((page, i) => (i === 3 ? page.replace('Texto propio', 'Leía JUEGO DE TRONOS\nTexto propio') : page));
     const { fullText } = joinPdfPages(withMiddle, identity);
     expect(fullText).toContain('Leía JUEGO DE TRONOS');
+  });
+});
+
+describe('encabezados con ruido de OCR', () => {
+  // El mismo encabezado, leído distinto por el OCR en algunas páginas.
+  const variants = ['MEDITACIONES 41', 'MEDITA CIO NES', 'MEDITACIONES i%', 'MEDITACIONES'];
+  // El cuerpo cambia en LETRAS de una página a otra (si solo cambiara un número,
+  // sería —con razón— tomado por un pie repetido).
+  const WORDS = ['alba', 'bruma', 'cima', 'duna', 'eco', 'faro', 'gruta', 'hoz', 'isla', 'jara', 'lago', 'monte', 'nube', 'ola', 'pozo', 'risco'];
+  const pages = Array.from({ length: 16 }, (_, i) =>
+    `${i < 4 ? variants[i] : `MEDITACIONES ${i + 40}`}\nEl rey miró hacia la ${WORDS[i]} en la página ${i + 1} y siguió`,
+  );
+
+  it('saca también las variantes mal leídas', () => {
+    const { fullText } = joinPdfPages(pages, identity);
+    expect(fullText).not.toMatch(/MEDITA/);
+    expect(fullText).toContain('en la página 2');
+  });
+
+  it('sin el encabezado de por medio, el párrafo que sigue se une', () => {
+    const continued = ['MEDITACIONES 1\nes menester que', 'MEDITA CIO NES\nmultipliquemos los haces.'];
+    const padding = Array.from({ length: 10 }, (_, i) => `MEDITACIONES ${i + 3}\nTexto de relleno ${i}.`);
+    const { fullText } = joinPdfPages([...continued, ...padding], identity);
+    expect(fullText).toContain('es menester que multipliquemos los haces.');
+  });
+
+  it('no confunde una primera línea parecida pero distinta', () => {
+    const withTitle = pages.map((page, i) => (i === 8 ? `Meditación preliminar\nTexto del capítulo.` : page));
+    const { fullText } = joinPdfPages(withTitle, identity);
+    expect(fullText).toContain('Meditación preliminar');
   });
 });
 

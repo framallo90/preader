@@ -19,9 +19,49 @@ const MIN_REPEATS = 6;
 const MIN_REPEAT_RATIO = 0.15;
 const MAX_RUNNING_LINE_LENGTH = 80;
 
-/** Clave de comparación: sin dígitos (el número de página cambia) ni espacios extra. */
+/**
+ * Clave de comparación: SOLO las letras, en minúscula. Se ignoran dígitos (el
+ * número de página cambia), espacios y signos, porque en un PDF escaneado el OCR
+ * lee el mismo encabezado de varias formas ("MEDITACIONES 41", "MEDITA CIO NES").
+ */
 function runningLineKey(line: string): string {
-  return line.replace(/\d+/g, '').replace(/\s+/g, ' ').trim().toLowerCase();
+  return line.toLowerCase().replace(/[^\p{L}]/gu, '');
+}
+
+/** Distancia de edición, con corte temprano si supera `max`. */
+function editDistanceWithin(a: string, b: string, max: number): boolean {
+  if (Math.abs(a.length - b.length) > max) return false;
+  let previous = Array.from({ length: b.length + 1 }, (_, i) => i);
+  for (let i = 1; i <= a.length; i++) {
+    const current = [i];
+    let rowMin = i;
+    for (let j = 1; j <= b.length; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      const value = Math.min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost);
+      current.push(value);
+      if (value < rowMin) rowMin = value;
+    }
+    if (rowMin > max) return false;
+    previous = current;
+  }
+  return previous[b.length] <= max;
+}
+
+const MIN_FUZZY_KEY_LENGTH = 8;
+
+/**
+ * ¿La línea es uno de los encabezados repetidos? Igual exacto, o casi igual si el
+ * encabezado es lo bastante largo: el OCR mete ruido ("MEDITACIONES i%",
+ * "y- ORTEGA Y GASSET" por "J. ORTEGA Y GASSET").
+ */
+function matchesRunningLine(key: string, running: Set<string>): boolean {
+  if (running.has(key)) return true;
+  for (const known of running) {
+    if (known.length < MIN_FUZZY_KEY_LENGTH) continue;
+    const tolerance = Math.max(2, Math.floor(known.length * 0.15));
+    if (editDistanceWithin(key, known, tolerance)) return true;
+  }
+  return false;
 }
 
 function edgeLines(page: string): { first: string | null; last: string | null } {
@@ -61,7 +101,7 @@ function stripRunningLines(page: string, running: Set<string>): string {
   const lines = page.split('\n');
   const isRunning = (line: string) => {
     const trimmed = line.trim();
-    return trimmed.length > 0 && trimmed.length <= MAX_RUNNING_LINE_LENGTH && running.has(runningLineKey(trimmed));
+    return trimmed.length > 0 && trimmed.length <= MAX_RUNNING_LINE_LENGTH && matchesRunningLine(runningLineKey(trimmed), running);
   };
 
   let start = 0;

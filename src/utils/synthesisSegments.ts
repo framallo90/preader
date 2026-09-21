@@ -24,115 +24,100 @@ export type SynthesisChunk = {
   segments: SynthesisSegment[];
 };
 
-function splitLongSentence(sentence: string, maxChars: number) {
-  // Sólo se usa para una oración DESCOMUNAL: parte en pausas naturales
-  // (coma, punto y coma, dos puntos), no en medio de una palabra o idea.
-  const clauses = sentence.match(/[^,;:]+[,;:]*\s*/g) ?? [sentence];
-  const parts: string[] = [];
-  let current = '';
+/**
+ * Todo el troceo trabaja con RANGOS sobre el texto original: nunca se arma un
+ * string nuevo para después buscarlo. La versión anterior unía oraciones con un
+ * espacio y las ubicaba con indexOf; como el original tiene saltos de línea, no
+ * las encontraba, caía a un offset aproximado y el error se acumulaba hasta
+ * cortar tramos A MITAD DE PALABRA ("plenitu" | "d. Un alma…").
+ */
+type Span = { start: number; end: number };
 
-  for (const clause of clauses) {
-    const candidate = current + clause;
-    if (!current || candidate.length <= maxChars) {
-      current = candidate;
-    } else {
-      parts.push(current.trim());
-      current = clause;
-    }
-  }
+const spanLength = (span: Span) => span.end - span.start;
 
-  if (current.trim()) {
-    parts.push(current.trim());
-  }
-
-  return parts.length > 0 ? parts : [sentence.trim()];
+/** Rango sin los espacios de las puntas. */
+function trimSpan(text: string, start: number, end: number): Span | null {
+  let from = start;
+  let to = end;
+  while (from < to && /\s/.test(text[from])) from += 1;
+  while (to > from && /\s/.test(text[to - 1])) to -= 1;
+  return to > from ? { start: from, end: to } : null;
 }
 
-function splitLongParagraph(paragraph: string, maxChars: number) {
-  if (paragraph.length <= maxChars) {
-    return [paragraph];
+/** Parte un rango en los puntos donde `boundary` matchea (el match queda a la izquierda). */
+function splitSpan(text: string, span: Span, boundary: RegExp): Span[] {
+  const parts: Span[] = [];
+  const source = text.slice(span.start, span.end);
+  let cursor = 0;
+  for (const match of source.matchAll(boundary)) {
+    const cut = (match.index ?? 0) + match[0].length;
+    const part = trimSpan(text, span.start + cursor, span.start + cut);
+    if (part) parts.push(part);
+    cursor = cut;
   }
-
-  // Corta SÓLO en fin de oración (. ! ? …), NUNCA en ; : , ni en medio de palabra.
-  const sentences = paragraph
-    .split(/(?<=[.!?…])\s+/)
-    .map((sentence) => sentence.trim())
-    .filter(Boolean);
-
-  if (sentences.length <= 1) {
-    return paragraph.length > HARD_SENTENCE_LIMIT
-      ? splitLongSentence(paragraph, HARD_SENTENCE_LIMIT)
-      : [paragraph];
-  }
-
-  const parts: string[] = [];
-  let current = '';
-
-  sentences.forEach((sentence) => {
-    // Cada oración se mantiene ENTERA; sólo una descomunal se subdivide.
-    const sentenceParts =
-      sentence.length > HARD_SENTENCE_LIMIT
-        ? splitLongSentence(sentence, HARD_SENTENCE_LIMIT)
-        : [sentence];
-
-    sentenceParts.forEach((part) => {
-      const candidate = current ? `${current} ${part}` : part;
-
-      if (!current || candidate.length <= maxChars) {
-        current = candidate;
-        return;
-      }
-
-      parts.push(current.trim());
-      current = part;
-    });
-  });
-
-  if (current.trim()) {
-    parts.push(current.trim());
-  }
-
+  const rest = trimSpan(text, span.start + cursor, span.end);
+  if (rest) parts.push(rest);
   return parts;
 }
 
-function buildRawSegments(
-  fullText: string,
-  maxChars = DEFAULT_MAX_SEGMENT_CHARS,
-  maxParagraphs = DEFAULT_MAX_PARAGRAPHS,
-) {
-  const paragraphs = fullText
-    .split(/\n{2,}/)
-    .map((paragraph) => paragraph.trim())
-    .filter(Boolean)
-    .flatMap((paragraph) => splitLongParagraph(paragraph, maxChars));
+// Fin de oración: puntuación final, comillas/paréntesis de cierre, y después espacio.
+const SENTENCE_BOUNDARY = /[.!?…]+["'»”’)\]]*(?=\s)/g;
+// Pausas naturales dentro de una oración descomunal.
+const CLAUSE_BOUNDARY = /[,;:]+(?=\s)/g;
 
-  const segments: string[] = [];
-  let current = '';
-  let paragraphCount = 0;
-
-  paragraphs.forEach((paragraph) => {
-    const separator = current ? '\n\n' : '';
-    const candidate = `${current}${separator}${paragraph}`;
-
-    if (candidate.length <= maxChars && paragraphCount < maxParagraphs) {
-      current = candidate;
-      paragraphCount += 1;
-      return;
+/** Agrupa rangos contiguos en piezas de hasta maxChars (medido de punta a punta). */
+function packSpans(spans: Span[], maxChars: number): Span[] {
+  const packed: Span[] = [];
+  let current: Span | null = null;
+  for (const span of spans) {
+    if (current && span.end - current.start <= maxChars) {
+      current = { start: current.start, end: span.end };
+    } else {
+      if (current) packed.push(current);
+      current = span;
     }
-
-    if (current.trim()) {
-      segments.push(current.trim());
-    }
-
-    current = paragraph;
-    paragraphCount = 1;
-  });
-
-  if (current.trim()) {
-    segments.push(current.trim());
   }
+  if (current) packed.push(current);
+  return packed;
+}
 
-  return segments.length > 0 ? segments : [fullText.trim()].filter(Boolean);
+function splitLongParagraph(text: string, paragraph: Span, maxChars: number): Span[] {
+  if (spanLength(paragraph) <= maxChars) return [paragraph];
+
+  // Corta SÓLO en fin de oración (. ! ? …), NUNCA en ; : , ni en medio de palabra.
+  const sentences = splitSpan(text, paragraph, SENTENCE_BOUNDARY).flatMap((sentence) =>
+    // Cada oración se mantiene ENTERA; sólo una descomunal se subdivide.
+    spanLength(sentence) > HARD_SENTENCE_LIMIT
+      ? packSpans(splitSpan(text, sentence, CLAUSE_BOUNDARY), HARD_SENTENCE_LIMIT)
+      : [sentence],
+  );
+
+  return packSpans(sentences, maxChars);
+}
+
+function buildSegmentSpans(fullText: string, maxChars: number, maxParagraphs: number): Span[] {
+  const whole = trimSpan(fullText, 0, fullText.length);
+  if (!whole) return [];
+
+  const pieces = splitSpan(fullText, whole, /\n{2,}/g).flatMap((paragraph) =>
+    splitLongParagraph(fullText, paragraph, maxChars),
+  );
+
+  const segments: Span[] = [];
+  let current: Span | null = null;
+  let paragraphCount = 0;
+  for (const piece of pieces) {
+    if (current && piece.end - current.start <= maxChars && paragraphCount < maxParagraphs) {
+      current = { start: current.start, end: piece.end };
+      paragraphCount += 1;
+    } else {
+      if (current) segments.push(current);
+      current = piece;
+      paragraphCount = 1;
+    }
+  }
+  if (current) segments.push(current);
+  return segments;
 }
 
 export function buildSynthesisSegments(
@@ -140,23 +125,12 @@ export function buildSynthesisSegments(
   maxChars = DEFAULT_MAX_SEGMENT_CHARS,
   maxParagraphs = DEFAULT_MAX_PARAGRAPHS,
 ): SynthesisSegment[] {
-  const rawSegments = buildRawSegments(fullText, maxChars, maxParagraphs);
-  let cursor = 0;
-
-  return rawSegments.map((text, index) => {
-    const startChar = fullText.indexOf(text, cursor);
-    const safeStartChar = startChar >= 0 ? startChar : cursor;
-    const endChar = safeStartChar + text.length;
-
-    cursor = endChar;
-
-    return {
-      index,
-      text,
-      startChar: safeStartChar,
-      endChar,
-    };
-  });
+  return buildSegmentSpans(fullText, maxChars, maxParagraphs).map((span, index) => ({
+    index,
+    text: fullText.slice(span.start, span.end),
+    startChar: span.start,
+    endChar: span.end,
+  }));
 }
 
 export function buildSynthesisChunks(

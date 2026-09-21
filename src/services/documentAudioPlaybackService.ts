@@ -10,6 +10,7 @@ import { ParsedDocument } from '../types/document';
 import { getAbsoluteCharIndex, getPositionFromAbsoluteChar } from '../utils/documentProgress';
 import { detectLanguage } from '../utils/languageDetect';
 import { clamp } from '../utils/math';
+import { prepareSpeechText } from '../utils/speechText';
 import { SynthesisChunk, buildSynthesisChunks } from '../utils/synthesisSegments';
 import { resolveVoice } from '../utils/voices';
 import { audioSessionService } from './audioSessionService';
@@ -272,7 +273,9 @@ class DocumentAudioPlaybackService {
     // hacía que fal pausara entre cada oración (y a mitad de oraciones largas
     // partidas) → sonaba cortado "como si hubiera un punto". El texto ya viene
     // limpio y normalizado del parser.
-    const rawText = document.fullText.slice(chunk.startChar, chunk.endChar);
+    // prepareSpeechText une los renglones cortados del PDF (que el motor leería
+    // como pausas) sin cambiar el largo del tramo.
+    const rawText = prepareSpeechText(document.fullText.slice(chunk.startChar, chunk.endChar));
     const promise = synthesizeSpeech(chunkId, rawText, voiceId, this.activeLanguage)
       .then((mp3Uri) => {
         // SIEMPRE devolvemos el uri: esta promesa puede estar cacheada y ser
