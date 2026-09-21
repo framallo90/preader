@@ -8,11 +8,10 @@
 | Qué | Estado |
 |---|---|
 | TypeScript (`npm run typecheck`) | ✅ sin errores |
-| Tests (`npm test`) | ✅ 90 pasan (antes 52) |
-| Kotlin de los dos módulos nativos | ✅ compila (`gradlew compileDebugKotlin`) |
-| **Probado en un teléfono** | ❌ **No.** Hay código nativo nuevo: hace falta una build nueva para probarlo, y no la lancé sin tu permiso |
-
-Todo lo marcado "hecho" abajo significa **escrito, tipado, con tests donde aplica y compilando**. Ninguna de las piezas nativas (voz, render de PDF, extracción, índice) corrió todavía en un dispositivo. Es lo primero a validar.
+| Tests (`npm test`) | ✅ 116 pasan (antes 52) |
+| APK completo (los dos módulos nativos integrados) | ✅ compila localmente y en EAS |
+| **Probado de punta a punta en emulador** (Android 14) | ✅ ver sección 5 |
+| Probado en tu teléfono | ❌ pendiente — lo único que el emulador no representa son tus voces y el rendimiento real |
 
 ---
 
@@ -45,7 +44,7 @@ Todo lo marcado "hecho" abajo significa **escrito, tipado, con tests donde aplic
 | Reseña con estrellas | ❌ | **✅** | ✅ |
 | Listas Para leer / Leído / Favorito | ❌ | **✅** | ✅ |
 | Colecciones (N:N) | ❌ | **✅** | ✅ |
-| Índice real del documento | ❌ Solo detección | **✅ Outline del PDF + detección** | ✅ |
+| Índice real del documento | ❌ Solo detección | **✅ PDF (outline) y EPUB (nav/NCX)** | ✅ |
 | Buscar en el libro | ❌ | **✅ sin tildes/mayúsculas** | ✅ con stemming |
 | Temas de lectura | Claro / oscuro | **Día / sepia / noche, también en PDF** | 5 temas |
 | Recorte de márgenes | ❌ | **✅ automático** | ✅ |
@@ -95,7 +94,6 @@ Anotaciones · "Sobre este libro" · listas · colecciones · reseña · índice
 | **Pasar página con botones de volumen** | Interceptar esas teclas exige tocar la `MainActivity` (un config plugin). No se puede desde un módulo Expo común |
 | **Apertura instantánea del primer PDF grande** | Bardo necesita el texto completo para que voz, búsqueda y progreso compartan una posición; ReadEra no. La **primera** apertura de un libro grande muestra "Leyendo el libro… N de M páginas"; las siguientes sí son instantáneas (caché). Mejorable mostrando páginas mientras el texto se extrae de fondo |
 | **Aviso de posición obsoleta** | No aplica: Bardo identifica por contenido, así que un archivo modificado es otro libro |
-| **Índice de EPUB** | Solo se agregó el del PDF; en EPUB sigue la detección sobre el texto |
 | Columna única, reflow, vocabulario, modo infantil, sync, más formatos | Fuera del plan por decisión |
 
 ---
@@ -117,7 +115,7 @@ Y una tercera, propia: **un párrafo que continúa en la página siguiente se un
 | Código de servidor (`server/` + `supabase/`) | 1.033 líneas | 0 |
 | Módulos nativos propios | 0 | 811 líneas |
 | **Total del sistema** | **10.132** | **9.918** |
-| Tests | 52 | 90 |
+| Tests | 52 | 116 |
 | Dependencias npm | 27 | 22 |
 | Pantallas | 8 | 5 |
 | Claves de API | 4 | 0 |
@@ -126,25 +124,61 @@ Y una tercera, propia: **un párrafo que continúa en la página siguiente se un
 
 ---
 
-## 5. Qué hay que validar en el teléfono
+## 5. Ronda de prueba en emulador
 
-Hace falta una build nueva (`eas build --profile preview --platform android`) porque cambió código nativo. En este orden:
+Se probó la app real (APK de release) en un emulador Android 14, manejándola por
+`adb`, con cuatro libros: un PDF nativo con índice, un **escaneo con OCR de 226
+páginas** (*Meditaciones del Quijote*, dominio público), un PDF sin texto y el
+**Quijote completo en EPUB** (2,1 millones de caracteres).
 
-1. **Abrir un PDF con texto** — que extraiga, muestre páginas y guarde en caché. Reabrirlo tiene que ser instantáneo.
-2. **Voz** — que suene, que la página siga a la voz, y **que siga sonando con la pantalla bloqueada**. Es la pieza con más riesgo.
-3. **Latencia del primer audio** — debería ser de 1 a 3 segundos. Si es más, bajar `DEFAULT_MAX_CHUNK_CHARS` en `src/utils/synthesisSegments.ts`.
-4. **Calidad de voz** — Ajustes → "Probar". Si suena mal: botón "Voces" → instalar la voz de alta calidad del motor de Google.
-5. **Libro grande** (500+ páginas) — que no se quede sin memoria al extraer.
-6. **PDF escaneado** — que abra en modo visual con el aviso de "sin texto para la voz".
-7. **Recorte de márgenes** — que no corte texto. Si algún libro queda mal, se apaga desde el menú del lector.
-8. **Marcador, cita, nota, búsqueda** y el salto desde "Sobre este libro".
+### Lo que funcionó
 
-Tus libros ya abiertos se van a re-procesar una vez (el caché viejo no tiene el mapa de páginas). El progreso se conserva, aunque puede correrse unas líneas porque el texto ahora lo extrae otro motor.
+| Prueba | Resultado |
+|---|---|
+| Arranque y migraciones de base | ✅ |
+| Abrir PDF: extracción, páginas, portada, título y autor de los metadatos | ✅ |
+| Libro de 226 páginas | ✅ ~10 s la primera vez, 166 MB de memoria total, sin OOM |
+| Reabrir un libro ya abierto | ✅ instantáneo, en la página donde quedó |
+| Índice real del PDF → capítulos, y salto a un capítulo | ✅ |
+| Temas día / sepia / noche sobre la página | ✅ |
+| **Voz**: motor local `es-us-x-esc-lstm-embedded`, ~1 s por tramo | ✅ |
+| **Voz con la pantalla bloqueada** (90 s): avanza de tramo y sintetiza en segundo plano | ✅ |
+| La página sigue a la voz (`🔊 N`) | ✅ |
+| Marcador, panel de anotación por página, "Sobre este libro", listas, estrellas, colecciones | ✅ |
+| Búsqueda: "catarata" → 1 resultado en la pág. 41, y es la página correcta | ✅ |
+| PDF sin texto: abre en modo visual con aviso, sin botón de voz | ✅ |
+| EPUB: abre, índice de 142 capítulos, salto a capítulo, voz | ✅ (tras el arreglo) |
+
+### Bugs que aparecieron al probar
+
+Los marcados *previo* ya estaban en `main`, antes de la migración a local.
+
+| Bug | Origen | Estado |
+|---|---|---|
+| **La voz se cortaba sola tras el primer cambio de tramo.** La guarda de avance nunca se liberaba (se comparaba contra la promesa equivocada) | *previo* | ✅ arreglado y verificado: 8 tramos seguidos, 3 de ellos con la pantalla apagada |
+| **En EPUB/TXT/DOCX el progreso se perdía al reabrir**: la lista abría arriba y el detector de scroll guardaba 0% | *previo* | ✅ verificado: reabre en "Capítulo VIII" al 6% |
+| Los tramos de voz se cortaban **a mitad de palabra** ("plenitu" \| "d.") | *previo* | ✅ 47% → 97% cierran en fin de oración |
+| **1 de cada 4 bloques de texto** apuntaba a otro lugar del libro (mismo defecto: reconstruir + `indexOf`) | *previo* | ✅ 256 → 0 en el libro real |
+| **Ningún EPUB de Project Gutenberg abría**: el manifest exigía `id` antes que `href` | *previo* | ✅ |
+| El salto a un capítulo lejano no movía la lista de texto | *previo* | ✅ lista anclada en el bloque destino |
+| Antes del primer capítulo figuraba el último ("142/142") | *previo* | ✅ |
+| El texto del PDF se cortaba a la derecha (ancho de ventana vs. contenedor) | migración | ✅ |
+| El teclado tapaba los paneles de anotación y búsqueda y los campos de "Sobre este libro" | migración | ✅ |
+| El cartel de error de voz quedaba pegado aunque el reintento anduviera | migración | ✅ |
+| Sin la voz del idioma instalada, el mensaje era "código -7" | migración | ✅ ahora dice que hay que instalarla |
+| Encabezados mal leídos por el OCR ("MEDITA CIO NES") se leían en voz alta | migración | ✅ comparación tolerante |
+| En escaneos: bandas a los costados y sin recorte (papel amarillento) | migración | ✅ mediana de proporciones + umbral relativo al papel |
+
+**Lectura honesta:** la mitad de estos bugs no los introdujo la migración — estaban
+desde antes y nunca se habían visto porque no había forma de probar la app sin el
+teléfono. Ahora hay emulador y un ciclo de ~40 segundos (compilar, instalar,
+probar).
+
+### Lo que queda para tu teléfono
+
+1. **Calidad de la voz.** El emulador confirma que *funciona*; cómo *suena* depende de las voces que tengas instaladas. Ajustes → "Probar"; si suena mal, "Voces" → instalar la de alta calidad del motor de Google.
+2. **Rendimiento real**: latencia del primer audio y tiempo de apertura de un libro grande.
+3. Tus libros ya abiertos se re-procesan una vez (el caché viejo se descarta). El progreso se conserva; en PDF puede correrse unas líneas porque el texto ahora lo extrae otro motor.
 
 ---
 
-## 6. Cabos sueltos
-
-- **`src/config/apiKeys.ts`** sigue en disco con las claves viejas. Ya nada lo importa. No lo borré porque está fuera de git y no se podría recuperar. Si no vas a usar más esas claves, conviene borrarlo **y revocarlas** en Hugging Face, fal.ai y OpenAI: quedaron embebidas en los APK anteriores.
-- **El servicio `bardo-api` en tu servidor** probablemente siga corriendo. La app ya no lo usa; podés apagarlo cuando quieras.
-- **Punto de restauración:** `git stash list` → `pre-simplificacion`. Tiene tu trabajo sin commitear tal como estaba antes de empezar. No hice ningún commit.
