@@ -1,6 +1,6 @@
 # Bardo
 
-Lector personal de PDFs para Android. Importá un PDF, EPUB, TXT o DOCX y escuchalo narrado con una voz de alta calidad mientras ves la página real del documento — la narración sabe exactamente en qué página está y la pasa por vos. Pensado para sagas y libros densos, con foco en que leer y escuchar sean la misma experiencia, en el mismo punto.
+Lector personal de libros para Android. Abrí un PDF, EPUB, TXT o DOCX y leelo o escuchalo mientras ves la página real del documento — la narración sabe en qué página está y la pasa por vos. Todo pasa en el teléfono: sin servidor, sin cuentas, sin claves de API y sin conexión.
 
 *(English version: [README.en.md](./README.en.md))*
 
@@ -8,91 +8,42 @@ Lector personal de PDFs para Android. Importá un PDF, EPUB, TXT o DOCX y escuch
 
 ## Features
 
-- **Lector visual real** — para PDFs procesados por el backend propio, la app muestra la página tal cual es (con imágenes y diagramación), ajustada al ancho de la pantalla y a la rotación del dispositivo, con scroll continuo, scrubber de páginas y modo pantalla completa.
-- **Narración sincronizada a la página** — mientras suena el audio, la página que la voz está leyendo se marca (`🔊 N`) y la vista **pasa de página sola** siguiendo a la voz. Si te vas a mirar otra parte, un chip te lleva de vuelta a donde va la voz.
-- **Una sola posición, dos formas de vivirla** — leer y escuchar comparten el mismo offset de carácter; podés alternar entre los dos modos y siempre retomás exactamente donde quedaste.
-- **Backend propio para libros grandes** — un servicio corriendo en un servidor propio extrae el texto (PyMuPDF), lo limpia con el mismo pipeline determinístico que corre en el cliente, calcula el mapa de offsets por página, genera la portada y renderiza páginas bajo demanda. El teléfono nunca tiene que parsear un PDF gigante; si el servidor no responde, cae a un parser local con límites de seguridad.
-- **Multi-formato** — PDF, EPUB, TXT y DOCX desde cualquier app del sistema o por escaneo de carpetas (estilo ReadEra).
-- **Biblioteca por identidad de contenido** — cada libro se identifica por una huella de su contenido (no por nombre de archivo), así el progreso, los capítulos y el caché sobreviven a renombres o movidas. Biblioteca agrupada por carpeta, con portadas reales y orden natural.
-- **Detección automática de capítulos POV** — para sagas como ASOIAF detecta encabezados `BRAN (1)`, `CATELYN (2)`, etc.
-- **Contexto por capítulo + chat sin spoilers** — un LLM genera un resumen de "qué pasó antes" al entrar a un capítulo y responde preguntas usando solo lo que ya leíste.
-- **Modo uso propio** — sin cuentas ni pagos: todo desbloqueado desde el arranque, pensado para correr con las claves de IA del propio desarrollador.
-- **Modo oscuro** y **offline-first** — leer, escuchar y el progreso no dependen de la nube; solo la generación inicial de audio y el primer procesado de un libro grande necesitan red.
+- **Lector visual real** — las páginas del PDF se dibujan en el teléfono tal cual son (con imágenes y diagramación), al ancho de la pantalla, con scroll continuo, scrubber de páginas, pantalla completa y recorte automático de márgenes blancos.
+- **PDF escaneados** — un PDF sin texto se abre igual en modo visual; solo queda sin voz.
+- **Narración sincronizada a la página** — mientras suena el audio, la página que la voz está leyendo se marca (`🔊 N`) y la vista pasa de página sola. Si te vas a mirar otra parte, un chip te lleva de vuelta a donde va la voz.
+- **Voz del teléfono, offline** — el audio lo genera el motor de texto a voz de Android. Se elige sola la mejor voz instalada según el idioma de cada libro, o la fijás vos en Ajustes. Sigue sonando con la pantalla bloqueada, con controles en la notificación, retroceso de 15 s y temporizador de sueño.
+- **Una sola posición, dos formas de vivirla** — leer y escuchar comparten el mismo offset de carácter; alternás entre los dos modos y retomás exactamente donde quedaste.
+- **Marcadores, citas y notas** — `🔖` marca donde estás; mantené apretado un párrafo o una página para guardar una cita o una nota.
+- **Sobre este libro** — una sola pantalla por libro: reseña con estrellas, listas (Para leer / Leído / Favorito), colecciones, índice y todas las anotaciones, cada una con salto directo al lugar.
+- **Biblioteca** — escaneo de carpetas (con subcarpetas excluidas), filtros por lista y colección, portadas reales, agrupado por carpeta y orden natural. Cada libro se identifica por una huella de su contenido, así el progreso sobrevive a renombres y movidas.
+- **Índice real** — usa los marcadores del PDF cuando existen; si no, detecta capítulos sobre el texto (incluidos encabezados POV tipo `BRAN (1)`).
+- **Buscar en el libro** — sin distinguir tildes ni mayúsculas, con salto al resultado.
+- **Temas de lectura** — día, sepia y noche, también sobre las páginas del PDF, más un atenuador para bajar el brillo por debajo del mínimo del sistema.
 
 ---
 
 ## Stack
-
-### App
 
 | Capa | Tecnología |
 |---|---|
 | App | React Native + Expo SDK 55 + TypeScript |
 | Navegación | Expo Router (file-based) |
 | Base de datos | SQLite via `expo-sqlite` |
-| Reproducción | `expo-audio` |
-| Imágenes de página | `expo-image` (caché en disco) |
-| Extracción PDF local (fallback) | `expo-pdf-text-extract` (módulo nativo) |
+| PDF (render, texto, índice, portada, recorte) | Módulo nativo propio `modules/bardo-pdf` — `PdfRenderer` de Android + PDFBox |
+| Voz | Módulo nativo propio `modules/voice-synthesizer` — `TextToSpeech.synthesizeToFile` de Android |
+| Reproducción | `expo-audio` (background + pantalla bloqueada) |
 | Parseo EPUB / DOCX | `jszip` / `mammoth` |
-| Narración (TTS) | fal.ai — Kokoro, voz en español, llamado directo desde la app |
-| LLM (contexto, chat) | Hugging Face Inference Providers — Llama 3.3 70B, endpoint OpenAI-compatible |
-| Tests | Vitest (funciones puras: detección de capítulos, bloques de texto, progreso, mapeo de páginas) |
+| Tests | Vitest (funciones puras) |
 
-La app **requiere una development build** (EAS o `expo run:android`). No funciona en Expo Go por los módulos nativos.
-
-### Backend propio (`server/`)
-
-Servicio Node.js + Python, pensado para correr en un servidor propio, aislado de cualquier otra app que conviva ahí (proceso y puerto propios, prioridad baja de CPU/IO).
-
-| Pieza | Rol |
-|---|---|
-| `server.js` (Express) | Endpoints: subir libro, consultar estado, bajar texto limpio, portada, página renderizada |
-| `pipeline.js` | Cola de a un libro por vez; orquesta extracción → limpieza → mapa de offsets |
-| `extract.py` (PyMuPDF) | Extrae texto por página, genera la portada, calcula el aspect ratio de página |
-| `render_page.py` (PyMuPDF) | Renderiza una página puntual como PNG al ancho pedido (cacheado en disco) |
-| `textClean.js` | Puerto exacto en JS de la limpieza de texto del cliente (`chapterDetector.ts` / `textBlocks.ts`) — **si se cambia una regla, hay que cambiarla en los dos lados** |
-| `fingerprint.js` | Misma huella de contenido que el cliente (SHA-256 de los primeros 256 KB + tamaño), para que ambos lados identifiquen el libro igual |
+La app **requiere una development build** (EAS o `expo run:android`): tiene módulos nativos propios, así que no corre en Expo Go. Después de tocar algo dentro de `modules/` hay que volver a compilar la build.
 
 ---
 
 ## Setup
 
-### 1. Instalar dependencias
-
 ```bash
 npm install
-```
 
-### 2. Configurar claves de IA (modo uso propio)
-
-Las claves viven en `src/config/apiKeys.ts` (gitignoreado, nunca se commitea):
-
-```ts
-export const HF_TOKEN = '...';          // Hugging Face — permiso "Inference Providers"
-export const FAL_KEY = '...';           // fal.ai — https://fal.ai/dashboard/keys
-export const BARDO_SERVER_URL = '...';  // URL:puerto del backend propio (server/)
-export const BARDO_TOKEN = '...';       // debe coincidir con BARDO_TOKEN del .env del server
-```
-
-⚠️ Estas claves quedan embebidas en el APK: sirve para uso propio, no para distribución pública (ahí correspondería un proxy de servidor que nunca exponga las claves al cliente). Nota: como `apiKeys.ts` está gitignoreado pero EAS excluye por defecto los archivos ignorados por git, el repo incluye un `.easignore` que replica `.gitignore` **sin** esa línea, para que el build sí incluya las claves.
-
-Existe también un modelo freemium más antiguo (login + Supabase + MercadoPago) detrás de la bandera `PERSONAL_MODE` en `src/config/appMode.ts`. Está inactivo por defecto (`PERSONAL_MODE = true`); poner el flag en `false` reactiva login y premium, y ahí sí aplica `SUPABASE_SETUP.md`.
-
-### 3. (Opcional) Levantar el backend propio
-
-```bash
-cd server
-npm install
-python3 -m venv venv && ./venv/bin/pip install pymupdf
-cp .env.example .env   # PORT + BARDO_TOKEN (debe coincidir con el de la app)
-npm start
-```
-
-Sin este servicio la app sigue funcionando: cae al parser local (con un techo de páginas para no quedarse sin memoria) y no hay lector visual de páginas ni portadas generadas del lado del servidor.
-
-### 4. Build y correr
-
-```bash
 # Dev con dispositivo conectado (recarga de JS al instante tras el primer build)
 npx expo run:android
 
@@ -106,6 +57,8 @@ npm run typecheck
 npm test
 ```
 
+No hay claves ni servicios que configurar.
+
 ---
 
 ## Arquitectura
@@ -113,93 +66,71 @@ npm test
 ### Modelo de datos
 
 ```
-Book (libro)
- └── Chapter (capítulo detectado del texto)
-      ├── povCharacter   — "BRAN", "CATELYN", null
-      ├── startChar / endChar — offset en fullText
-      └── ChapterContext — resumen y personajes generados por el LLM
+Book (libro)  ── status · favorite · rating · review
+ ├── Chapter            capítulo (índice del PDF o detectado del texto)
+ ├── Note               marcador | cita | nota  (una sola tabla, distinguidas por type)
+ ├── ReadingProgress    offset de carácter + porcentaje
+ └── Collection  (N:N)  un libro puede estar en varias
 ```
 
-El progreso se guarda por offset de carácter en `fullText`, no por número de bloque ni de página — es lo que permite que leer y escuchar compartan una sola posición.
+Progreso, voz, búsqueda y anotaciones usan la misma unidad: el **offset de carácter en el texto del libro**. Es lo que permite que leer y escuchar compartan una sola posición. En los PDF, `pageOffsets` (dónde empieza cada página dentro del texto) traduce entre offset y página en ambos sentidos.
 
-### Pipeline de importación
+### Apertura de un libro
 
 ```
-PDF / EPUB / TXT / DOCX
-  → ¿backend disponible? ──sí──► subir → extractText (PyMuPDF, por página)
-  │                               → limpieza determinística (regex, igual que el cliente)
-  │                               → mapa de offsets por página (pageForChar / charForPage)
-  │                               → portada + páginas renderizadas bajo demanda
-  │                               → texto limpio + metadata al cliente
-  └──no / falla──► parser local (mismo pipeline de limpieza, con techo de páginas por memoria)
-  → detectChapters()  ← índice POV automático
+PDF
+  → bardo-pdf: abre el documento UNA vez (memoria en archivo temporal)
+       · texto por página + título/autor + índice (outline)
+  → joinPdfPages: saca encabezados/pies repetidos, une párrafos partidos por el
+                  cambio de página, arma fullText + pageOffsets
+  → proporción de página + caja de contenido (recorte de márgenes)
   → caché local (SQLite si es chico; archivos en disco si es grande)
+  → las páginas se dibujan a demanda, solo las que están en pantalla
+
+EPUB / TXT / DOCX  → parser local → fullText → bloques de texto
 ```
 
-### Pipeline de audio
+### Audio
 
 ```
-fullText (ya limpio)
-  → buildSynthesisChunks()   ← tramos que cortan SOLO en fin de oración
-  → synthesizeSpeech()       ← fal.ai (Kokoro, voz español) → WAV cacheado (LRU, tope de disco)
-  → expo-audio player
-  → posición interpolada (tiempo de audio → offset de carácter → página, vía pageOffsets)
+fullText → tramos cortos que terminan siempre en fin de oración (synthesisSegments)
+  → voice-synthesizer: el motor TTS de Android escribe un WAV por tramo
+  → expo-audio lo reproduce; los dos tramos siguientes se preparan por adelantado
+  → la posición de reproducción se traduce a offset de carácter → página
 ```
 
-### Lector visual y sincronía de página
+El reproductor trabaja con archivos, por eso background, pantalla bloqueada, seek y retroceso funcionan igual que con cualquier audio.
 
-- `PdfPageList` — lista de páginas renderizadas por el backend (`GET /books/:id/page/:n?w=`), memoizada para que los ticks de audio no vuelvan a dibujar la lista entera.
-- El offset de cada página (`pageOffsets`, calculado por el server) permite saber con exactitud en qué página está la voz, aunque las primeras páginas (tapa, índice) casi no tengan texto.
-- Auto-seguimiento: si estás viendo la página que la voz lee, la vista pasa de página con ella (con un pequeño adelanto para compensar el desfase de la interpolación); si te fuiste a otra parte, un chip `🔊 pág. N →` te lleva de vuelta.
+### Render de páginas
 
-### Servicios clave
-
-- `documentAudioPlaybackService` — singleton, gestiona el player, arma y prepara tramos, prefetch del siguiente mientras suena el actual.
-- `bardoServerService` — sube el libro al backend, hace polling del estado, baja texto/portada/páginas; expone `isServerConfigured()` para el fallback local.
-- `openaiTtsService` (nombre legado) — llama a fal.ai y cachea el WAV en `documentDirectory/tts-cache/`, con un tope de tamaño total.
-- `claudeService` (nombre legado) — llama al LLM de Hugging Face para contexto de capítulo y chat.
-- `useReaderController` — hook que conecta la UI con el playback service y mapea el tiempo de audio a `(blockIndex, charIndex)`.
+`PdfPageList` pide cada página a `pdfLocalService`, que mantiene una cola **LIFO con cancelación**: si pasás cien páginas de un tirón se dibuja primero lo que está en pantalla y se descartan los pedidos de las que ya salieron. Las páginas dibujadas se cachean en disco con tope de tamaño.
 
 ---
 
 ## Estructura del proyecto
 
 ```
-app/                    # Pantallas (Expo Router)
-  index.tsx             # Home: biblioteca por carpetas, portadas, importar
-  reader.tsx            # Lector: páginas del PDF + barra de audio flotante
-  settings.tsx          # Configuración
+app/                  pantallas (Expo Router)
+  index.tsx             biblioteca
+  reader.tsx            lector (páginas o texto) + voz
+  book.tsx              "Sobre este libro"
+  settings.tsx          ajustes
+modules/
+  bardo-pdf/            PDF nativo: render, texto, índice, recorte
+  voice-synthesizer/    TTS del sistema a archivo WAV
 src/
-  components/
-    PdfPageList.tsx     # Lector visual (páginas del server, fit-to-width, rotación)
-    BookGridItem.tsx    # Tarjeta de biblioteca (portada + progreso)
-  hooks/                # useAppSettings, useReaderController
-  services/
-    bardoServerService.ts     # Cliente del backend propio
-    openaiTtsService.ts       # TTS vía fal.ai (nombre legado)
-    claudeService.ts          # LLM vía Hugging Face (nombre legado)
-    documentAudioPlaybackService.ts
-    parsers/            # Fallback local: pdfDocumentParser, epubDocumentParser, etc.
-  storage/               # Repositories SQLite
-  types/
-    document.ts          # ParsedDocument, ChapterInfo, TextBlock
-  utils/
-    chapterDetector.ts    # Regex POV + limpieza de tabs (espejo de server/textClean.js)
-    textBlocks.ts         # buildTextBlocks, normalizeExtractedText
-    synthesisSegments.ts  # buildSynthesisChunks (corta solo en fin de oración)
-    pageMap.ts            # pageForChar / charForPage (sincronía voz↔página)
-    *.test.ts              # Tests Vitest de las funciones puras de arriba
-server/                  # Backend propio (ver sección de arquitectura)
+  components/           PdfPageList, ReaderBlockCard, BookGridItem…
+  hooks/                useReaderController, useAppSettings
+  services/             parsers, pdfLocalService, systemTtsService, reproducción, escaneo
+  storage/              repositorios SQLite (libros, notas, colecciones, progreso, caché)
+  utils/                funciones puras con tests (pageMap, pdfPages, voices, textSearch…)
+docs/research/        relevamiento de ReadEra y plan de paridad
 ```
 
 ---
 
 ## Convenciones
 
-- Toda la UI está en español.
-- Los repositories son objetos planos con métodos async (no clases).
-- `void` intencional en llamadas fire-and-forget dentro de event handlers.
-- El progreso se guarda máximo cada ~700ms–1.5s para no saturar SQLite.
-- `parsedDocumentRepository` cachea libros chicos inline en SQLite y libros grandes como archivos en disco (`documentDirectory/parsed-cache/`).
-- Cualquier regla de limpieza de texto que cambie en `src/utils/chapterDetector.ts` / `textBlocks.ts` debe replicarse en `server/textClean.js`, y viceversa.
-- Loop de desarrollo: `npx expo run:android` una vez (compila nativo), después `npx expo start` recarga JS al instante — no hace falta un build de EAS por cada cambio de lógica.
+- Comentarios y textos de UI en español.
+- La lógica que se puede probar sin dispositivo vive en `src/utils/` como funciones puras con su `.test.ts`.
+- Las migraciones de esquema van en `runMigrations` (`src/storage/database.ts`), versionadas con `PRAGMA user_version`.

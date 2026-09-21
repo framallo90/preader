@@ -63,12 +63,20 @@ export function useReaderController({
 
   useEffect(() => {
     rateRef.current = rate;
-    documentAudioPlaybackService.setPlaybackRate(rate);
-  }, [rate]);
+    // Solo tocamos el player global si ESTE documento es el que suena; si no,
+    // ajustaríamos la velocidad del audio de otro libro que quedó sonando.
+    if (documentAudioPlaybackService.getSnapshot().documentId === document?.id) {
+      documentAudioPlaybackService.setPlaybackRate(rate);
+    }
+  }, [rate, document?.id]);
 
   useEffect(() => {
     voiceIdRef.current = voiceId;
-  }, [voiceId]);
+    // Aplica la voz nueva a los próximos tramos si este documento es el activo.
+    if (documentAudioPlaybackService.getSnapshot().documentId === document?.id) {
+      documentAudioPlaybackService.setVoice(voiceId);
+    }
+  }, [voiceId, document?.id]);
 
   useEffect(() => {
     onProgressChangeRef.current = onProgressChange;
@@ -85,6 +93,10 @@ export function useReaderController({
 
   const persistAbsoluteChar = useCallback(async (absoluteCharIndex: number, force = false) => {
     const activeDocument = documentRef.current;
+    // Sin documento (primer render, antes de que cargue) NO persistimos: si no,
+    // getPositionFromAbsoluteChar(null) devuelve 0/0/0 y pisaría el progreso
+    // guardado con ceros si el usuario cierra la app durante la carga.
+    if (!activeDocument) return;
     const nextPosition = getPositionFromAbsoluteChar(activeDocument, absoluteCharIndex);
 
     absoluteCharIndexRef.current = nextPosition.absoluteCharIndex;

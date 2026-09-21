@@ -5,7 +5,7 @@ import mammoth from 'mammoth';
 import { DocumentMetadata, DocumentParser, ParsedDocument } from '../types/document';
 import { buildTextBlocks, normalizeExtractedText } from '../utils/textBlocks';
 import { detectChapters } from '../utils/chapterDetector';
-import { DocumentParseError } from './documentParser';
+import { DocumentParseError, assertFileSizeWithinLimit } from './documentParser';
 
 /** Lee título y autor de docProps/core.xml (un .docx es un zip). */
 async function extractDocxMetadata(base64: string): Promise<DocumentMetadata> {
@@ -32,6 +32,7 @@ class DocxDocumentParser implements DocumentParser {
     if (!fileInfo.exists) {
       throw new DocumentParseError('missing_file', 'El archivo ya no existe en el almacenamiento local.');
     }
+    await assertFileSizeWithinLimit(uri);
 
     try {
       const base64 = await FileSystem.readAsStringAsync(uri, {

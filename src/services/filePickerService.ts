@@ -1,7 +1,7 @@
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 
-import { Book, StoredDocument } from '../types/storage';
+import { Book, NEW_BOOK_DEFAULTS, StoredDocument } from '../types/storage';
 import { createBookFingerprint, getFileExtension, safeDisplayFileName } from '../utils/documentId';
 import { SUPPORTED_MIME_TYPES } from './parserRegistry';
 
@@ -34,7 +34,11 @@ async function copyAssetToDocuments(asset: DocumentPicker.DocumentPickerAsset): 
   // Identidad por contenido (no por nombre/fecha): re-importar el mismo
   // archivo — aunque esté renombrado — matchea el mismo libro y conserva
   // progreso, capítulos, contexto y cache de audio.
-  const documentId = await createBookFingerprint(asset.uri, asset.size);
+  // fallbackKey ESTABLE (nombre+tamaño): para archivos >8MB el fingerprint no
+  // lee el contenido y sin esto usaba asset.uri (ruta de caché efímera del
+  // picker, cambia en cada importación) → id no determinista, 404 en modo
+  // visual y progreso perdido. Coincide con lo que se manda al server.
+  const documentId = await createBookFingerprint(asset.uri, asset.size, `${documentName}:${asset.size ?? 0}`);
   const extension = getFileExtension(documentName, asset.mimeType);
   const documentsDirectory = getDocumentsDirectory();
   const destinationUri = `${documentsDirectory}/${documentId}${extension}`;
@@ -75,6 +79,7 @@ export const filePickerService = {
       type: asset.mimeType ?? 'application/pdf',
       importedAt: now,
       lastOpenedAt: now,
+      ...NEW_BOOK_DEFAULTS,
     };
 
     return book;

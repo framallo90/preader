@@ -1,0 +1,23 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.bardopdf'
+version = '1.0.0'
+
+android {
+  namespace "expo.modules.bardopdf"
+  defaultConfig {
+    versionCode 1
+    versionName "1.0.0"
+  }
+  lintOptions {
+    abortOnError false
+  }
+}
+
+dependencies {
+  // Misma versión que usaba expo-pdf-text-extract: extracción de texto.
+  implementation 'com.tom-roush:pdfbox-android:2.0.27.0'
+}

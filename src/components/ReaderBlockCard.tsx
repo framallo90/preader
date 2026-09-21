@@ -12,6 +12,8 @@ type ReaderBlockCardProps = {
   fontSize: number;
   wordRange: WordRange;
   onPress: () => void;
+  /** Mantener apretado: guardar cita o nota de este párrafo. */
+  onLongPress?: () => void;
 };
 
 /**
@@ -26,6 +28,7 @@ function ReaderBlockCardBase({
   fontSize,
   wordRange,
   onPress,
+  onLongPress,
 }: ReaderBlockCardProps) {
   const lineHeight = Math.round(fontSize * 1.68);
   const activeWord =
@@ -40,6 +43,8 @@ function ReaderBlockCardBase({
   return (
     <Pressable
       onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={350}
       style={[styles.block, isActive ? { backgroundColor: colors.readerAccent } : null]}
     >
       <Text style={[styles.text, { color: colors.text, fontSize, lineHeight }]}>

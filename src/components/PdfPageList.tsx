@@ -1,20 +1,27 @@
 import { Image } from 'expo-image';
-import { ForwardedRef, forwardRef, memo, useCallback, useImperativeHandle, useMemo, useRef } from 'react';
+import { ForwardedRef, forwardRef, memo, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from 'react';
 import { FlatList, PixelRatio, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 
-import { getPageImageSource } from '../services/bardoServerService';
+import { PDF_RENDER_CANCELLED, PdfColorMode, PdfCropBox, requestPdfPage } from '../services/pdfLocalService';
 import { ThemeColors } from '../utils/theme';
 
 type PdfPageListProps = {
   bookId: string;
+  /** Archivo PDF (file:// o content://) del que se dibujan las páginas. */
+  sourceUri: string;
   pageCount: number;
-  /** ancho/alto de página; si falta se asume A4 (~0.707). */
+  /** ancho/alto de página sin recortar; si falta se asume A4 (~0.707). */
   pageAspect: number | null;
+  /** Recorte de márgenes común a todo el libro, o null para página completa. */
+  crop: PdfCropBox | null;
+  colorMode: PdfColorMode;
   initialPage: number;
   colors: ThemeColors;
   onPageChange?: (pageIndex: number) => void;
   /** Toque simple sobre la página (p. ej. alternar pantalla completa). */
   onTap?: () => void;
+  /** Mantener apretado sobre una página (marcador o nota en esa página). */
+  onLongPressPage?: (pageIndex: number) => void;
   /** Página que la voz está leyendo ahora (su número se marca con 🔊). */
   speakingPage?: number | null;
 };
@@ -27,21 +34,96 @@ export type PdfPageListHandle = {
 const DEFAULT_ASPECT = 0.707;
 const PAGE_GAP = 8;
 
+const PAGE_BACKGROUND: Record<PdfColorMode, string> = {
+  day: '#ffffff',
+  sepia: '#f4ecd8',
+  night: '#121212',
+};
+
+type PdfPageImageProps = {
+  bookId: string;
+  sourceUri: string;
+  pageIndex: number;
+  widthPx: number;
+  width: number;
+  height: number;
+  colorMode: PdfColorMode;
+  crop: PdfCropBox | null;
+};
+
+/** Una página: la pide al dibujarse y cancela el pedido si sale de pantalla antes. */
+const PdfPageImage = memo(function PdfPageImage({
+  bookId,
+  sourceUri,
+  pageIndex,
+  widthPx,
+  width,
+  height,
+  colorMode,
+  crop,
+}: PdfPageImageProps) {
+  const [uri, setUri] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setUri(null);
+    setFailed(false);
+    const ticket = requestPdfPage({ bookId, uri: sourceUri, pageIndex, widthPx, colorMode, crop });
+    ticket.promise
+      .then((rendered) => {
+        if (alive) setUri(rendered);
+      })
+      .catch((error: unknown) => {
+        const cancelled = error instanceof Error && error.message === PDF_RENDER_CANCELLED;
+        if (alive && !cancelled) setFailed(true);
+      });
+    return () => {
+      alive = false;
+      ticket.cancel();
+    };
+  }, [bookId, sourceUri, pageIndex, widthPx, colorMode, crop]);
+
+  const background = PAGE_BACKGROUND[colorMode];
+
+  if (!uri) {
+    return (
+      <View style={[styles.placeholder, { width, height, backgroundColor: background }]}>
+        {failed ? <Text style={styles.placeholderText}>No se pudo dibujar esta página</Text> : null}
+      </View>
+    );
+  }
+
+  return (
+    <Image
+      source={{ uri }}
+      style={{ width, height, backgroundColor: background }}
+      contentFit="contain"
+      // El archivo ya está en disco: un segundo caché de expo-image solo duplica espacio.
+      cachePolicy="memory"
+      transition={60}
+    />
+  );
+});
+
 /**
- * Lector visual estilo ReadEra: las páginas del PDF (renderizadas por el server
- * al ancho del teléfono) en un scroll vertical continuo. El ancho se ajusta a la
- * pantalla y, al rotar, useWindowDimensions re-renderiza y las páginas se piden
- * al ancho nuevo (expo-image cachea en disco: lo ya visto queda offline).
+ * Lector visual estilo ReadEra: las páginas del PDF dibujadas en el teléfono al
+ * ancho de la pantalla, en un scroll vertical continuo. Al rotar,
+ * useWindowDimensions re-renderiza y las páginas se piden al ancho nuevo.
  */
 const PdfPageListInner = forwardRef(function PdfPageList(
   {
     bookId,
+    sourceUri,
     pageCount,
     pageAspect,
+    crop,
+    colorMode,
     initialPage,
     colors,
     onPageChange,
     onTap,
+    onLongPressPage,
     speakingPage,
   }: PdfPageListProps,
   ref: ForwardedRef<PdfPageListHandle>,
@@ -53,7 +135,9 @@ const PdfPageListInner = forwardRef(function PdfPageList(
   const onPageChangeRef = useRef(onPageChange);
   onPageChangeRef.current = onPageChange;
 
-  const aspect = pageAspect && pageAspect > 0.2 && pageAspect < 5 ? pageAspect : DEFAULT_ASPECT;
+  const baseAspect = pageAspect && pageAspect > 0.2 && pageAspect < 5 ? pageAspect : DEFAULT_ASPECT;
+  // Con recorte, la proporción visible es la de la caja de contenido.
+  const aspect = crop ? (baseAspect * (crop[2] - crop[0])) / (crop[3] - crop[1]) : baseAspect;
   const pageHeight = Math.round(width / aspect);
   const requestWidth = Math.min(2048, Math.round(width * PixelRatio.get()));
 
@@ -90,6 +174,7 @@ const PdfPageListInner = forwardRef(function PdfPageList(
       ref={listRef}
       // Al rotar cambia el width → remonta la lista y retoma en la página actual.
       key={`pdf-${width}`}
+      style={{ backgroundColor: colors.readerSurface }}
       data={pages}
       keyExtractor={(page) => `p-${page}`}
       initialScrollIndex={currentPageRef.current}
@@ -104,14 +189,21 @@ const PdfPageListInner = forwardRef(function PdfPageList(
       maxToRenderPerBatch={3}
       showsVerticalScrollIndicator
       renderItem={({ item: pageIndex }) => (
-        <Pressable onPress={onTap} style={[styles.pageWrap, { height: pageHeight + PAGE_GAP }]}>
-          <Image
-            source={getPageImageSource(bookId, pageIndex, requestWidth)}
-            style={{ width, height: pageHeight, backgroundColor: '#ffffff' }}
-            contentFit="contain"
-            cachePolicy="disk"
-            transition={80}
-            placeholder={null}
+        <Pressable
+          onPress={onTap}
+          onLongPress={onLongPressPage ? () => onLongPressPage(pageIndex) : undefined}
+          delayLongPress={350}
+          style={[styles.pageWrap, { height: pageHeight + PAGE_GAP }]}
+        >
+          <PdfPageImage
+            bookId={bookId}
+            sourceUri={sourceUri}
+            pageIndex={pageIndex}
+            widthPx={requestWidth}
+            width={width}
+            height={pageHeight}
+            colorMode={colorMode}
+            crop={crop}
           />
           <Text style={[styles.pageNumber, speakingPage === pageIndex ? styles.pageNumberSpeaking : null]}>
             {speakingPage === pageIndex ? `🔊 ${pageIndex + 1}` : pageIndex + 1}
@@ -125,17 +217,20 @@ const PdfPageListInner = forwardRef(function PdfPageList(
 /**
  * Memoizado: durante la reproducción, la posición del audio actualiza estados
  * del lector ~4 veces por segundo; sin memo, cada tick re-renderizaba la lista
- * entera de páginas y congelaba la UI. El marker se compara por valor y está
- * cuantizado (pasos del 2%) para redibujar solo cuando la voz avanza de verdad.
+ * entera de páginas y congelaba la UI.
  */
 export const PdfPageList = memo(PdfPageListInner, (prev, next) =>
   prev.bookId === next.bookId &&
+  prev.sourceUri === next.sourceUri &&
   prev.pageCount === next.pageCount &&
   prev.pageAspect === next.pageAspect &&
+  prev.crop === next.crop &&
+  prev.colorMode === next.colorMode &&
   prev.initialPage === next.initialPage &&
   prev.colors === next.colors &&
   prev.onPageChange === next.onPageChange &&
   prev.onTap === next.onTap &&
+  prev.onLongPressPage === next.onLongPressPage &&
   (prev.speakingPage ?? null) === (next.speakingPage ?? null),
 );
 
@@ -143,12 +238,19 @@ const styles = StyleSheet.create({
   pageWrap: {
     alignItems: 'center',
   },
+  placeholder: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  placeholderText: {
+    fontSize: 12,
+    color: '#8a8a8a',
+  },
   // El número de la página que la voz lee se destaca (🔊 + color).
   pageNumberSpeaking: {
     backgroundColor: 'rgba(95,140,132,0.95)',
   },
-  // Autocontenido (oscuro + blanco): legible sobre la página blanca del PDF
-  // en cualquier tema.
+  // Autocontenido (oscuro + blanco): legible sobre la página en cualquier tema.
   pageNumber: {
     position: 'absolute',
     bottom: 10,

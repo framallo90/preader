@@ -3,7 +3,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { DocumentParser, ParsedDocument } from '../types/document';
 import { buildTextBlocks, normalizeExtractedText } from '../utils/textBlocks';
 import { detectChapters } from '../utils/chapterDetector';
-import { DocumentParseError } from './documentParser';
+import { DocumentParseError, assertFileSizeWithinLimit } from './documentParser';
 
 class TxtDocumentParser implements DocumentParser {
   async parse(uri: string): Promise<ParsedDocument> {
@@ -12,6 +12,7 @@ class TxtDocumentParser implements DocumentParser {
     if (!fileInfo.exists) {
       throw new DocumentParseError('missing_file', 'El archivo ya no existe en el almacenamiento local.');
     }
+    await assertFileSizeWithinLimit(uri);
 
     const rawText = await FileSystem.readAsStringAsync(uri, {
       encoding: FileSystem.EncodingType.UTF8,

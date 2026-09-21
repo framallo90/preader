@@ -25,6 +25,21 @@ export type DocumentMetadata = {
   coverExtension: string | null;
 };
 
+/** Datos del lector visual de un PDF (páginas reales dibujadas en el teléfono). */
+export type PdfPageInfo = {
+  pageCount: number;
+  /** ancho/alto de la página sin recortar; null si no se pudo medir. */
+  pageAspect: number | null;
+  /** Dónde empieza cada página dentro de fullText (mapeo exacto voz↔página). */
+  pageOffsets: number[];
+  /** Caja de contenido [left, top, right, bottom] en 0..1, o null sin recorte. */
+  crop: [number, number, number, number] | null;
+  /** Índice real del documento; vacío si el PDF no trae. */
+  outline: Array<{ title: string; pageIndex: number; level: number }>;
+  /** false en PDFs escaneados: se leen las páginas, pero no hay texto para la voz. */
+  hasText: boolean;
+};
+
 export type ParsedDocument = {
   id: string;
   fileName: string;
@@ -32,11 +47,13 @@ export type ParsedDocument = {
   fullText: string;
   blocks: TextBlock[];
   chapters: ChapterInfo[];
+  /** Solo en PDFs. */
+  pdf?: PdfPageInfo;
   /** Presente solo en el parseo fresco; no se incluye en el cache SQLite. */
   metadata?: DocumentMetadata;
 };
 
 export interface DocumentParser {
-  parse(uri: string): Promise<ParsedDocument>;
+  parse(uri: string, onProgress?: (done: number, total: number) => void): Promise<ParsedDocument>;
 }
 

@@ -48,3 +48,6 @@ modules/**/android/build/
 
 # datos de la app exportados a mano, no es parte del código
 /IntelliReader/
+
+# binarios ajenos usados para analisis (p. ej. el APK de ReadEra)
+*.apk

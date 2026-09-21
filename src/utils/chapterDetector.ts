@@ -54,7 +54,12 @@ export function cleanPdfProse(text: string): string {
       if (/^(?:https?:\/\/|www\.)\S+/i.test(trimmed)) return '';
       // "Página 42", "Pág. 7" en su propia línea.
       if (/^p[áa]g(?:ina|\.)?\s*\d+$/i.test(trimmed)) return '';
-      // Número de página suelto (una línea que es sólo dígitos).
+      // Número de página suelto (una línea que es SÓLO dígitos). Decisión
+      // consciente para el contenido objetivo (novelas/sagas): una línea que es
+      // sólo 1-4 dígitos es casi siempre un número de página, no prosa. En
+      // poesía/no-ficción esto podría borrar un verso/año suelto; si se
+      // soportan esos géneros, condicionar a que las líneas vecinas estén vacías
+      // (probado: eso perdía page numbers adyacentes a otro pie, ver test).
       if (/^\d{1,4}$/.test(trimmed)) return '';
       return line;
     })

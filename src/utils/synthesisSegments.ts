@@ -1,10 +1,12 @@
-const DEFAULT_MAX_SEGMENT_CHARS = 1200;
-const DEFAULT_MAX_PARAGRAPHS = 5;
+const DEFAULT_MAX_SEGMENT_CHARS = 450;
+const DEFAULT_MAX_PARAGRAPHS = 3;
 // CLAVE para que suene natural: los tramos se cortan SÓLO en fin de oración
-// (. ! ? …), NUNCA en medio. Un tamaño moderado da pocos cortes (fluido) y un
-// primer audio ágil; el prefetch del siguiente mantiene la continuidad.
-const DEFAULT_MAX_CHUNK_CHARS = 1500;
-const DEFAULT_MAX_CHUNK_SEGMENTS = 4;
+// (. ! ? …), NUNCA en medio. Son cortos (~30 s de audio) porque la voz la
+// sintetiza el motor del teléfono: así el primer audio sale en 1-3 s. El corte
+// entre tramos cae siempre en fin de oración, donde una pausa es natural, y el
+// prefetch de los siguientes mantiene la continuidad.
+const DEFAULT_MAX_CHUNK_CHARS = 500;
+const DEFAULT_MAX_CHUNK_SEGMENTS = 2;
 // Sólo una oración descomunal (rarísimo) se subdivide, y en pausas naturales (, ; :).
 const HARD_SENTENCE_LIMIT = 2200;
 

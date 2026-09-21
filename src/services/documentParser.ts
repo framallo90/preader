@@ -1,4 +1,23 @@
+import * as FileSystem from 'expo-file-system/legacy';
+
 import { DocumentParser } from '../types/document';
+
+// Tope de tamaño de archivo para EPUB/DOCX/TXT. Estas rutas cargan el archivo
+// entero en RAM (base64 → string → Uint8Array, ~3 copias), así que sin un guard
+// un libro ilustrado grande o un zip-bomba cierran la app. Los PDF no pasan por
+// acá: el módulo nativo los procesa con memoria en archivo temporal.
+export const MAX_LOCAL_FILE_BYTES = 60 * 1024 * 1024; // 60 MB
+
+/** Lanza document_too_large si el archivo supera el tope de parseo local. */
+export async function assertFileSizeWithinLimit(uri: string): Promise<void> {
+  const info = await FileSystem.getInfoAsync(uri);
+  if (info.exists && !info.isDirectory && typeof info.size === 'number' && info.size > MAX_LOCAL_FILE_BYTES) {
+    throw new DocumentParseError(
+      'document_too_large',
+      `El archivo pesa ${(info.size / (1024 * 1024)).toFixed(0)} MB, demasiado para procesarlo en el teléfono.`,
+    );
+  }
+}
 
 export type DocumentParseErrorCode =
   | 'missing_file'
@@ -23,20 +42,20 @@ export function getFriendlyParseErrorMessage(error: unknown) {
   if (error instanceof DocumentParseError) {
     switch (error.code) {
       case 'missing_file':
-        return 'El archivo ya no esta disponible dentro del almacenamiento local de la app.';
+        return 'El archivo ya no está disponible dentro del almacenamiento local de la app.';
       case 'empty_document':
-        return 'El documento esta vacio o no se pudo reconstruir texto legible.';
+        return 'El documento está vacío o no se pudo reconstruir texto legible.';
       case 'no_extractable_text':
-        return 'Este PDF no contiene texto extraible. Para leerlo haria falta OCR, que no forma parte de esta primera version.';
+        return 'Este PDF no contiene texto extraíble. Para leerlo haría falta OCR, que no forma parte de esta versión.';
       case 'document_too_large':
-        return 'Este libro es demasiado grande (miles de paginas) para procesarlo en el telefono sin quedarse sin memoria. Los volumenes enormes hay que dividirlos en partes o procesarlos en un servidor.';
+        return 'Este libro es demasiado grande para procesarlo en el teléfono sin quedarse sin memoria.';
       case 'extractor_unavailable':
-        return 'Esta APK no incluye el extractor PDF nativo o la instalacion quedo desactualizada. Rehace la build con EAS e instala la APK nueva.';
+        return 'Esta instalación no incluye el módulo PDF nativo o quedó desactualizada. Reinstalá la última versión.';
       case 'unsupported_format':
         return 'Formato no soportado. La app admite PDF, EPUB, TXT y DOCX.';
       case 'parse_failed':
       default:
-        return 'No se pudo interpretar el PDF seleccionado.';
+        return 'No se pudo interpretar el documento seleccionado.';
     }
   }
 

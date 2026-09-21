@@ -1,7 +1,7 @@
 import { SQLiteDatabase, openDatabaseAsync } from 'expo-sqlite';
 
 const DATABASE_NAME = 'pdf-voice-reader.db';
-const CURRENT_DB_VERSION = 1;
+const CURRENT_DB_VERSION = 4;
 let databasePromise: Promise<SQLiteDatabase> | null = null;
 
 export async function getDatabase() {
@@ -62,27 +62,6 @@ export async function initializeDatabase() {
       FOREIGN KEY (bookId) REFERENCES books(id) ON DELETE CASCADE
     );
 
-    CREATE TABLE IF NOT EXISTS characters (
-      id TEXT PRIMARY KEY NOT NULL,
-      sagaId TEXT,
-      name TEXT NOT NULL,
-      aliases TEXT NOT NULL DEFAULT '[]',
-      house TEXT,
-      description TEXT,
-      firstSeenBookId TEXT,
-      firstSeenChapterId TEXT,
-      updatedAt TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS chapter_context (
-      chapterId TEXT PRIMARY KEY NOT NULL,
-      beforeSummary TEXT,
-      afterSummary TEXT,
-      characters TEXT NOT NULL DEFAULT '[]',
-      keyEvents TEXT NOT NULL DEFAULT '[]',
-      extractedAt TEXT
-    );
-
     CREATE TABLE IF NOT EXISTS reading_progress (
       bookId TEXT PRIMARY KEY NOT NULL,
       chapterId TEXT,
@@ -109,6 +88,35 @@ export async function initializeDatabase() {
       key TEXT PRIMARY KEY NOT NULL,
       value TEXT NOT NULL
     );
+
+    -- Marcadores, citas y notas en una sola tabla, distinguidos por type.
+    CREATE TABLE IF NOT EXISTS notes (
+      id TEXT PRIMARY KEY NOT NULL,
+      bookId TEXT NOT NULL,
+      type TEXT NOT NULL,
+      charIndex INTEGER NOT NULL,
+      page INTEGER,
+      body TEXT,
+      comment TEXT,
+      createdAt TEXT NOT NULL,
+      updatedAt TEXT NOT NULL,
+      FOREIGN KEY (bookId) REFERENCES books(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_notes_book ON notes (bookId, charIndex);
+
+    -- Colecciones: un libro puede estar en varias.
+    CREATE TABLE IF NOT EXISTS colls (
+      id TEXT PRIMARY KEY NOT NULL,
+      name TEXT NOT NULL,
+      createdAt TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS books_to_colls (
+      bookId TEXT NOT NULL,
+      collId TEXT NOT NULL,
+      PRIMARY KEY (bookId, collId),
+      FOREIGN KEY (bookId) REFERENCES books(id) ON DELETE CASCADE,
+      FOREIGN KEY (collId) REFERENCES colls(id) ON DELETE CASCADE
+    );
   `);
 
   await runMigrations(db);
@@ -130,6 +138,27 @@ async function runMigrations(db: SQLiteDatabase) {
     await addColumnIfMissing(db, 'books', 'coverUri', 'TEXT');
   }
 
+  if (version < 2) {
+    // v2: se fue la capa de IA (contexto por capítulo y personajes).
+    await db.execAsync(`
+      DROP TABLE IF EXISTS chapter_context;
+      DROP TABLE IF EXISTS characters;
+    `);
+  }
+
+  if (version < 3) {
+    // v3: el PDF se procesa en el teléfono; el caché guarda su mapa de páginas.
+    await addColumnIfMissing(db, 'parsed_document_cache', 'pdfInfoJson', 'TEXT');
+  }
+
+  if (version < 4) {
+    // v4: listas de lectura, favoritos y reseña con estrellas.
+    await addColumnIfMissing(db, 'books', 'status', "TEXT NOT NULL DEFAULT 'none'");
+    await addColumnIfMissing(db, 'books', 'favorite', 'INTEGER NOT NULL DEFAULT 0');
+    await addColumnIfMissing(db, 'books', 'rating', 'INTEGER');
+    await addColumnIfMissing(db, 'books', 'review', 'TEXT');
+  }
+
   if (version < CURRENT_DB_VERSION) {
     await db.execAsync(`PRAGMA user_version = ${CURRENT_DB_VERSION}`);
   }
@@ -138,7 +167,12 @@ async function runMigrations(db: SQLiteDatabase) {
 async function addColumnIfMissing(db: SQLiteDatabase, table: string, column: string, type: string) {
   try {
     await db.execAsync(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
-  } catch {
-    // La columna ya existe (instalación que corrió esta migración a medias).
+  } catch (error) {
+    // Solo tragamos "columna ya existe" (migración corrida a medias). Cualquier
+    // otro error (DB locked, I/O) se RE-LANZA para que user_version NO suba y la
+    // migración reintente en el próximo arranque; si no, la app quedaría leyendo
+    // una columna que nunca se creó → "no such column" y biblioteca imposible de abrir.
+    const message = error instanceof Error ? error.message.toLowerCase() : '';
+    if (!message.includes('duplicate column')) throw error;
   }
 }

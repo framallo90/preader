@@ -8,10 +8,16 @@ import {
 import { bookProgressRepository } from '../storage/bookProgressRepository';
 import { ParsedDocument } from '../types/document';
 import { getAbsoluteCharIndex, getPositionFromAbsoluteChar } from '../utils/documentProgress';
+import { detectLanguage } from '../utils/languageDetect';
 import { clamp } from '../utils/math';
 import { SynthesisChunk, buildSynthesisChunks } from '../utils/synthesisSegments';
+import { resolveVoice } from '../utils/voices';
 import { audioSessionService } from './audioSessionService';
-import { synthesizeSpeech, DEFAULT_VOICE, DEFAULT_MODEL, TtsVoice, TtsModel } from './openaiTtsService';
+import { cancelPendingSynthesis, listVoices, synthesizeSpeech } from './systemTtsService';
+
+// Cuántos tramos se sintetizan por adelantado. Los tramos son cortos (arranque
+// rápido), así que con dos de colchón la voz no espera al motor entre tramos.
+const PREFETCH_DEPTH = 2;
 
 export type PlaybackSnapshot = {
   documentId: string | null;
@@ -56,11 +62,11 @@ function getChunkLength(chunk: SynthesisChunk | null) {
   return Math.max(chunk.endChar - chunk.startChar, 1);
 }
 
-function buildChunkId(documentId: string, chunk: SynthesisChunk, voiceId: string) {
+function buildChunkId(documentId: string, chunk: SynthesisChunk, voiceId: string | null) {
   // Incluye el rango de caracteres del tramo: si cambia el chunking (tamaño de
   // tramo), la clave cambia y no se reutiliza un WAV viejo por un tramo distinto.
   const len = chunk.endChar - chunk.startChar;
-  return `${documentId}--chunk-${chunk.index}-${chunk.startChar}-${len}--${voiceId}`;
+  return `${documentId}--chunk-${chunk.index}-${chunk.startChar}-${len}--${voiceId ?? 'default'}`;
 }
 
 class DocumentAudioPlaybackService {
@@ -76,10 +82,15 @@ class DocumentAudioPlaybackService {
   // caro (recorre los 2.5M chars). Sin esto se recalculaba en CADA avance de
   // tramo, causando un hitch audible en cada frontera.
   private chunksCacheDocId: string | null = null;
+  private chunksCacheLen = -1;
   private chunksCache: SynthesisChunk[] = [];
   private activeChunkIndex = 0;
   private activePlaybackRate = 1;
-  private activeVoiceId: string = DEFAULT_VOICE;
+  // Voz RESUELTA para el libro activo (según su idioma) y la elegida en Ajustes.
+  private activeVoiceId: string | null = null;
+  private activeLanguage: string | null = null;
+  private preferredVoiceId: string | null = null;
+  private languageByDocument = new Map<string, string | null>();
   private activeMetadata: AudioMetadata | undefined;
   private lastPersistedAt = 0;
   private lastPersistedAbsoluteCharIndex = -1;
@@ -117,6 +128,8 @@ class DocumentAudioPlaybackService {
     this.activeChunks = [];
     this.activeChunkIndex = 0;
     this.activePlaybackRate = 1;
+    this.activeVoiceId = null;
+    this.activeLanguage = null;
     this.activeMetadata = undefined;
     this.lastPersistedAt = 0;
     this.lastPersistedAbsoluteCharIndex = -1;
@@ -224,11 +237,25 @@ class DocumentAudioPlaybackService {
     });
   }
 
-  /** Sintetiza un chunk con OpenAI TTS y cachea el MP3. */
+  /**
+   * Voz para este libro: la elegida en Ajustes si es del idioma del libro; si
+   * no, la mejor voz instalada de ese idioma.
+   */
+  private async resolveVoiceFor(document: ParsedDocument, preferredVoiceId: string | null) {
+    let language = this.languageByDocument.get(document.id);
+    if (language === undefined) {
+      language = detectLanguage(document.fullText);
+      this.languageByDocument.set(document.id, language);
+    }
+    const voices = await listVoices().catch(() => []);
+    return resolveVoice(voices, preferredVoiceId, language);
+  }
+
+  /** Sintetiza un tramo con el motor TTS del sistema y cachea el WAV. */
   private async prepareChunk(
     document: ParsedDocument,
     chunk: SynthesisChunk,
-    voiceId: string,
+    voiceId: string | null,
     sessionId: number,
     silent = false,
   ): Promise<string | null> {
@@ -244,22 +271,27 @@ class DocumentAudioPlaybackService {
     // pausas sólo en los párrafos reales. Reconstruir uniendo oraciones con "\n\n"
     // hacía que fal pausara entre cada oración (y a mitad de oraciones largas
     // partidas) → sonaba cortado "como si hubiera un punto". El texto ya viene
-    // limpio y normalizado del parser, y sin LLM de por medio (latencia extra).
+    // limpio y normalizado del parser.
     const rawText = document.fullText.slice(chunk.startChar, chunk.endChar);
-    const promise = synthesizeSpeech(chunkId, rawText, voiceId as TtsVoice, DEFAULT_MODEL)
+    const promise = synthesizeSpeech(chunkId, rawText, voiceId, this.activeLanguage)
       .then((mp3Uri) => {
-        if (!this.isSessionActive(sessionId)) return null;
-        if (!silent) this.updateSnapshot({ sourceUri: mp3Uri, isPreparing: false, preparationProgress: 1 });
+        // SIEMPRE devolvemos el uri: esta promesa puede estar cacheada y ser
+        // esperada por una sesión distinta a la que la creó. Solo la UI
+        // (updateSnapshot) se gatea por sesión; el dato fluye a quien lo espera.
+        // Antes devolvía null si cambió la sesión → el nuevo play/seek recibía
+        // null y el player quedaba mudo (carrera de sesión).
+        if (!silent && this.isSessionActive(sessionId)) {
+          this.updateSnapshot({ sourceUri: mp3Uri, isPreparing: false, preparationProgress: 1 });
+        }
         return mp3Uri;
       })
       .catch((error) => {
-        if (!this.isSessionActive(sessionId)) return null;
+        // SIEMPRE re-lanzamos: quien espera la promesa (aunque sea otra sesión)
+        // debe ver el error, no una resolución null silenciosa.
         const rawMessage = error instanceof Error ? error.message : 'No se pudo preparar el audio.';
-        // Mensaje claro para usuarios sin Premium (la Edge Function devuelve 403).
-        const message = /premium/i.test(rawMessage)
-          ? 'Las voces de IA son parte de Premium. Podés activarlo desde Ajustes → Premium.'
-          : rawMessage;
-        if (!silent) this.updateSnapshot({ isPreparing: false, errorMessage: message });
+        if (!silent && this.isSessionActive(sessionId)) {
+          this.updateSnapshot({ isPreparing: false, errorMessage: rawMessage });
+        }
         throw error;
       })
       .finally(() => {
@@ -271,16 +303,19 @@ class DocumentAudioPlaybackService {
     return promise;
   }
 
-  private async prefetchNextChunk(document: ParsedDocument, voiceId: string, chunkIndex: number, sessionId: number) {
-    if (!this.isSessionActive(sessionId)) return;
-    const nextChunk = this.activeChunks[chunkIndex + 1];
-    if (!nextChunk) return;
-    try { await this.prepareChunk(document, nextChunk, voiceId, sessionId, true); } catch { /* silencioso */ }
+  private async prefetchNextChunk(document: ParsedDocument, voiceId: string | null, chunkIndex: number, sessionId: number) {
+    // En orden: el motor sintetiza de a uno, y el más cercano es el que urge.
+    for (let offset = 1; offset <= PREFETCH_DEPTH; offset++) {
+      if (!this.isSessionActive(sessionId)) return;
+      const nextChunk = this.activeChunks[chunkIndex + offset];
+      if (!nextChunk) return;
+      try { await this.prepareChunk(document, nextChunk, voiceId, sessionId, true); } catch { return; }
+    }
   }
 
   private async ensureChunkLoaded(
     document: ParsedDocument,
-    voiceId: string,
+    voiceId: string | null,
     absoluteCharIndex: number,
     sessionId: number,
     targetIndexOverride?: number,
@@ -289,9 +324,12 @@ class DocumentAudioPlaybackService {
     if (!this.isSessionActive(sessionId)) return null;
 
     this.activeDocument = document;
-    if (this.chunksCacheDocId !== document.id) {
+    // Invalida también por longitud del texto: si el server re-procesa el MISMO
+    // id con un fullText distinto, los offsets viejos cortarían mal el nuevo.
+    if (this.chunksCacheDocId !== document.id || this.chunksCacheLen !== document.fullText.length) {
       this.chunksCache = buildSynthesisChunks(document.fullText);
       this.chunksCacheDocId = document.id;
+      this.chunksCacheLen = document.fullText.length;
     }
     this.activeChunks = this.chunksCache;
 
@@ -306,6 +344,19 @@ class DocumentAudioPlaybackService {
         ? clamp(targetIndexOverride, 0, this.activeChunks.length - 1)
         : this.getChunkIndexForAbsoluteChar(absoluteCharIndex);
     const targetChunk = this.activeChunks[targetIndex];
+
+    // Play/seek del usuario lejos de lo que se estaba preparando: se descarta la
+    // cola del motor para que el tramo pedido no espere detrás de prefetch viejos.
+    // (En el avance natural NO: ahí lo que está en vuelo es justo lo que sigue.)
+    if (targetIndexOverride === undefined && this.chunkPreparationPromises.size > 0) {
+      const targetId = buildChunkId(document.id, targetChunk, voiceId);
+      if (!this.chunkPreparationPromises.has(targetId)) {
+        this.chunkPreparationPromises.clear();
+        await cancelPendingSynthesis();
+        if (!this.isSessionActive(sessionId)) return null;
+      }
+    }
+
     const mp3Uri = await this.prepareChunk(document, targetChunk, voiceId, sessionId);
 
     if (!mp3Uri || !this.isSessionActive(sessionId)) return null;
@@ -353,7 +404,9 @@ class DocumentAudioPlaybackService {
     // el "Preparando…" que el caller (p.ej. seekBy) pudo haber seteado, para que
     // el FAB no quede congelado en "…".
     if (this.advancingPromise || !this.activeDocument) {
-      if (this.snapshot.isPreparing && this.snapshot.isPlaying) this.updateSnapshot({ isPreparing: false });
+      // El avance en curso es dueño del estado; soltamos cualquier "Preparando…"
+      // que un caller (p.ej. seekBy) haya seteado, aunque isPlaying sea false.
+      if (this.snapshot.isPreparing) this.updateSnapshot({ isPreparing: false });
       return;
     }
     const nextChunk = this.activeChunks[this.activeChunkIndex + 1];
@@ -365,7 +418,6 @@ class DocumentAudioPlaybackService {
 
     const doc = this.activeDocument;
     const voiceId = this.activeVoiceId;
-    const rate = this.activePlaybackRate;
     const metadata = this.activeMetadata;
     const sessionId = this.playbackSessionId;
     const expectedIndex = this.activeChunkIndex;
@@ -376,9 +428,11 @@ class DocumentAudioPlaybackService {
         if (this.isSessionActive(sessionId)) this.updateSnapshot({ isPreparing: false });
         return;
       }
-      await this.ensureChunkLoaded(doc, voiceId, nextChunk.startChar, sessionId, expectedIndex + 1);
-      if (!this.isSessionActive(sessionId) || !this.player) return;
-      this.player.setPlaybackRate(rate);
+      const loaded = await this.ensureChunkLoaded(doc, voiceId, nextChunk.startChar, sessionId, expectedIndex + 1);
+      if (!loaded || !this.isSessionActive(sessionId) || !this.player) return;
+      // Rate VIVO (no el capturado): si cambió la velocidad durante el avance,
+      // no queremos revertirla al valor viejo.
+      this.player.setPlaybackRate(this.activePlaybackRate);
       this.player.setActiveForLockScreen(true, metadata ?? { title: doc.fileName, artist: 'Bardo' });
       await this.player.seekTo(0);
       if (!this.isSessionActive(sessionId)) return;
@@ -388,7 +442,8 @@ class DocumentAudioPlaybackService {
     this.advancingPromise = task
       .catch((err) => {
         if (!this.isSessionActive(sessionId)) return;
-        this.updateSnapshot({ isPlaying: false, errorMessage: err instanceof Error ? err.message : 'No se pudo continuar el audio.' });
+        // isPreparing:false también acá: un avance fallido no debe dejar el FAB en "…".
+        this.updateSnapshot({ isPlaying: false, isPreparing: false, errorMessage: err instanceof Error ? err.message : 'No se pudo continuar el audio.' });
       })
       .finally(() => { if (this.advancingPromise === task) this.advancingPromise = null; });
 
@@ -416,14 +471,27 @@ class DocumentAudioPlaybackService {
   getSnapshot() { return { ...this.snapshot }; }
 
   async play(document: ParsedDocument, voiceId: string | null, rate: number, absoluteCharIndex: number, metadata?: AudioMetadata) {
-    const resolvedVoice = (voiceId ?? DEFAULT_VOICE) as TtsVoice;
     const sessionId = this.startPlaybackSession();
     this.activePlaybackRate = rate;
-    this.activeVoiceId = resolvedVoice;
     this.activeMetadata = metadata;
+    this.preferredVoiceId = voiceId;
 
-    await this.ensureChunkLoaded(document, resolvedVoice, absoluteCharIndex, sessionId);
-    if (!this.isSessionActive(sessionId) || !this.player) return;
+    const resolved = await this.resolveVoiceFor(document, voiceId);
+    if (!this.isSessionActive(sessionId)) return;
+    this.activeVoiceId = resolved.voiceId;
+    this.activeLanguage = resolved.language;
+
+    let loaded: SynthesisChunk | null;
+    try {
+      loaded = await this.ensureChunkLoaded(document, resolved.voiceId, absoluteCharIndex, sessionId);
+    } catch (error) {
+      // Una sesión reemplazada por otro play/seek no debe mostrar su error.
+      if (!this.isSessionActive(sessionId)) return;
+      throw error;
+    }
+    // Si el tramo no cargó (síntesis falló / sesión cambió), NO seguimos a
+    // player.play() sobre un player sin fuente (silencio o tramo viejo).
+    if (!loaded || !this.isSessionActive(sessionId) || !this.player) return;
 
     await audioSessionService.ensureNotificationPermission();
     if (!this.isSessionActive(sessionId) || !this.player) return;
@@ -444,10 +512,20 @@ class DocumentAudioPlaybackService {
   async seekToBlock(document: ParsedDocument, blockIndex: number, charIndex: number, autoplay: boolean, voiceId: string | null, rate: number, metadata?: AudioMetadata) {
     const absoluteCharIndex = getAbsoluteCharIndex(document, blockIndex, charIndex);
     if (autoplay) { await this.play(document, voiceId, rate, absoluteCharIndex, metadata); return; }
-    const resolvedVoice = (voiceId ?? DEFAULT_VOICE) as TtsVoice;
     const sessionId = this.startPlaybackSession();
-    await this.ensureChunkLoaded(document, resolvedVoice, absoluteCharIndex, sessionId);
+    this.preferredVoiceId = voiceId;
+    const resolved = await this.resolveVoiceFor(document, voiceId);
     if (!this.isSessionActive(sessionId)) return;
+    this.activeVoiceId = resolved.voiceId;
+    this.activeLanguage = resolved.language;
+    let loaded: SynthesisChunk | null;
+    try {
+      loaded = await this.ensureChunkLoaded(document, resolved.voiceId, absoluteCharIndex, sessionId);
+    } catch (error) {
+      if (!this.isSessionActive(sessionId)) return;
+      throw error;
+    }
+    if (!loaded || !this.isSessionActive(sessionId)) return;
     await this.seekWithinActiveChunk(absoluteCharIndex);
     this.player?.pause();
   }
@@ -455,6 +533,19 @@ class DocumentAudioPlaybackService {
   setPlaybackRate(rate: number) {
     this.activePlaybackRate = rate;
     if (this.player) this.player.setPlaybackRate(rate);
+  }
+
+  /** Cambia la voz elegida (null = automática). El tramo actual sigue con la voz
+   *  vieja hasta el próximo seek/play; los que se preparen desde ahora usan la nueva. */
+  setVoice(voiceId: string | null) {
+    this.preferredVoiceId = voiceId;
+    const doc = this.activeDocument;
+    if (!doc) return;
+    void this.resolveVoiceFor(doc, voiceId).then((resolved) => {
+      if (this.activeDocument !== doc || this.preferredVoiceId !== voiceId) return;
+      this.activeVoiceId = resolved.voiceId;
+      this.activeLanguage = resolved.language;
+    });
   }
 
   /**

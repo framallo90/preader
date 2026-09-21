@@ -1,9 +1,9 @@
 import Slider from '@react-native-community/slider';
 import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
-import { Stack, router, useLocalSearchParams } from 'expo-router';
+import { Stack, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, FlatList, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, AppState, FlatList, Modal, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppButton } from '../src/components/AppButton';
@@ -15,41 +15,52 @@ import { DocumentParseError, getFriendlyParseErrorMessage } from '../src/service
 import { persistBookMetadata } from '../src/services/bookMetadataService';
 import { ensureLocalPdfCopy } from '../src/services/libraryScanService';
 import { documentAudioPlaybackService } from '../src/services/documentAudioPlaybackService';
-import { ServerBookInfo, getBookInfo, isServerConfigured, processBookOnServer } from '../src/services/bardoServerService';
+import { closePdf, renderPdfCover } from '../src/services/pdfLocalService';
+import { readerJumpStore } from '../src/services/readerJumpStore';
 import { PdfPageList, PdfPageListHandle } from '../src/components/PdfPageList';
-import { buildTextBlocks } from '../src/utils/textBlocks';
 import { getAbsoluteCharIndex, getPositionFromAbsoluteChar } from '../src/utils/documentProgress';
 import { charForPage, pageForChar } from '../src/utils/pageMap';
 import { getDisplayTitle } from '../src/utils/bookDisplay';
-import { DEFAULT_VOICE_ID, VALID_VOICE_IDS } from '../src/config/voices';
-import { extractChapterContext } from '../src/services/claudeService';
 import { getParserForDocument } from '../src/services/parserRegistry';
 import { bookRepository } from '../src/storage/bookRepository';
 import { bookProgressRepository } from '../src/storage/bookProgressRepository';
-import { characterRepository } from '../src/storage/characterRepository';
 import { chapterRepository } from '../src/storage/chapterRepository';
-import { chapterContextRepository } from '../src/storage/chapterContextRepository';
+import { noteRepository } from '../src/storage/noteRepository';
 import { parsedDocumentRepository } from '../src/storage/parsedDocumentRepository';
 import { runtimeStateRepository } from '../src/storage/runtimeStateRepository';
-import { Book, ReadingProgress } from '../src/types/storage';
+import { Book, BookNote, NoteType, ReadingProgress, ReadingTheme } from '../src/types/storage';
 import { ParsedDocument, TextBlock } from '../src/types/document';
 import { detectChapters } from '../src/utils/chapterDetector';
+import { chaptersFromOutline } from '../src/utils/pdfOutline';
 import { clampRounded } from '../src/utils/math';
-import { ThemeColors } from '../src/utils/theme';
+import { SearchMatch, foldText, searchText } from '../src/utils/textSearch';
+import { ThemeColors, getReaderColors, resolveReadingMode } from '../src/utils/theme';
+
+/**
+ * Capítulos del libro: primero el índice real del PDF (lo que marcó la
+ * editorial); si no trae, la detección sobre el texto (encabezados POV, etc.).
+ */
+function resolveChapters(bookId: string, doc: ParsedDocument) {
+  if (doc.pdf) {
+    const fromOutline = chaptersFromOutline(bookId, doc.pdf.outline, doc.pdf.pageOffsets, doc.fullText.length);
+    if (fromOutline.length > 0) return fromOutline;
+  }
+  return detectChapters(bookId, doc.fullText);
+}
 
 const KEEP_AWAKE_TAG = 'reader-screen';
+const READING_THEMES: ReadingTheme[] = ['auto', 'day', 'sepia', 'night'];
+const READING_THEME_LABELS: Record<ReadingTheme, string> = { auto: 'Auto', day: 'Día', sepia: 'Sepia', night: 'Noche' };
+const MAX_QUOTE_CHARS = 1200;
+const DIM_STEP = 0.1;
+const MAX_DIM = 0.8;
+
+/** Dónde se quiere anotar: un párrafo (texto) o una página (PDF). */
+type AnnotationTarget = { charIndex: number; page: number | null; excerpt: string };
 const MIN_RATE = 0.6;
 const MAX_RATE = 1.6;
 
 type StatusTone = 'primary' | 'neutral' | 'warning' | 'danger';
-
-type ChapterBanner = {
-  chapterId: string;
-  previousChapterId: string | null;
-  title: string;
-  povCharacter: string | null;
-  beforeSummary: string | null;
-};
 
 function formatRateLabel(rate: number) {
   return `${rate.toFixed(2)}x`;
@@ -74,6 +85,17 @@ function getStatusColors(colors: ThemeColors, tone: StatusTone) {
 export default function ReaderScreen() {
   const { documentId, mode } = useLocalSearchParams<{ documentId?: string; mode?: string }>();
   const { colors, settings, updateSettings } = useAppSettings();
+  // El tema de lectura afecta solo al lector (página y texto), no a toda la app.
+  const readingMode = resolveReadingMode(settings.readingTheme, settings.darkMode);
+  const readerColors = useMemo(() => getReaderColors(readingMode), [readingMode]);
+  const [notes, setNotes] = useState<BookNote[]>([]);
+  const [annotationTarget, setAnnotationTarget] = useState<AnnotationTarget | null>(null);
+  const [noteDraft, setNoteDraft] = useState('');
+  const [isSearchVisible, setIsSearchVisible] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<SearchMatch[] | null>(null);
+  const [flashMessage, setFlashMessage] = useState<string | null>(null);
+  const foldedTextRef = useRef<{ docId: string; folded: string } | null>(null);
   const [documentRecord, setDocumentRecord] = useState<Book | null>(null);
   const [parsedDocument, setParsedDocument] = useState<ParsedDocument | null>(null);
   const [savedProgress, setSavedProgress] = useState<ReadingProgress | null>(null);
@@ -81,8 +103,6 @@ export default function ReaderScreen() {
   const [loadingStatus, setLoadingStatus] = useState('Abriendo el documento…');
   // Vista única: SIEMPRE se ve el libro (páginas del PDF o texto) y el audio se
   // controla con la barra flotante + el menú ⋯. No hay "pantalla de escucha".
-  // Modo lectura visual (páginas reales del PDF renderizadas por el server).
-  const [serverPageInfo, setServerPageInfo] = useState<ServerBookInfo | null>(null);
   const [pdfPageForUi, setPdfPageForUi] = useState(0);
   // Pantalla completa en modo lectura: tocás la página y desaparece el chrome.
   const [isImmersive, setIsImmersive] = useState(false);
@@ -96,10 +116,7 @@ export default function ReaderScreen() {
   const [sleepDeadlineAt, setSleepDeadlineAt] = useState<number | null>(null);
   const [clockNow, setClockNow] = useState(Date.now());
   const [isUsingCachedText, setIsUsingCachedText] = useState(false);
-  const [chapterBanner, setChapterBanner] = useState<ChapterBanner | null>(null);
   const listRef = useRef<FlatList<TextBlock>>(null);
-  const prevChapterIdRef = useRef<string | null>(null);
-  const extractedChaptersRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
     let isMounted = true;
@@ -126,64 +143,50 @@ export default function ReaderScreen() {
         if (isMounted) setDocumentRecord(book);
         await runtimeStateRepository.armReaderLoadGuard(book.id);
         isGuardArmed = true;
+        // Si se pidió abrir en una posición (índice, cita, marcador), gana sobre
+        // el progreso guardado.
+        const withPendingJump = (doc: ParsedDocument, saved: ReadingProgress | null): ReadingProgress | null => {
+          const jump = readerJumpStore.consume(book.id);
+          if (jump === null) return saved;
+          const pos = getPositionFromAbsoluteChar(doc, jump);
+          return {
+            bookId: book.id,
+            chapterId: null,
+            blockIndex: pos.blockIndex,
+            charIndex: pos.charIndex,
+            percentage: pos.percentage,
+            updatedAt: new Date().toISOString(),
+          };
+        };
+        const isPdf = book.type === 'application/pdf' || /\.pdf$/i.test(book.name);
         const cachedParsed = await parsedDocumentRepository.getParsedDocument(book);
         if (!isMounted) return;
-        if (cachedParsed) {
-          const chapters = detectChapters(book.id, cachedParsed.fullText);
+        // Un PDF cacheado sin mapa de páginas viene de una versión anterior: se
+        // re-procesa una vez para tener el lector visual y el seguimiento de voz.
+        if (cachedParsed && (!isPdf || cachedParsed.pdf)) {
+          const chapters = resolveChapters(book.id, cachedParsed);
           const parsedWithChapters = { ...cachedParsed, chapters };
           if (chapters.length > 0) void chapterRepository.saveChaptersForBook(book.id, chapters);
           setDocumentRecord(book);
-          setSavedProgress(progress);
+          setSavedProgress(withPendingJump(parsedWithChapters, progress));
           setParsedDocument(parsedWithChapters);
           setIsUsingCachedText(true);
           return;
         }
-        // Camino preferido: procesar en el server propio (bardo-api). El server
-        // extrae y limpia MUCHO mejor y más rápido que el teléfono, y habilita
-        // libros gigantes que localmente harían OOM. Si falla, fallback local.
-        if (isServerConfigured()) {
-          try {
-            const serverResult = await processBookOnServer(book.uri, book.name, book.type, book.id, (label) => {
-              if (isMounted) setLoadingStatus(label);
-            });
-            const blocks = buildTextBlocks(serverResult.fullText);
-            if (blocks.length > 0) {
-              const chapters = detectChapters(book.id, serverResult.fullText);
-              const parsedFromServer: ParsedDocument = {
-                id: book.id,
-                fileName: book.name,
-                sourceUri: book.uri,
-                fullText: serverResult.fullText,
-                blocks,
-                chapters,
-              };
-              if (chapters.length > 0) await chapterRepository.saveChaptersForBook(book.id, chapters);
-              await parsedDocumentRepository.saveParsedDocument(book, parsedFromServer);
-              if (!isMounted) return;
-              setDocumentRecord(book);
-              setSavedProgress(progress);
-              setParsedDocument(parsedFromServer);
-              return;
-            }
-          } catch {
-            // Server caído, sin red o formato no soportado: se procesa local.
-            if (isMounted) setLoadingStatus('Servidor no disponible, procesando en el teléfono…');
-          }
-        }
-
         // Libros descubiertos por escaneo (content://): el extractor PDF
         // nativo necesita file://, así que se materializa una copia local
         // la primera vez y se actualiza la URI del libro.
         let effectiveBook = book;
-        const isPdf = book.type === 'application/pdf' || /\.pdf$/i.test(book.name);
         if (book.uri.startsWith('content://') && isPdf) {
           const localUri = await ensureLocalPdfCopy(book.id, book.uri);
           effectiveBook = { ...book, uri: localUri };
           await bookRepository.saveBook(effectiveBook);
         }
         const parser = getParserForDocument(effectiveBook.type, effectiveBook.name);
-        const parsed = await parser.parse(effectiveBook.uri);
-        const chapters = detectChapters(book.id, parsed.fullText);
+        const parsed = await parser.parse(effectiveBook.uri, (done, total) => {
+          if (isMounted) setLoadingStatus(`Leyendo el libro… ${done} de ${total} páginas`);
+        });
+        const chapters = resolveChapters(book.id, parsed);
         const parsedWithChapters: ParsedDocument = {
           ...parsed,
           id: book.id,
@@ -195,9 +198,15 @@ export default function ReaderScreen() {
         await parsedDocumentRepository.saveParsedDocument(effectiveBook, parsedWithChapters);
         // Metadata real (título, autor, portada) extraída en el parseo fresco.
         if (parsed.metadata) void persistBookMetadata(book.id, parsed.metadata);
+        // La tapa de un PDF es su primera página, dibujada en el teléfono.
+        if (isPdf && !book.coverUri) {
+          void renderPdfCover(book.id, effectiveBook.uri).then((coverUri) => {
+            if (coverUri) void bookRepository.updateBookMetadata(book.id, { title: null, author: null, coverUri });
+          });
+        }
         if (!isMounted) return;
         setDocumentRecord(effectiveBook);
-        setSavedProgress(progress);
+        setSavedProgress(withPendingJump(parsedWithChapters, progress));
         setParsedDocument(parsedWithChapters);
       } catch (error) {
         if (!isMounted) return;
@@ -225,17 +234,12 @@ export default function ReaderScreen() {
     [documentId],
   );
 
-  const effectiveVoiceId = useMemo(() => {
-    const saved = settings.defaultVoiceId;
-    return saved && VALID_VOICE_IDS.has(saved) ? saved : DEFAULT_VOICE_ID;
-  }, [settings.defaultVoiceId]);
-
   const reader = useReaderController({
     document: parsedDocument,
     initialBlockIndex: savedProgress?.blockIndex ?? 0,
     initialCharIndex: savedProgress?.charIndex ?? 0,
     rate: settings.defaultRate,
-    voiceId: effectiveVoiceId,
+    voiceId: settings.defaultVoiceId,
     onError: setSpeechError,
     onProgressChange: persistProgress,
   });
@@ -250,46 +254,30 @@ export default function ReaderScreen() {
     setIsImmersive((v) => !v);
   }, []);
 
-  // Si es un PDF procesado por el server, hay lector visual de páginas.
-  useEffect(() => {
-    if (!documentRecord || !parsedDocument) return;
-    const isPdf = documentRecord.type === 'application/pdf' || /\.pdf$/i.test(documentRecord.name);
-    if (!isPdf) {
-      setServerPageInfo(null);
-      return;
-    }
-    let mounted = true;
-    void getBookInfo(documentRecord.id).then((info) => {
-      if (mounted) setServerPageInfo(info);
-    });
-    return () => { mounted = false; };
-  }, [documentRecord, parsedDocument]);
+  // Lector visual: páginas reales del PDF, dibujadas en el teléfono.
+  const pageInfo = parsedDocument?.pdf ?? null;
+  // PDF escaneado: se lee la página, pero no hay texto que narrar.
+  const canNarrate = pageInfo ? pageInfo.hasText : true;
 
   // "Escuchar" desde el Home: arranca la voz solo (una vez, al estar cargado).
   const autoListenRef = useRef(false);
   useEffect(() => {
-    if (mode !== 'listen' || autoListenRef.current || !parsedDocument || isLoading) return;
+    if (mode !== 'listen' || autoListenRef.current || !parsedDocument || isLoading || !canNarrate) return;
     autoListenRef.current = true;
     void reader.play();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, parsedDocument, isLoading]);
 
-  // Página inicial: donde quedó la lectura. Con pageOffsets el mapeo es exacto;
-  // sin ellos (paquete viejo) cae al proporcional.
+  // Página inicial: donde quedó la lectura (mapeo exacto por pageOffsets).
   const initialPdfPage = useMemo(() => {
-    if (!serverPageInfo || serverPageInfo.pages <= 0) return 0;
-    if (serverPageInfo.pageOffsets && parsedDocument) {
-      const abs = getAbsoluteCharIndex(
-        parsedDocument,
-        savedProgress?.blockIndex ?? 0,
-        savedProgress?.charIndex ?? 0,
-      );
-      return pageForChar(abs, serverPageInfo.pageOffsets);
-    }
-    const pct = savedProgress?.percentage ?? 0;
-    const page = Math.floor((pct / 100) * serverPageInfo.pages);
-    return Math.min(serverPageInfo.pages - 1, Math.max(0, page));
-  }, [serverPageInfo, savedProgress, parsedDocument]);
+    if (!pageInfo || pageInfo.pageCount <= 0 || !parsedDocument) return 0;
+    const abs = getAbsoluteCharIndex(
+      parsedDocument,
+      savedProgress?.blockIndex ?? 0,
+      savedProgress?.charIndex ?? 0,
+    );
+    return pageForChar(abs, pageInfo.pageOffsets);
+  }, [pageInfo, savedProgress, parsedDocument]);
 
   useEffect(() => {
     currentPdfPageRef.current = initialPdfPage;
@@ -320,14 +308,12 @@ export default function ReaderScreen() {
       currentPdfPageRef.current = pageIndex;
       setPdfPageForUi(pageIndex);
       if (isPlayingRef.current) return;
-      if (!parsedDocument || !serverPageInfo || serverPageInfo.pages <= 0) return;
-      const abs = serverPageInfo.pageOffsets
-        ? charForPage(pageIndex, serverPageInfo.pageOffsets, parsedDocument.fullText.length)
-        : Math.round(((pageIndex + 0.5) / serverPageInfo.pages) * parsedDocument.fullText.length);
+      if (!parsedDocument || !pageInfo || pageInfo.pageCount <= 0) return;
+      const abs = charForPage(pageIndex, pageInfo.pageOffsets, parsedDocument.fullText.length);
       const pos = getPositionFromAbsoluteChar(parsedDocument, abs);
       void reader.syncPosition(pos.blockIndex, pos.charIndex);
     },
-    [parsedDocument, serverPageInfo, reader.syncPosition],
+    [parsedDocument, pageInfo, reader.syncPosition],
   );
 
   // Modo texto (EPUB/TXT/DOCX): timestamp del ultimo scroll manual para que el
@@ -363,6 +349,154 @@ export default function ReaderScreen() {
     );
   }, [parsedDocument, currentAbsoluteChar]);
 
+  const loadNotes = useCallback(async () => {
+    if (!documentId) return;
+    setNotes(await noteRepository.listForBook(documentId));
+  }, [documentId]);
+
+  const showFlash = useCallback((message: string) => {
+    setFlashMessage(message);
+    setTimeout(() => setFlashMessage((current) => (current === message ? null : current)), 1600);
+  }, []);
+
+  // Salta a una posición del libro (índice, resultado de búsqueda, anotación).
+  const jumpToChar = useCallback(
+    (absoluteChar: number) => {
+      if (!parsedDocument) return;
+      const pos = getPositionFromAbsoluteChar(parsedDocument, absoluteChar);
+      const r = readerRef.current;
+      void r.seekToBlock(pos.blockIndex, r.isPlaying);
+      if (parsedDocument.pdf) {
+        pdfListRef.current?.scrollToPage(pageForChar(absoluteChar, parsedDocument.pdf.pageOffsets));
+      } else {
+        textScrolledAtRef.current = 0;
+        listRef.current?.scrollToIndex({ index: pos.blockIndex, animated: false, viewPosition: 0.18 });
+      }
+    },
+    [parsedDocument],
+  );
+
+  // Al volver de "Sobre este libro": refresca anotaciones y aplica el salto pedido.
+  useFocusEffect(
+    useCallback(() => {
+      void loadNotes();
+      if (!parsedDocument) return;
+      const jump = readerJumpStore.consume(parsedDocument.id);
+      if (jump !== null) jumpToChar(jump);
+    }, [loadNotes, parsedDocument, jumpToChar]),
+  );
+
+  // ¿Hay un marcador donde estoy? En PDF se compara por página; en texto, por párrafo.
+  const bookmarkHere = useMemo(() => {
+    if (!parsedDocument) return null;
+    if (parsedDocument.pdf) {
+      return notes.find((n) => n.type === 'bookmark' && n.page === pdfPageForUi) ?? null;
+    }
+    const block = parsedDocument.blocks[reader.currentBlockIndex];
+    if (!block) return null;
+    return notes.find((n) => n.type === 'bookmark' && n.charIndex >= block.startChar && n.charIndex < block.endChar) ?? null;
+  }, [notes, parsedDocument, pdfPageForUi, reader.currentBlockIndex]);
+
+  // Posición + extracto de lo que se está viendo ahora (para marcadores).
+  const getCurrentTarget = useCallback((): AnnotationTarget | null => {
+    if (!parsedDocument) return null;
+    if (parsedDocument.pdf) {
+      const page = currentPdfPageRef.current;
+      const charIndex = charForPage(page, parsedDocument.pdf.pageOffsets, parsedDocument.fullText.length);
+      return { charIndex, page, excerpt: parsedDocument.fullText.slice(charIndex, charIndex + 160).trim() };
+    }
+    const block = parsedDocument.blocks[readerRef.current.currentBlockIndex];
+    if (!block) return null;
+    return { charIndex: block.startChar, page: null, excerpt: block.text.slice(0, 160).trim() };
+  }, [parsedDocument]);
+
+  const handleToggleBookmark = useCallback(async () => {
+    if (!documentId) return;
+    if (bookmarkHere) {
+      await noteRepository.removeNote(bookmarkHere.id);
+      showFlash('Marcador quitado');
+    } else {
+      const target = getCurrentTarget();
+      if (!target) return;
+      await noteRepository.addNote({
+        bookId: documentId,
+        type: 'bookmark',
+        charIndex: target.charIndex,
+        page: target.page,
+        body: target.excerpt || null,
+        comment: null,
+      });
+      showFlash('Marcador guardado');
+    }
+    await loadNotes();
+  }, [documentId, bookmarkHere, getCurrentTarget, loadNotes, showFlash]);
+
+  const handleLongPressBlock = useCallback((block: TextBlock) => {
+    setNoteDraft('');
+    setAnnotationTarget({ charIndex: block.startChar, page: null, excerpt: block.text.slice(0, MAX_QUOTE_CHARS).trim() });
+  }, []);
+
+  const handleLongPressPage = useCallback(
+    (pageIndex: number) => {
+      if (!parsedDocument?.pdf) return;
+      const start = charForPage(pageIndex, parsedDocument.pdf.pageOffsets, parsedDocument.fullText.length);
+      const nextStart =
+        pageIndex + 1 < parsedDocument.pdf.pageOffsets.length
+          ? parsedDocument.pdf.pageOffsets[pageIndex + 1]
+          : parsedDocument.fullText.length;
+      setNoteDraft('');
+      setAnnotationTarget({
+        charIndex: start,
+        page: pageIndex,
+        excerpt: parsedDocument.fullText.slice(start, Math.min(nextStart, start + MAX_QUOTE_CHARS)).trim(),
+      });
+    },
+    [parsedDocument],
+  );
+
+  const handleSaveAnnotation = useCallback(
+    async (type: NoteType) => {
+      if (!documentId || !annotationTarget) return;
+      const comment = noteDraft.trim();
+      if (type === 'note' && !comment) return;
+      await noteRepository.addNote({
+        bookId: documentId,
+        type,
+        charIndex: annotationTarget.charIndex,
+        page: annotationTarget.page,
+        body: annotationTarget.excerpt || null,
+        comment: comment || null,
+      });
+      setAnnotationTarget(null);
+      setNoteDraft('');
+      showFlash(type === 'quote' ? 'Cita guardada' : type === 'note' ? 'Nota guardada' : 'Marcador guardado');
+      await loadNotes();
+    },
+    [documentId, annotationTarget, noteDraft, loadNotes, showFlash],
+  );
+
+  const handleRunSearch = useCallback(() => {
+    if (!parsedDocument) return;
+    // Plegar el libro entero (sin tildes/mayúsculas) cuesta: se hace una vez por libro.
+    if (foldedTextRef.current?.docId !== parsedDocument.id) {
+      foldedTextRef.current = { docId: parsedDocument.id, folded: foldText(parsedDocument.fullText) };
+    }
+    setSearchResults(searchText(parsedDocument.fullText, searchQuery, 200, foldedTextRef.current.folded));
+  }, [parsedDocument, searchQuery]);
+
+  const handleCycleTheme = useCallback(async () => {
+    const index = READING_THEMES.indexOf(settings.readingTheme);
+    await updateSettings({ readingTheme: READING_THEMES[(index + 1) % READING_THEMES.length] });
+  }, [settings.readingTheme, updateSettings]);
+
+  const handleDimChange = useCallback(
+    async (delta: number) => {
+      const next = Math.min(MAX_DIM, Math.max(0, Math.round((settings.screenDim + delta) * 10) / 10));
+      await updateSettings({ screenDim: next });
+    },
+    [settings.screenDim, updateSettings],
+  );
+
   // Página por donde va la VOZ (para marcarla y seguirla mientras suena).
   // Adelanto (~4 s de habla): la posición interpolada del audio corre unos
   // segundos DETRÁS de la voz real (pausas + silencios del WAV), así que sin
@@ -370,15 +504,11 @@ export default function ReaderScreen() {
   const AUDIO_PAGE_LOOKAHEAD_CHARS = 80;
 
   const audioPage = useMemo(() => {
-    if (!serverPageInfo || serverPageInfo.pages <= 0) return null;
+    if (!pageInfo || pageInfo.pageCount <= 0) return null;
     if (!parsedDocument || parsedDocument.fullText.length === 0) return null;
     const biased = Math.min(parsedDocument.fullText.length, currentAbsoluteChar + AUDIO_PAGE_LOOKAHEAD_CHARS);
-    if (serverPageInfo.pageOffsets) {
-      return pageForChar(biased, serverPageInfo.pageOffsets);
-    }
-    const page = Math.floor((biased / parsedDocument.fullText.length) * serverPageInfo.pages);
-    return Math.min(serverPageInfo.pages - 1, Math.max(0, page));
-  }, [serverPageInfo, parsedDocument, currentAbsoluteChar]);
+    return pageForChar(biased, pageInfo.pageOffsets);
+  }, [pageInfo, parsedDocument, currentAbsoluteChar]);
 
   // Auto-seguimiento: si estabas en la página que la voz leía, pasa de página
   // con ella. Si te fuiste a mirar otra parte, no te molesta.
@@ -395,103 +525,6 @@ export default function ReaderScreen() {
       pdfListRef.current?.scrollToPage(audioPage);
     }
   }, [audioPage, reader.isPlaying]);
-
-  useEffect(() => {
-    if (!currentChapter || !parsedDocument || !documentRecord) return;
-    const currentChapterId = currentChapter.id;
-    const previousChapterId = prevChapterIdRef.current;
-    if (currentChapterId === previousChapterId) return;
-    prevChapterIdRef.current = currentChapterId;
-
-    const prevChapter = parsedDocument.chapters.find(
-      (ch) => ch.orderIndex === currentChapter.orderIndex - 1,
-    );
-    if (prevChapter) {
-      void chapterContextRepository.getContextForChapter(prevChapter.id).then((context) => {
-        setChapterBanner({
-          chapterId: currentChapterId,
-          previousChapterId: prevChapter.id,
-          title: currentChapter.title,
-          povCharacter: currentChapter.povCharacter,
-          beforeSummary: context?.afterSummary ?? null,
-        });
-      });
-    } else {
-      setChapterBanner({
-        chapterId: currentChapterId,
-        previousChapterId: null,
-        title: currentChapter.title,
-        povCharacter: currentChapter.povCharacter,
-        beforeSummary: null,
-      });
-    }
-
-    if (previousChapterId && !extractedChaptersRef.current.has(previousChapterId)) {
-      extractedChaptersRef.current.add(previousChapterId);
-      void (async () => {
-        try {
-          const existing = await chapterContextRepository.getContextForChapter(previousChapterId);
-          if (existing?.afterSummary) {
-            setChapterBanner((prev) => {
-              if (prev?.chapterId === currentChapterId && !prev.beforeSummary) {
-                return { ...prev, beforeSummary: existing.afterSummary };
-              }
-              return prev;
-            });
-            return;
-          }
-          const prevChapterData = parsedDocument.chapters.find((ch) => ch.id === previousChapterId);
-          if (!prevChapterData) return;
-          const chapterText = parsedDocument.fullText.slice(
-            prevChapterData.startChar,
-            Math.min(prevChapterData.endChar, prevChapterData.startChar + 16_000),
-          );
-          const prevSummary = await chapterContextRepository.getPreviousChapterSummary(
-            documentRecord.id,
-            prevChapterData.orderIndex,
-          );
-          const result = await extractChapterContext(chapterText, prevSummary, prevChapterData.title);
-          await chapterContextRepository.saveContext({
-            chapterId: previousChapterId,
-            beforeSummary: result.beforeSummary,
-            afterSummary: result.afterSummary,
-            characters: result.characters,
-            keyEvents: result.keyEvents,
-            extractedAt: new Date().toISOString(),
-          });
-          const now = new Date().toISOString();
-          for (const name of result.characters) {
-            const characterId = [documentRecord.sagaId ?? 'global', name]
-              .join('--')
-              .toLowerCase()
-              .normalize('NFD')
-              .replace(/[̀-ͯ]/g, '')
-              .replace(/[^a-z0-9-]/g, '-')
-              .replace(/-+/g, '-');
-            await characterRepository.upsertCharacter({
-              id: characterId,
-              sagaId: documentRecord.sagaId,
-              name,
-              aliases: [],
-              house: null,
-              description: null,
-              firstSeenBookId: documentRecord.id,
-              firstSeenChapterId: previousChapterId,
-              updatedAt: now,
-            });
-          }
-          setChapterBanner((prev) => {
-            if (prev?.chapterId === currentChapterId && !prev.beforeSummary) {
-              return { ...prev, beforeSummary: result.afterSummary };
-            }
-            return prev;
-          });
-        } catch {
-          extractedChaptersRef.current.delete(previousChapterId);
-        }
-      })();
-    }
-  }, [currentChapter, parsedDocument, documentRecord]);
 
   useEffect(() => {
     if (!parsedDocument || parsedDocument.blocks.length === 0) return;
@@ -621,6 +654,7 @@ export default function ReaderScreen() {
   useEffect(() => {
     return () => {
       void shutdownRef.current();
+      void closePdf();
       void deactivateKeepAwake(KEEP_AWAKE_TAG).catch(() => {});
     };
   }, []);
@@ -663,6 +697,19 @@ export default function ReaderScreen() {
           title: documentRecord ? getDisplayTitle(documentRecord) : 'Lector',
           headerShown: !isImmersive,
           headerRight: () => (
+            <View style={styles.headerActions}>
+            <TouchableOpacity
+              onPress={() => { void handleToggleBookmark(); }}
+              accessibilityRole="button"
+              accessibilityLabel={bookmarkHere ? 'Quitar marcador' : 'Agregar marcador'}
+              hitSlop={{ top: 12, bottom: 12, left: 8, right: 8 }}
+              style={[
+                styles.headerMenuButton,
+                { borderColor: bookmarkHere ? colors.primary : colors.border, backgroundColor: bookmarkHere ? colors.accent : colors.surface },
+              ]}
+            >
+              <Text style={[styles.headerMenuLabel, { color: colors.text }]}>{bookmarkHere ? '🔖' : '📑'}</Text>
+            </TouchableOpacity>
             <TouchableOpacity
               onPress={() => setIsMenuVisible(true)}
               accessibilityRole="button"
@@ -672,6 +719,7 @@ export default function ReaderScreen() {
             >
               <Text style={[styles.headerMenuLabel, { color: colors.text }]}>Menú</Text>
             </TouchableOpacity>
+            </View>
           ),
         }}
       />
@@ -679,20 +727,24 @@ export default function ReaderScreen() {
       <View
         style={[
           styles.readerStage,
-          { backgroundColor: colors.readerSurface, borderColor: colors.border },
+          { backgroundColor: readerColors.readerSurface, borderColor: colors.border },
           isImmersive ? styles.readerStageImmersive : null,
         ]}
       >
-        {serverPageInfo ? (
+        {pageInfo ? (
           <PdfPageList
             ref={pdfListRef}
             bookId={documentRecord.id}
-            pageCount={serverPageInfo.pages}
-            pageAspect={serverPageInfo.pageAspect}
+            sourceUri={documentRecord.uri}
+            pageCount={pageInfo.pageCount}
+            pageAspect={pageInfo.pageAspect}
+            crop={settings.cropPdfMargins ? pageInfo.crop : null}
+            colorMode={readingMode}
             initialPage={initialPdfPage}
-            colors={colors}
+            colors={readerColors}
             onPageChange={handlePdfPageChange}
             onTap={handleToggleImmersive}
+            onLongPressPage={handleLongPressPage}
             speakingPage={reader.isPlaying ? audioPage : null}
           />
         ) : (
@@ -715,25 +767,26 @@ export default function ReaderScreen() {
             <ReaderBlockCard
               block={item}
               isActive={item.index === reader.currentBlockIndex}
-              colors={colors}
+              colors={readerColors}
               fontSize={settings.fontSize}
               wordRange={item.index === reader.currentBlockIndex ? reader.currentWordRange : null}
               onPress={() => { void handleSeekBlock(item.index); }}
+              onLongPress={() => handleLongPressBlock(item)}
             />
           )}
         />
         )}
-        {serverPageInfo && serverPageInfo.pages > 0 && !isImmersive ? (
+        {pageInfo && pageInfo.pageCount > 0 && !isImmersive ? (
           // Scrubber semi-transparente: aparece con el chrome (tap) y permite
           // saltar páginas viendo la numeración.
           <View style={[styles.pageScrubber, { backgroundColor: colors.surface }]}>
             <Text style={[styles.pageScrubberLabel, { color: colors.text }]}>
-              {pdfPageForUi + 1} / {serverPageInfo.pages}
+              {pdfPageForUi + 1} / {pageInfo.pageCount}
             </Text>
             <Slider
               style={styles.pageScrubberSlider}
               minimumValue={0}
-              maximumValue={Math.max(serverPageInfo.pages - 1, 0)}
+              maximumValue={Math.max(pageInfo.pageCount - 1, 0)}
               step={1}
               value={pdfPageForUi}
               minimumTrackTintColor={colors.primary}
@@ -745,11 +798,11 @@ export default function ReaderScreen() {
             />
           </View>
         ) : null}
-        {(isImmersive || !serverPageInfo) ? (
+        {(isImmersive || !pageInfo) ? (
           <View pointerEvents="none" style={styles.readOverlay}>
             <Text style={styles.readOverlayText}>
-              {serverPageInfo && serverPageInfo.pages > 0
-                ? `${Math.round(((pdfPageForUi + 1) / serverPageInfo.pages) * 100)}% · pág. ${pdfPageForUi + 1}/${serverPageInfo.pages}`
+              {pageInfo && pageInfo.pageCount > 0
+                ? `${Math.round(((pdfPageForUi + 1) / pageInfo.pageCount) * 100)}% · pág. ${pdfPageForUi + 1}/${pageInfo.pageCount}`
                 : `${reader.progressPercentage.toFixed(0)}%`}
             </Text>
           </View>
@@ -767,7 +820,7 @@ export default function ReaderScreen() {
 
         {/* Controles de audio: parar · atrás · adelante (el play vive en el FAB).
             Visibles con el chrome (tap) o mientras suena. */}
-        {!isImmersive || reader.isPlaying || reader.isPreparing ? (
+        {canNarrate && (!isImmersive || reader.isPlaying || reader.isPreparing) ? (
           <View style={styles.audioBar} pointerEvents="box-none">
             {speechError ? (
               <Text style={styles.audioBarError} numberOfLines={2}>{speechError}</Text>
@@ -802,7 +855,13 @@ export default function ReaderScreen() {
         {/* Play flotante. En pantalla completa se oculta si no hay audio, para
             que la lectura quede limpia y no tape el numero/marcador de pagina
             (que vive abajo a la izquierda). */}
-        {!isImmersive || reader.isPlaying || reader.isPreparing ? (
+        {!canNarrate && !isImmersive ? (
+          <View pointerEvents="none" style={styles.scanNotice}>
+            <Text style={styles.scanNoticeText}>PDF escaneado: sin texto para la voz</Text>
+          </View>
+        ) : null}
+
+        {canNarrate && (!isImmersive || reader.isPlaying || reader.isPreparing) ? (
           <TouchableOpacity
             style={[styles.playFab, { backgroundColor: colors.primary }]}
             onPress={() => { void handleTogglePlayback(); }}
@@ -820,7 +879,7 @@ export default function ReaderScreen() {
 
       {/* Menú de opciones del lector (⋯ en la barra de audio). Rescata al diseño
           single-view lo útil que antes vivía en el panel de "modo escucha":
-          capítulos, recap, chat, salto, velocidad y temporizador. */}
+          capítulos, velocidad y temporizador. */}
       <Modal visible={isMenuVisible} transparent animationType="fade" onRequestClose={() => setIsMenuVisible(false)}>
         <TouchableOpacity style={styles.menuBackdrop} activeOpacity={1} onPress={() => setIsMenuVisible(false)}>
           <TouchableOpacity activeOpacity={1} style={[styles.menuSheet, { backgroundColor: colors.surface, borderColor: colors.border }]}>
@@ -859,29 +918,60 @@ export default function ReaderScreen() {
               />
             </View>
 
-            {currentChapter && (parsedDocument.chapters?.length ?? 0) > 0 ? (
+            <View style={styles.settingRow}>
+              <Text style={[styles.settingLabel, { color: colors.textMuted }]}>Tema de lectura</Text>
+              <AppButton
+                label={READING_THEME_LABELS[settings.readingTheme]}
+                onPress={() => { void handleCycleTheme(); }}
+                variant="secondary"
+                colors={colors}
+                compact
+              />
+            </View>
+
+            <View style={styles.settingRow}>
+              <Text style={[styles.settingLabel, { color: colors.textMuted }]}>Atenuar pantalla</Text>
+              <View style={styles.inlineActions}>
+                <AppButton label="-" onPress={() => { void handleDimChange(-DIM_STEP); }} variant="ghost" colors={colors} compact disabled={settings.screenDim <= 0} />
+                <Text style={[styles.inlineValue, { color: colors.text }]}>{Math.round(settings.screenDim * 100)}%</Text>
+                <AppButton label="+" onPress={() => { void handleDimChange(DIM_STEP); }} variant="ghost" colors={colors} compact disabled={settings.screenDim >= MAX_DIM} />
+              </View>
+            </View>
+
+            {pageInfo?.crop ? (
               <View style={styles.settingRow}>
-                <Text style={[styles.settingLabel, { color: colors.textMuted }]}>¿Qué pasó antes?</Text>
+                <Text style={[styles.settingLabel, { color: colors.textMuted }]}>Recortar márgenes</Text>
                 <AppButton
-                  label="Ver recap"
-                  onPress={() => {
-                    const prev = parsedDocument.chapters?.find((ch) => ch.orderIndex === currentChapter.orderIndex - 1);
-                    setIsMenuVisible(false);
-                    if (prev) router.push(`/chapter-context?chapterId=${prev.id}`);
-                  }}
+                  label={settings.cropPdfMargins ? 'Sí' : 'No'}
+                  onPress={() => { void updateSettings({ cropPdfMargins: !settings.cropPdfMargins }); }}
                   variant="secondary"
                   colors={colors}
                   compact
-                  disabled={currentChapter.orderIndex === 0}
                 />
               </View>
             ) : null}
 
             <View style={styles.settingRow}>
-              <Text style={[styles.settingLabel, { color: colors.textMuted }]}>Chat del libro</Text>
+              <Text style={[styles.settingLabel, { color: colors.textMuted }]}>Buscar en el libro</Text>
+              <AppButton
+                label="Buscar"
+                onPress={() => { setIsMenuVisible(false); setIsSearchVisible(true); }}
+                variant="secondary"
+                colors={colors}
+                compact
+              />
+            </View>
+
+            <View style={styles.settingRow}>
+              <Text style={[styles.settingLabel, { color: colors.textMuted }]}>
+                Sobre este libro{notes.length > 0 ? ` · ${notes.length} anotaciones` : ''}
+              </Text>
               <AppButton
                 label="Abrir"
-                onPress={() => { setIsMenuVisible(false); router.push(`/chat?bookId=${documentRecord.id}`); }}
+                onPress={() => {
+                  setIsMenuVisible(false);
+                  router.push({ pathname: '/book', params: { bookId: documentRecord.id, from: 'reader' } });
+                }}
                 variant="secondary"
                 colors={colors}
                 compact
@@ -892,6 +982,98 @@ export default function ReaderScreen() {
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
+
+      {/* Anotar un párrafo o una página: marcador, cita o nota. */}
+      <Modal visible={annotationTarget !== null} transparent animationType="fade" onRequestClose={() => setAnnotationTarget(null)}>
+        <TouchableOpacity style={styles.menuBackdrop} activeOpacity={1} onPress={() => setAnnotationTarget(null)}>
+          <TouchableOpacity activeOpacity={1} style={[styles.menuSheet, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <View style={styles.menuHandle} />
+            <Text style={[styles.settingLabel, { color: colors.text }]}>
+              {annotationTarget?.page !== null && annotationTarget?.page !== undefined ? `Página ${annotationTarget.page + 1}` : 'Este párrafo'}
+            </Text>
+            <Text style={[styles.annotationExcerpt, { color: colors.textMuted }]} numberOfLines={4}>
+              {annotationTarget?.excerpt}
+            </Text>
+            <TextInput
+              value={noteDraft}
+              onChangeText={setNoteDraft}
+              placeholder="Escribí una nota (opcional para la cita)"
+              placeholderTextColor={colors.textMuted}
+              multiline
+              style={[styles.annotationInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}
+            />
+            <View style={styles.inlineActions}>
+              <AppButton label="🔖 Marcador" onPress={() => { void handleSaveAnnotation('bookmark'); }} variant="secondary" colors={colors} compact />
+              <AppButton label="❝ Cita" onPress={() => { void handleSaveAnnotation('quote'); }} variant="secondary" colors={colors} compact />
+              <AppButton label="✎ Nota" onPress={() => { void handleSaveAnnotation('note'); }} colors={colors} compact disabled={!noteDraft.trim()} />
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Buscar en el libro (sin distinguir tildes ni mayúsculas). */}
+      <Modal visible={isSearchVisible} transparent animationType="fade" onRequestClose={() => setIsSearchVisible(false)}>
+        <TouchableOpacity style={styles.menuBackdrop} activeOpacity={1} onPress={() => setIsSearchVisible(false)}>
+          <TouchableOpacity activeOpacity={1} style={[styles.menuSheet, styles.searchSheet, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <View style={styles.menuHandle} />
+            <View style={styles.inlineActions}>
+              <TextInput
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                onSubmitEditing={handleRunSearch}
+                placeholder="Buscar en el libro"
+                placeholderTextColor={colors.textMuted}
+                returnKeyType="search"
+                autoFocus
+                style={[styles.searchInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}
+              />
+              <AppButton label="Buscar" onPress={handleRunSearch} colors={colors} compact disabled={searchQuery.trim().length < 2} />
+            </View>
+            {searchResults !== null ? (
+              <Text style={[styles.searchCount, { color: colors.textMuted }]}>
+                {searchResults.length === 0
+                  ? 'Sin resultados.'
+                  : `${searchResults.length}${searchResults.length >= 200 ? '+' : ''} resultado${searchResults.length === 1 ? '' : 's'}`}
+              </Text>
+            ) : null}
+            <FlatList
+              data={searchResults ?? []}
+              keyExtractor={(item) => String(item.index)}
+              keyboardShouldPersistTaps="handled"
+              renderItem={({ item }) => (
+                <TouchableOpacity
+                  style={[styles.searchRow, { borderColor: colors.border }]}
+                  onPress={() => { setIsSearchVisible(false); jumpToChar(item.index); }}
+                >
+                  <Text style={[styles.searchSnippet, { color: colors.textMuted }]} numberOfLines={3}>
+                    {item.snippet.slice(0, item.snippetMatchStart)}
+                    <Text style={{ color: colors.text, fontWeight: '800' }}>
+                      {item.snippet.slice(item.snippetMatchStart, item.snippetMatchStart + item.matchLength)}
+                    </Text>
+                    {item.snippet.slice(item.snippetMatchStart + item.matchLength)}
+                  </Text>
+                  {pageInfo ? (
+                    <Text style={[styles.searchPage, { color: colors.primary }]}>
+                      pág. {pageForChar(item.index, pageInfo.pageOffsets) + 1}
+                    </Text>
+                  ) : null}
+                </TouchableOpacity>
+              )}
+            />
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {flashMessage ? (
+        <View pointerEvents="none" style={styles.flash}>
+          <Text style={styles.flashText}>{flashMessage}</Text>
+        </View>
+      ) : null}
+
+      {/* Brillo por debajo del mínimo del sistema: velo negro que no recibe toques. */}
+      {settings.screenDim > 0 ? (
+        <View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: '#000000', opacity: settings.screenDim }]} />
+      ) : null}
 
       <OptionPickerModal
         title="Temporizador de sueno"
@@ -925,15 +1107,6 @@ const styles = StyleSheet.create({
   preparingFill: { height: '100%', borderRadius: 999 },
   progressTrack: { height: 7, borderRadius: 999, overflow: 'hidden' },
   progressFill: { height: '100%', borderRadius: 999 },
-  chapterBanner: { borderWidth: 1, borderRadius: 18, paddingHorizontal: 14, paddingVertical: 12, marginHorizontal: 16, marginTop: 8, gap: 6 },
-  chapterBannerHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 8 },
-  chapterBannerTitle: { fontSize: 15, fontWeight: '700', flex: 1 },
-  povBadge: { borderRadius: 999, paddingHorizontal: 8, paddingVertical: 3 },
-  povBadgeText: { fontSize: 10, fontWeight: '800', letterSpacing: 0.5 },
-  chapterBannerBody: { fontSize: 13, lineHeight: 19 },
-  chapterBannerFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 2 },
-  chapterBannerDismiss: { fontSize: 11 },
-  chapterBannerLink: { fontSize: 12, fontWeight: '600' },
   readerStage: { flex: 1, marginHorizontal: 10, marginTop: 10, marginBottom: 10, borderWidth: 1, borderRadius: 26, overflow: 'hidden' },
   readerStageImmersive: { marginHorizontal: 0, marginTop: 0, marginBottom: 0, borderWidth: 0, borderRadius: 0 },
   readerList: { flex: 1 },
@@ -985,6 +1158,19 @@ const styles = StyleSheet.create({
   menuHandle: { alignSelf: 'center', width: 40, height: 4, borderRadius: 2, backgroundColor: 'rgba(127,127,127,0.4)', marginBottom: 6 },
   headerMenuButton: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 14, paddingVertical: 6, marginRight: 4 },
   headerMenuLabel: { fontSize: 14, fontWeight: '700' },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  annotationExcerpt: { fontSize: 13, lineHeight: 19, fontStyle: 'italic' },
+  annotationInput: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, fontSize: 14, minHeight: 64, textAlignVertical: 'top' },
+  searchSheet: { maxHeight: '80%' },
+  searchInput: { flex: 1, borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 8, fontSize: 15 },
+  searchCount: { fontSize: 12 },
+  searchRow: { borderTopWidth: StyleSheet.hairlineWidth, paddingVertical: 10, gap: 3 },
+  searchSnippet: { fontSize: 13.5, lineHeight: 19 },
+  searchPage: { fontSize: 11, fontWeight: '700' },
+  flash: { position: 'absolute', top: 70, alignSelf: 'center', backgroundColor: 'rgba(20,20,20,0.85)', borderRadius: 999, paddingHorizontal: 16, paddingVertical: 8 },
+  flashText: { color: '#ffffff', fontSize: 13, fontWeight: '600' },
+  scanNotice: { position: 'absolute', bottom: 14, alignSelf: 'center', backgroundColor: 'rgba(20,20,20,0.6)', borderRadius: 999, paddingHorizontal: 14, paddingVertical: 6 },
+  scanNoticeText: { color: '#ffffff', fontSize: 12, fontWeight: '600' },
   audioBarRow: {
     flexDirection: 'row',
     alignItems: 'center',

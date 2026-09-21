@@ -1,12 +1,10 @@
-import { Stack, router } from 'expo-router';
+import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 
 import { AppErrorBoundary } from '../src/components/AppErrorBoundary';
 import { AppSettingsProvider, useAppSettings } from '../src/hooks/useAppSettings';
-import { authService } from '../src/services/authService';
-import { premiumService } from '../src/services/premiumService';
 import { initializeDatabase } from '../src/storage/database';
 import { parsedDocumentRepository } from '../src/storage/parsedDocumentRepository';
 import { runtimeStateRepository } from '../src/storage/runtimeStateRepository';
@@ -18,50 +16,8 @@ function logBootRecoveryWarning(message: string, error: unknown) {
 
 function RootNavigator() {
   const { colors, isReady, settings } = useAppSettings();
-  const [authChecked, setAuthChecked] = useState(false);
-  const [isAuthenticated, setIsAuthenticated] = useState(false);
-  // Refs para distinguir transiciones reales (login/logout) de eventos
-  // repetidos como TOKEN_REFRESHED, que NO deben navegar ni re-inicializar.
-  const authenticatedUserIdRef = useRef<string | null>(null);
 
-  useEffect(() => {
-    // Carga inicial de sesión
-    void authService.getSession().then(async (session) => {
-      if (session?.user) {
-        setIsAuthenticated(true);
-        authenticatedUserIdRef.current = session.user.id;
-        await premiumService.initialize(session.user.id);
-      }
-      // Sin sesión la app funciona igual (lectura, voz del sistema,
-      // progreso). El login aparece recién al querer algo premium.
-      setAuthChecked(true);
-    });
-
-    // Escucha cambios de auth (login / logout)
-    const unsubscribe = authService.onAuthStateChange(async (session) => {
-      if (session?.user) {
-        const isNewLogin = authenticatedUserIdRef.current !== session.user.id;
-        authenticatedUserIdRef.current = session.user.id;
-        setIsAuthenticated(true);
-        if (isNewLogin) {
-          await premiumService.initialize(session.user.id);
-          router.replace('/');
-        }
-      } else {
-        const wasAuthenticated = authenticatedUserIdRef.current !== null;
-        authenticatedUserIdRef.current = null;
-        setIsAuthenticated(false);
-        premiumService.teardown();
-        if (wasAuthenticated) {
-          router.replace('/');
-        }
-      }
-    });
-
-    return unsubscribe;
-  }, []);
-
-  if (!isReady || !authChecked) {
+  if (!isReady) {
     return (
       <View style={[styles.bootContainer, { backgroundColor: colors.background }]}>
         <ActivityIndicator color={colors.primary} size="large" />
@@ -83,13 +39,10 @@ function RootNavigator() {
           contentStyle: { backgroundColor: colors.background },
         }}
       >
-        <Stack.Screen name="login" options={{ headerShown: false }} />
         <Stack.Screen name="index" options={{ title: 'Inicio' }} />
         <Stack.Screen name="reader" options={{ title: 'Lector' }} />
+        <Stack.Screen name="book" options={{ title: 'Sobre este libro' }} />
         <Stack.Screen name="settings" options={{ title: 'Ajustes' }} />
-        <Stack.Screen name="chapter-context" options={{ title: 'Contexto del capitulo' }} />
-        <Stack.Screen name="chat" options={{ title: 'Chat companion' }} />
-        <Stack.Screen name="subscription" options={{ title: 'Premium' }} />
       </Stack>
     </>
   );

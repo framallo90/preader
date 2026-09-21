@@ -1,22 +1,43 @@
-import { Stack, router } from 'expo-router';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, StyleSheet, Switch, Text, View } from 'react-native';
+import { createAudioPlayer } from 'expo-audio';
+import { Stack } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Linking, StyleSheet, Switch, Text, View } from 'react-native';
 
 import { AppButton } from '../src/components/AppButton';
 import { OptionPickerModal } from '../src/components/OptionPickerModal';
 import { Screen } from '../src/components/Screen';
 import { useAppSettings } from '../src/hooks/useAppSettings';
-import { authService } from '../src/services/authService';
-import { Image } from 'expo-image';
 
 import { getDisplayNameFromSafUri, requestLibraryFolder, restoreIgnoredBooks } from '../src/services/libraryScanService';
-import { clearAllAudio } from '../src/services/openaiTtsService';
+import { clearAllPdfPages } from '../src/services/pdfLocalService';
+import { clearAllAudio, listVoices, synthesizeSpeech } from '../src/services/systemTtsService';
 import { parsedDocumentRepository } from '../src/storage/parsedDocumentRepository';
 import { documentAudioPlaybackService } from '../src/services/documentAudioPlaybackService';
-import { premiumService, PremiumListener } from '../src/services/premiumService';
-import { PERSONAL_MODE } from '../src/config/appMode';
 import { clampRounded } from '../src/utils/math';
-import { VOICE_OPTIONS, VALID_VOICE_IDS, DEFAULT_VOICE_ID, getVoiceLabel } from '../src/config/voices';
+import { ReadingTheme } from '../src/types/storage';
+import { getSafFolderPath } from '../src/utils/safPaths';
+import { VoiceOption, buildVoiceOptions, primaryLanguage } from '../src/utils/voices';
+
+const AUTO_VOICE = 'auto';
+const AUTO_VOICE_OPTION: VoiceOption = {
+  value: AUTO_VOICE,
+  label: 'Automática',
+  description: 'Elige sola la mejor voz instalada según el idioma de cada libro.',
+};
+const READING_THEME_OPTIONS: Array<{ value: ReadingTheme; label: string; description: string }> = [
+  { value: 'auto', label: 'Automático', description: 'Día o noche según el modo oscuro de la app.' },
+  { value: 'day', label: 'Día', description: 'Página blanca.' },
+  { value: 'sepia', label: 'Sepia', description: 'Papel cálido, descansa la vista.' },
+  { value: 'night', label: 'Noche', description: 'Página oscura con texto claro.' },
+];
+const SAMPLE_TEXTS: Record<string, string> = {
+  es: 'Esta es la voz que va a leer tus libros.',
+  en: 'This is the voice that will read your books.',
+  pt: 'Esta é a voz que vai ler os seus livros.',
+  fr: 'Voici la voix qui va lire vos livres.',
+  it: 'Questa è la voce che leggerà i tuoi libri.',
+  de: 'Dies ist die Stimme, die deine Bücher vorlesen wird.',
+};
 
 const MIN_RATE = 0.6;
 const MAX_RATE = 1.6;
@@ -26,23 +47,54 @@ const MAX_FONT_SIZE = 28;
 export default function SettingsScreen() {
   const { colors, settings, updateSettings } = useAppSettings();
   const [isVoicePickerVisible, setIsVoicePickerVisible] = useState(false);
-  const [isPremium, setIsPremium] = useState(premiumService.isPremium);
-  const [hasSession, setHasSession] = useState(false);
+  const [isThemePickerVisible, setIsThemePickerVisible] = useState(false);
+  const [voiceOptions, setVoiceOptions] = useState<VoiceOption[]>([]);
+  const [voiceLanguages, setVoiceLanguages] = useState<Map<string, string>>(new Map());
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [isTestingVoice, setIsTestingVoice] = useState(false);
+  const samplePlayerRef = useRef<ReturnType<typeof createAudioPlayer> | null>(null);
 
-  useEffect(() => {
-    const listener: PremiumListener = (premium) => { setIsPremium(premium); };
-    return premiumService.subscribe(listener);
+  const loadVoices = useCallback(async (forceRefresh: boolean) => {
+    try {
+      const voices = await listVoices(forceRefresh);
+      setVoiceOptions(buildVoiceOptions(voices));
+      setVoiceLanguages(new Map(voices.map((v) => [v.identifier, v.language])));
+      setVoiceError(null);
+    } catch (error) {
+      setVoiceError(error instanceof Error ? error.message : 'No se pudieron leer las voces del teléfono.');
+    }
   }, []);
 
   useEffect(() => {
-    void authService.getSession().then((session) => setHasSession(Boolean(session)));
-  }, []);
+    void loadVoices(false);
+    return () => {
+      samplePlayerRef.current?.release();
+      samplePlayerRef.current = null;
+    };
+  }, [loadVoices]);
 
   const handleAddLibraryFolder = useCallback(async () => {
     const folderUri = await requestLibraryFolder();
     if (!folderUri || settings.libraryFolders.includes(folderUri)) return;
     await updateSettings({ libraryFolders: [...settings.libraryFolders, folderUri] });
   }, [settings.libraryFolders, updateSettings]);
+
+  // Se elige la subcarpeta con el mismo selector del sistema; se guarda su ruta
+  // legible, que es la que el escaneo compara.
+  const handleAddExcludedFolder = useCallback(async () => {
+    const folderUri = await requestLibraryFolder();
+    if (!folderUri) return;
+    const path = getSafFolderPath(folderUri);
+    if (!path || settings.excludedFolders.includes(path)) return;
+    await updateSettings({ excludedFolders: [...settings.excludedFolders, path] });
+  }, [settings.excludedFolders, updateSettings]);
+
+  const handleRemoveExcludedFolder = useCallback(
+    async (path: string) => {
+      await updateSettings({ excludedFolders: settings.excludedFolders.filter((item) => item !== path) });
+    },
+    [settings.excludedFolders, updateSettings],
+  );
 
   const handleRemoveLibraryFolder = useCallback(
     async (folderUri: string) => {
@@ -53,23 +105,38 @@ export default function SettingsScreen() {
     [settings.libraryFolders, updateSettings],
   );
 
-  const handleLogout = useCallback(() => {
-    Alert.alert('Cerrar sesión', '¿Seguro que querés salir?', [
-      { text: 'Cancelar', style: 'cancel' },
-      {
-        text: 'Salir',
-        style: 'destructive',
-        onPress: () => { void authService.signOut(); },
-      },
-    ]);
+  // Una voz guardada que ya no está instalada (o un id viejo de la voz en la
+  // nube) se trata como automática.
+  const selectedVoiceOption = useMemo(
+    () => voiceOptions.find((option) => option.value === settings.defaultVoiceId) ?? null,
+    [voiceOptions, settings.defaultVoiceId],
+  );
+  const pickerOptions = useMemo(() => [AUTO_VOICE_OPTION, ...voiceOptions], [voiceOptions]);
+
+  const handleTestVoice = useCallback(async () => {
+    if (isTestingVoice) return;
+    setIsTestingVoice(true);
+    try {
+      const voiceId = selectedVoiceOption?.value ?? null;
+      const language = voiceId ? primaryLanguage(voiceLanguages.get(voiceId) ?? 'es') : 'es';
+      const sample = SAMPLE_TEXTS[language] ?? SAMPLE_TEXTS.es;
+      const uri = await synthesizeSpeech(`sample--${voiceId ?? 'auto'}--${language}`, sample, voiceId, language);
+      samplePlayerRef.current?.release();
+      const player = createAudioPlayer({ uri });
+      samplePlayerRef.current = player;
+      player.play();
+    } catch (error) {
+      Alert.alert('No se pudo probar la voz', error instanceof Error ? error.message : 'El motor de voz no respondió.');
+    } finally {
+      setIsTestingVoice(false);
+    }
+  }, [isTestingVoice, selectedVoiceOption, voiceLanguages]);
+
+  const handleOpenTtsSettings = useCallback(() => {
+    Linking.sendIntent('com.android.settings.TTS_SETTINGS').catch(() => {
+      Alert.alert('Ajustes de voz', 'Abrí Ajustes del teléfono → Accesibilidad → Salida de texto a voz.');
+    });
   }, []);
-
-  const effectiveVoiceId = useMemo(() => {
-    const saved = settings.defaultVoiceId;
-    return saved && VALID_VOICE_IDS.has(saved) ? saved : DEFAULT_VOICE_ID;
-  }, [settings.defaultVoiceId]);
-
-  const selectedVoiceLabel = useMemo(() => getVoiceLabel(effectiveVoiceId), [effectiveVoiceId]);
 
   const updateRate = useCallback(
     async (delta: number) => {
@@ -124,6 +191,43 @@ export default function SettingsScreen() {
               value={settings.darkMode}
               onValueChange={(value) => {
                 void updateSettings({ darkMode: value });
+              }}
+              trackColor={{ false: colors.border, true: colors.primary }}
+              thumbColor={colors.surface}
+            />
+          </View>
+
+          <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+          <View style={styles.settingRow}>
+            <View style={styles.settingCopy}>
+              <Text style={[styles.settingTitle, { color: colors.text }]}>Tema de lectura</Text>
+              <Text style={[styles.settingHint, { color: colors.textMuted }]}>
+                Color de la página dentro del lector (también en PDF). Se cambia rápido desde el menú del lector.
+              </Text>
+            </View>
+            <AppButton
+              label={READING_THEME_OPTIONS.find((option) => option.value === settings.readingTheme)?.label ?? 'Automático'}
+              onPress={() => setIsThemePickerVisible(true)}
+              variant="secondary"
+              colors={colors}
+              compact
+            />
+          </View>
+
+          <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+          <View style={styles.settingRow}>
+            <View style={styles.settingCopy}>
+              <Text style={[styles.settingTitle, { color: colors.text }]}>Recortar márgenes de los PDF</Text>
+              <Text style={[styles.settingHint, { color: colors.textMuted }]}>
+                Saca el borde blanco para que el texto se vea más grande en el teléfono.
+              </Text>
+            </View>
+            <Switch
+              value={settings.cropPdfMargins}
+              onValueChange={(value) => {
+                void updateSettings({ cropPdfMargins: value });
               }}
               trackColor={{ false: colors.border, true: colors.primary }}
               thumbColor={colors.surface}
@@ -209,16 +313,48 @@ export default function SettingsScreen() {
             <View style={styles.settingCopy}>
               <Text style={[styles.settingTitle, { color: colors.text }]}>Voz de narración</Text>
               <Text style={[styles.settingHint, { color: colors.textMuted }]}>
-                Voz usada para generar el audio. Se cachea por voz, cambiarla regenera el audio.
+                {voiceError
+                  ?? 'Voces instaladas en el teléfono, sin conexión. La que elijas se usa en los libros de su idioma.'}
               </Text>
             </View>
             <AppButton
-              label={selectedVoiceLabel}
-              onPress={() => setIsVoicePickerVisible(true)}
+              label={selectedVoiceOption?.label ?? AUTO_VOICE_OPTION.label}
+              onPress={() => {
+                void loadVoices(true);
+                setIsVoicePickerVisible(true);
+              }}
               variant="secondary"
               colors={colors}
               compact
             />
+          </View>
+
+          <View style={[styles.divider, { backgroundColor: colors.border }]} />
+
+          <View style={styles.settingRow}>
+            <View style={styles.settingCopy}>
+              <Text style={[styles.settingTitle, { color: colors.text }]}>Probar y mejorar la voz</Text>
+              <Text style={[styles.settingHint, { color: colors.textMuted }]}>
+                En los ajustes del teléfono podés instalar voces de más calidad o de otros idiomas.
+              </Text>
+            </View>
+            <View style={styles.actionRow}>
+              <AppButton
+                label={isTestingVoice ? '…' : 'Probar'}
+                onPress={() => { void handleTestVoice(); }}
+                variant="secondary"
+                colors={colors}
+                compact
+                disabled={isTestingVoice}
+              />
+              <AppButton
+                label="Voces"
+                onPress={handleOpenTtsSettings}
+                variant="ghost"
+                colors={colors}
+                compact
+              />
+            </View>
           </View>
 
           <View style={[styles.divider, { backgroundColor: colors.border }]} />
@@ -317,6 +453,41 @@ export default function SettingsScreen() {
           <View style={[styles.divider, { backgroundColor: colors.border }]} />
           <View style={styles.settingRow}>
             <View style={styles.settingCopy}>
+              <Text style={[styles.settingTitle, { color: colors.text }]}>Carpetas excluidas</Text>
+              <Text style={[styles.settingHint, { color: colors.textMuted }]}>
+                Subcarpetas que el escaneo saltea (manuales, facturas, lo que no sea para leer).
+              </Text>
+            </View>
+            <AppButton
+              label="Excluir"
+              onPress={() => { void handleAddExcludedFolder(); }}
+              variant="secondary"
+              colors={colors}
+              compact
+            />
+          </View>
+          {settings.excludedFolders.map((path) => (
+            <View key={path}>
+              <View style={[styles.divider, { backgroundColor: colors.border }]} />
+              <View style={styles.settingRow}>
+                <View style={styles.settingCopy}>
+                  <Text style={[styles.settingTitle, { color: colors.text }]} numberOfLines={1}>
+                    {path.split(':').pop()}
+                  </Text>
+                </View>
+                <AppButton
+                  label="Quitar"
+                  onPress={() => { void handleRemoveExcludedFolder(path); }}
+                  variant="ghost"
+                  colors={colors}
+                  compact
+                />
+              </View>
+            </View>
+          ))}
+          <View style={[styles.divider, { backgroundColor: colors.border }]} />
+          <View style={styles.settingRow}>
+            <View style={styles.settingCopy}>
               <Text style={[styles.settingTitle, { color: colors.text }]}>Libros ocultos</Text>
               <Text style={[styles.settingHint, { color: colors.textMuted }]}>
                 Los libros que borraste no se re-agregan solos. Restaurálos para que el escaneo los sume de nuevo.
@@ -344,7 +515,7 @@ export default function SettingsScreen() {
             <View style={styles.settingCopy}>
               <Text style={[styles.settingTitle, { color: colors.text }]}>Borrar caché</Text>
               <Text style={[styles.settingHint, { color: colors.textMuted }]}>
-                Texto procesado, páginas y audio descargados. NO borra libros ni tu progreso: al reabrir, cada libro se vuelve a procesar.
+                Texto procesado, páginas dibujadas y audio generado. NO borra libros ni tu progreso: al reabrir, cada libro se vuelve a procesar.
               </Text>
             </View>
             <AppButton
@@ -352,7 +523,7 @@ export default function SettingsScreen() {
               onPress={() => {
                 Alert.alert(
                   '¿Borrar caché?',
-                  'Se borra el texto procesado, las páginas y el audio descargados. Tus libros y tu progreso quedan intactos.',
+                  'Se borra el texto procesado, las páginas dibujadas y el audio generado. Tus libros y tu progreso quedan intactos.',
                   [
                     { text: 'Cancelar', style: 'cancel' },
                     {
@@ -363,7 +534,7 @@ export default function SettingsScreen() {
                           await documentAudioPlaybackService.stopAndUnload().catch(() => {});
                           await parsedDocumentRepository.clearAllParsedDocuments();
                           await clearAllAudio();
-                          await Image.clearDiskCache().catch(() => {});
+                          await clearAllPdfPages();
                           Alert.alert('Listo', 'Caché borrado. Abrí un libro y se re-procesa solo.');
                         })();
                       },
@@ -380,64 +551,6 @@ export default function SettingsScreen() {
         </View>
       </View>
 
-      <View style={styles.sectionGroup}>
-        <Text style={[styles.sectionLabel, { color: colors.textMuted }]}>Cuenta</Text>
-        <View style={[styles.sectionCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <View style={styles.settingRow}>
-            <View style={styles.settingCopy}>
-              <Text style={[styles.settingTitle, { color: colors.text }]}>
-                {isPremium ? '✦ Premium activo' : 'Plan gratuito'}
-              </Text>
-              <Text style={[styles.settingHint, { color: colors.textMuted }]}>
-                {isPremium
-                  ? 'Voces de IA, contexto de capítulos y chat companion habilitados.'
-                  : 'Lectura con voz del sistema. Suscribite para IA premium.'}
-              </Text>
-            </View>
-            {!isPremium ? (
-              <AppButton
-                label="Premium"
-                onPress={() => router.push('/subscription')}
-                colors={colors}
-                compact
-              />
-            ) : null}
-          </View>
-          <View style={[styles.divider, { backgroundColor: colors.border }]} />
-          <View style={styles.settingRow}>
-            <View style={styles.settingCopy}>
-              <Text style={[styles.settingTitle, { color: colors.text }]}>
-                {PERSONAL_MODE ? 'Modo uso propio' : 'Sesión'}
-              </Text>
-              <Text style={[styles.settingHint, { color: colors.textMuted }]}>
-                {PERSONAL_MODE
-                  ? 'Sin cuenta: leés y escuchás sin iniciar sesión.'
-                  : hasSession
-                    ? 'Cerrá sesión para cambiar de cuenta.'
-                    : 'No hace falta cuenta para leer. Se usa solo para Premium.'}
-              </Text>
-            </View>
-            {PERSONAL_MODE ? null : hasSession ? (
-              <AppButton
-                label="Salir"
-                onPress={handleLogout}
-                variant="secondary"
-                colors={colors}
-                compact
-              />
-            ) : (
-              <AppButton
-                label="Iniciar sesión"
-                onPress={() => router.push('/login')}
-                variant="secondary"
-                colors={colors}
-                compact
-              />
-            )}
-          </View>
-        </View>
-      </View>
-
       <View
         style={[
           styles.notesCard,
@@ -449,30 +562,37 @@ export default function SettingsScreen() {
       >
         <Text style={[styles.notesTitle, { color: colors.text }]}>Notas de esta versión</Text>
         <Text style={[styles.noteText, { color: colors.textMuted }]}>
-          El audio se genera con una voz de alta calidad y se cachea localmente. La primera
-          reproducción de cada tramo requiere conexión; después funciona sin red.
+          Todo funciona sin conexión: el libro se procesa en el teléfono y la voz la genera el
+          motor de texto a voz de Android.
         </Text>
         <Text style={[styles.noteText, { color: colors.textMuted }]}>
-          Cambiar de voz provoca que el próximo tramo regenere audio con la nueva voz.
-          Los tramos con la voz anterior siguen en caché.
-        </Text>
-        <Text style={[styles.noteText, { color: colors.textMuted }]}>
-          Al terminar cada capítulo se extrae contexto automáticamente en background (personajes,
-          resumen, eventos clave). Podés ver el recap desde el botón "Menú" del lector, o preguntar
-          en el chat del libro.
+          Si un libro está en otro idioma, se usa sola la mejor voz instalada de ese idioma.
         </Text>
       </View>
+
+      <OptionPickerModal
+        title="Tema de lectura"
+        visible={isThemePickerVisible}
+        colors={colors}
+        selectedValue={settings.readingTheme}
+        options={READING_THEME_OPTIONS}
+        onClose={() => setIsThemePickerVisible(false)}
+        onSelect={(value) => {
+          setIsThemePickerVisible(false);
+          void updateSettings({ readingTheme: value as ReadingTheme });
+        }}
+      />
 
       <OptionPickerModal
         title="Voz de narración"
         visible={isVoicePickerVisible}
         colors={colors}
-        selectedValue={effectiveVoiceId}
-        options={VOICE_OPTIONS}
+        selectedValue={selectedVoiceOption?.value ?? AUTO_VOICE}
+        options={pickerOptions}
         onClose={() => setIsVoicePickerVisible(false)}
         onSelect={(value) => {
           setIsVoicePickerVisible(false);
-          void updateSettings({ defaultVoiceId: value });
+          void updateSettings({ defaultVoiceId: value === AUTO_VOICE ? null : value });
         }}
       />
     </Screen>

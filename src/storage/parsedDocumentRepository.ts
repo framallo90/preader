@@ -1,6 +1,6 @@
 import * as FileSystem from 'expo-file-system/legacy';
 
-import { ParsedDocument, TextBlock } from '../types/document';
+import { ParsedDocument, PdfPageInfo, TextBlock } from '../types/document';
 import { getDatabase } from './database';
 
 // Acepta tanto Book como StoredDocument (ambos tienen id, name, uri)
@@ -11,6 +11,7 @@ type ParsedDocumentRow = {
   fullText: string;
   blocksJson: string;
   chaptersJson: string;
+  pdfInfoJson: string | null;
   savedAt: string;
 };
 
@@ -33,6 +34,34 @@ function fullTextPath(dir: string, bookId: string): string {
 
 function blocksPath(dir: string, bookId: string): string {
   return `${dir}/${encodeURIComponent(bookId)}.blocks.json`;
+}
+
+function pdfInfoPath(dir: string, bookId: string): string {
+  return `${dir}/${encodeURIComponent(bookId)}.pdfinfo.json`;
+}
+
+function parsePdfInfoJson(value: string | null | undefined): PdfPageInfo | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as Partial<PdfPageInfo> | null;
+    if (!parsed || typeof parsed.pageCount !== 'number' || !Array.isArray(parsed.pageOffsets)) return undefined;
+    const crop = Array.isArray(parsed.crop) && parsed.crop.length === 4 ? parsed.crop : null;
+    return {
+      pageCount: parsed.pageCount,
+      pageAspect: typeof parsed.pageAspect === 'number' ? parsed.pageAspect : null,
+      pageOffsets: parsed.pageOffsets.filter((n): n is number => typeof n === 'number'),
+      crop: crop as PdfPageInfo['crop'],
+      outline: Array.isArray(parsed.outline)
+        ? parsed.outline.filter(
+            (entry) =>
+              entry && typeof entry.title === 'string' && typeof entry.pageIndex === 'number' && typeof entry.level === 'number',
+          )
+        : [],
+      hasText: parsed.hasText !== false,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 async function ensureCacheDirectory(dir: string): Promise<void> {
@@ -87,9 +116,10 @@ async function readDiskCache(document: DocumentRef): Promise<ParsedDocument | nu
     return null;
   }
 
-  const [fullText, blocksRaw] = await Promise.all([
+  const [fullText, blocksRaw, pdfInfoRaw] = await Promise.all([
     FileSystem.readAsStringAsync(ftPath),
     FileSystem.readAsStringAsync(blPath),
+    FileSystem.readAsStringAsync(pdfInfoPath(dir, document.id)).catch(() => null),
   ]);
 
   const blocks = parseBlocksJson(blocksRaw);
@@ -106,18 +136,56 @@ async function readDiskCache(document: DocumentRef): Promise<ParsedDocument | nu
     fullText,
     blocks,
     chapters: [],
+    pdf: parsePdfInfoJson(pdfInfoRaw),
   };
 }
 
-async function writeDiskCache(bookId: string, fullText: string, blocksJson: string): Promise<void> {
+// Cuántos libros grandes mantener en el caché en disco. Al superarlo, se
+// evictan los más viejos (por mtime) para que el directorio no crezca sin fin.
+const MAX_DISK_CACHE_BOOKS = 12;
+
+async function writeDiskCache(
+  bookId: string,
+  fullText: string,
+  blocksJson: string,
+  pdfInfoJson: string | null,
+): Promise<void> {
   const dir = getCacheDirectory();
   if (!dir) return;
 
   await ensureCacheDirectory(dir);
+  if (pdfInfoJson) {
+    await FileSystem.writeAsStringAsync(pdfInfoPath(dir, bookId), pdfInfoJson);
+  } else {
+    await FileSystem.deleteAsync(pdfInfoPath(dir, bookId), { idempotent: true }).catch(() => {});
+  }
   // Escribe los bloques primero: readDiskCache exige ambos archivos, así que un
   // corte entre escrituras solo produce un miss (re-parseo), nunca corrupción.
   await FileSystem.writeAsStringAsync(blocksPath(dir, bookId), blocksJson);
   await FileSystem.writeAsStringAsync(fullTextPath(dir, bookId), fullText);
+  await evictDiskCache(dir).catch(() => {});
+}
+
+/** Mantiene solo los MAX_DISK_CACHE_BOOKS libros más recientes en disco. */
+async function evictDiskCache(dir: string): Promise<void> {
+  const files = await FileSystem.readDirectoryAsync(dir).catch(() => [] as string[]);
+  const fullTextFiles = files.filter((f) => f.endsWith('.fulltext.txt'));
+  if (fullTextFiles.length <= MAX_DISK_CACHE_BOOKS) return;
+
+  const withTime = await Promise.all(
+    fullTextFiles.map(async (f) => {
+      const info = await FileSystem.getInfoAsync(`${dir}/${f}`);
+      return { name: f, mtime: info.exists ? info.modificationTime ?? 0 : 0 };
+    }),
+  );
+  withTime.sort((a, b) => a.mtime - b.mtime); // más viejo primero
+  const toEvict = withTime.slice(0, withTime.length - MAX_DISK_CACHE_BOOKS);
+  for (const { name } of toEvict) {
+    const base = name.slice(0, -'.fulltext.txt'.length);
+    await FileSystem.deleteAsync(`${dir}/${name}`, { idempotent: true }).catch(() => {});
+    await FileSystem.deleteAsync(`${dir}/${base}.blocks.json`, { idempotent: true }).catch(() => {});
+    await FileSystem.deleteAsync(`${dir}/${base}.pdfinfo.json`, { idempotent: true }).catch(() => {});
+  }
 }
 
 async function deleteDiskCache(bookId: string): Promise<void> {
@@ -127,6 +195,7 @@ async function deleteDiskCache(bookId: string): Promise<void> {
   await Promise.all([
     FileSystem.deleteAsync(fullTextPath(dir, bookId), { idempotent: true }).catch(() => {}),
     FileSystem.deleteAsync(blocksPath(dir, bookId), { idempotent: true }).catch(() => {}),
+    FileSystem.deleteAsync(pdfInfoPath(dir, bookId), { idempotent: true }).catch(() => {}),
   ]);
 }
 
@@ -134,7 +203,7 @@ export const parsedDocumentRepository = {
   async getParsedDocument(document: DocumentRef): Promise<ParsedDocument | null> {
     const db = await getDatabase();
     const row = await db.getFirstAsync<ParsedDocumentRow>(
-      `SELECT bookId, fullText, blocksJson, chaptersJson, savedAt
+      `SELECT bookId, fullText, blocksJson, chaptersJson, pdfInfoJson, savedAt
        FROM parsed_document_cache WHERE bookId = ?`,
       [document.id],
     );
@@ -151,6 +220,7 @@ export const parsedDocumentRepository = {
           fullText: row.fullText,
           blocks,
           chapters: [],
+          pdf: parsePdfInfoJson(row.pdfInfoJson),
         };
       }
     }
@@ -161,6 +231,7 @@ export const parsedDocumentRepository = {
 
   async saveParsedDocument(document: DocumentRef, parsedDocument: ParsedDocument) {
     const blocksJson = JSON.stringify(parsedDocument.blocks);
+    const pdfInfoJson = parsedDocument.pdf ? JSON.stringify(parsedDocument.pdf) : null;
     const fitsSqlite =
       parsedDocument.fullText.length <= MAX_CACHEABLE_TEXT_LENGTH &&
       parsedDocument.blocks.length <= MAX_CACHEABLE_BLOCKS &&
@@ -174,14 +245,15 @@ export const parsedDocumentRepository = {
       const db = await getDatabase();
 
       await db.runAsync(
-        `INSERT INTO parsed_document_cache (bookId, fullText, blocksJson, chaptersJson, savedAt)
-         VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO parsed_document_cache (bookId, fullText, blocksJson, chaptersJson, pdfInfoJson, savedAt)
+         VALUES (?, ?, ?, ?, ?, ?)
          ON CONFLICT(bookId) DO UPDATE SET
            fullText = excluded.fullText,
            blocksJson = excluded.blocksJson,
            chaptersJson = excluded.chaptersJson,
+           pdfInfoJson = excluded.pdfInfoJson,
            savedAt = excluded.savedAt`,
-        [document.id, parsedDocument.fullText, blocksJson, chaptersJson, new Date().toISOString()],
+        [document.id, parsedDocument.fullText, blocksJson, chaptersJson, pdfInfoJson, new Date().toISOString()],
       );
       return;
     }
@@ -190,7 +262,7 @@ export const parsedDocumentRepository = {
     // Si la escritura falla, se deja sin cachear (se re-parsea la próxima vez):
     // nunca debe romper la apertura del documento.
     try {
-      await writeDiskCache(document.id, parsedDocument.fullText, blocksJson);
+      await writeDiskCache(document.id, parsedDocument.fullText, blocksJson, pdfInfoJson);
       // Limpia una fila SQLite previa (p. ej. si antes entraba en el tope inline).
       const db = await getDatabase();
       await db.runAsync('DELETE FROM parsed_document_cache WHERE bookId = ?', [document.id]);
@@ -207,7 +279,7 @@ export const parsedDocumentRepository = {
 
   /**
    * Borra TODO el caché de texto procesado (SQLite + archivos). No toca libros
-   * ni progreso: al reabrir, cada libro se re-procesa (server o local).
+   * ni progreso: al reabrir, cada libro se re-procesa en el teléfono.
    */
   async clearAllParsedDocuments() {
     const db = await getDatabase();

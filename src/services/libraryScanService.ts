@@ -11,7 +11,8 @@ import * as FileSystem from 'expo-file-system/legacy';
 
 import { getDatabase } from '../storage/database';
 import { bookRepository } from '../storage/bookRepository';
-import { Book } from '../types/storage';
+import { Book, NEW_BOOK_DEFAULTS } from '../types/storage';
+import { isFolderExcluded } from '../utils/safPaths';
 import { createBookFingerprint } from '../utils/documentId';
 
 const { StorageAccessFramework } = FileSystem;
@@ -109,67 +110,67 @@ function getExtension(name: string): string {
  * Solo calcula fingerprint para URIs desconocidos (los ya vistos se
  * saltean por URI, que es barato).
  */
-export async function scanLibraryFolders(folderUris: string[]): Promise<number> {
-  let added = 0;
-  const ignoredIds = await getIgnoredBookIds();
+const MAX_SCAN_DEPTH = 4;
 
-  for (const folderUri of folderUris) {
+export async function scanLibraryFolders(folderUris: string[], excludedPaths: string[] = []): Promise<number> {
+  const ignoredIds = await getIgnoredBookIds();
+  let added = 0;
+
+  const scanFolder = async (folderUri: string, depth: number): Promise<void> => {
     let entries: string[] = [];
     try {
       entries = await StorageAccessFramework.readDirectoryAsync(folderUri);
-      console.log(`[scan] carpeta ${folderUri.slice(-30)}: ${entries.length} entradas`);
+      console.log(`[scan] carpeta ${folderUri.slice(-30)} (nivel ${depth}): ${entries.length} entradas`);
     } catch (error) {
       console.warn('[scan] no se pudo leer la carpeta:', error instanceof Error ? error.message : error);
-      // Permiso revocado o carpeta eliminada: se ignora esta carpeta.
-      continue;
+      return; // permiso revocado / carpeta borrada
     }
 
-    for (const fileUri of entries) {
-      const displayName = getDisplayNameFromSafUri(fileUri);
-      const extension = getExtension(displayName);
-      const mimeType = SUPPORTED_EXTENSIONS[extension];
-      if (!mimeType) continue;
-
+    for (const entryUri of entries) {
+      const displayName = getDisplayNameFromSafUri(entryUri);
       try {
-        // Barato: si este URI ya está en la biblioteca, no hay nada que hacer.
-        const knownByUri = await bookRepository.getBookByUri(fileUri);
-        if (knownByUri) continue;
+        const info = await FileSystem.getInfoAsync(entryUri);
+        if (!info.exists) continue;
 
-        const info = await FileSystem.getInfoAsync(fileUri);
-        if (!info.exists || info.isDirectory) continue;
+        // Subcarpeta: recursar (con tope de profundidad) para descubrir libros
+        // adentro. Antes se salteaban y quedaban invisibles.
+        if (info.isDirectory) {
+          if (isFolderExcluded(entryUri, excludedPaths)) continue;
+          if (depth < MAX_SCAN_DEPTH) await scanFolder(entryUri, depth + 1);
+          continue;
+        }
+
+        const mimeType = SUPPORTED_EXTENSIONS[getExtension(displayName)];
+        if (!mimeType) continue;
+
+        // Barato: si este URI ya está en la biblioteca, no hay nada que hacer.
+        if (await bookRepository.getBookByUri(entryUri)) continue;
 
         const fileSize = 'size' in info ? info.size : undefined;
-        const id = await createBookFingerprint(fileUri, fileSize, `${displayName}:${fileSize ?? 0}`);
+        const id = await createBookFingerprint(entryUri, fileSize, `${displayName}:${fileSize ?? 0}`);
 
-        // Mismo contenido ya importado (p. ej. copia local previa): no duplicar.
-        // Y si el usuario lo eliminó de la biblioteca, respetar esa decisión.
+        // Mismo contenido ya importado, o eliminado por el usuario: no duplicar.
         if (ignoredIds.has(id)) continue;
-        const knownById = await bookRepository.getBookById(id);
-        if (knownById) continue;
+        if (await bookRepository.getBookById(id)) continue;
 
         const now = new Date().toISOString();
         const book: Book = {
-          id,
-          sagaId: null,
-          name: displayName,
-          title: null,
-          author: null,
-          coverUri: null,
-          orderIndex: 0,
-          uri: fileUri,
-          type: mimeType,
-          importedAt: now,
-          lastOpenedAt: now,
+          id, sagaId: null, name: displayName, title: null, author: null, coverUri: null,
+          orderIndex: 0, uri: entryUri, type: mimeType, importedAt: now, lastOpenedAt: now,
+          ...NEW_BOOK_DEFAULTS,
         };
         await bookRepository.saveBook(book);
         added += 1;
         console.log(`[scan] agregado: ${displayName}`);
       } catch (error) {
         console.warn(`[scan] fallo ${displayName}:`, error instanceof Error ? error.message : error);
-        // Un archivo ilegible no debe frenar el resto del escaneo.
-        continue;
+        continue; // un archivo/carpeta ilegible no frena el resto del escaneo
       }
     }
+  };
+
+  for (const folderUri of folderUris) {
+    await scanFolder(folderUri, 0);
   }
 
   return added;

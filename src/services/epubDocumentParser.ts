@@ -4,7 +4,7 @@ import JSZip from 'jszip';
 import { DocumentMetadata, DocumentParser, ParsedDocument } from '../types/document';
 import { buildTextBlocks, normalizeExtractedText } from '../utils/textBlocks';
 import { detectChapters } from '../utils/chapterDetector';
-import { DocumentParseError } from './documentParser';
+import { DocumentParseError, assertFileSizeWithinLimit } from './documentParser';
 
 /**
  * Extrae texto limpio de un string HTML de EPUB.
@@ -114,6 +114,8 @@ class EpubDocumentParser implements DocumentParser {
     if (!fileInfo.exists) {
       throw new DocumentParseError('missing_file', 'El archivo ya no existe en el almacenamiento local.');
     }
+    // El parseo carga el EPUB entero en RAM: guard de memoria antes de leer.
+    await assertFileSizeWithinLimit(uri);
 
     try {
       // Leer el EPUB como base64 y pasarlo a JSZip

@@ -1,6 +1,6 @@
 import { getDatabase } from './database';
 import { parsedDocumentRepository } from './parsedDocumentRepository';
-import { Book } from '../types/storage';
+import { Book, BookStatus } from '../types/storage';
 
 type BookRow = {
   id: string;
@@ -14,9 +14,18 @@ type BookRow = {
   type: string;
   importedAt: string;
   lastOpenedAt: string;
+  status: string | null;
+  favorite: number | null;
+  rating: number | null;
+  review: string | null;
 };
 
-const BOOK_COLUMNS = 'id, sagaId, name, title, author, coverUri, orderIndex, uri, type, importedAt, lastOpenedAt';
+const BOOK_COLUMNS =
+  'id, sagaId, name, title, author, coverUri, orderIndex, uri, type, importedAt, lastOpenedAt, status, favorite, rating, review';
+
+function toBookStatus(value: string | null): BookStatus {
+  return value === 'to_read' || value === 'read' ? value : 'none';
+}
 
 function mapBookRow(row: BookRow): Book {
   return {
@@ -31,6 +40,10 @@ function mapBookRow(row: BookRow): Book {
     type: row.type,
     importedAt: row.importedAt,
     lastOpenedAt: row.lastOpenedAt,
+    status: toBookStatus(row.status),
+    favorite: row.favorite === 1,
+    rating: typeof row.rating === 'number' && row.rating >= 1 && row.rating <= 5 ? row.rating : null,
+    review: row.review,
   };
 }
 
@@ -38,7 +51,9 @@ export const bookRepository = {
   async saveBook(book: Book): Promise<void> {
     const db = await getDatabase();
     // COALESCE en title/author/coverUri: re-importar el mismo libro
-    // (mismo fingerprint) no debe pisar la metadata ya extraída.
+    // (mismo fingerprint) no debe pisar la metadata ya extraída. Estado,
+    // favorito y reseña NO se escriben acá: son del usuario y un re-import
+    // (o un re-escaneo) jamás debe resetearlos.
     await db.runAsync(
       `INSERT INTO books (id, sagaId, name, title, author, coverUri, orderIndex, uri, type, importedAt, lastOpenedAt)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -81,6 +96,26 @@ export const bookRepository = {
        WHERE id = ?`,
       [metadata.title, metadata.author, metadata.coverUri, bookId],
     );
+  },
+
+  async setStatus(bookId: string, status: BookStatus): Promise<void> {
+    const db = await getDatabase();
+    await db.runAsync('UPDATE books SET status = ? WHERE id = ?', [status, bookId]);
+  },
+
+  async setFavorite(bookId: string, favorite: boolean): Promise<void> {
+    const db = await getDatabase();
+    await db.runAsync('UPDATE books SET favorite = ? WHERE id = ?', [favorite ? 1 : 0, bookId]);
+  },
+
+  async setReview(bookId: string, rating: number | null, review: string | null): Promise<void> {
+    const db = await getDatabase();
+    const trimmed = review?.trim() ?? '';
+    await db.runAsync('UPDATE books SET rating = ?, review = ? WHERE id = ?', [
+      rating,
+      trimmed.length > 0 ? trimmed : null,
+      bookId,
+    ]);
   },
 
   async touchBook(bookId: string): Promise<void> {
@@ -128,6 +163,15 @@ export const bookRepository = {
     return rows.map(mapBookRow);
   },
 
+  /** Toda la biblioteca (la pantalla de inicio filtra y agrupa en memoria). */
+  async listAllBooks(): Promise<Book[]> {
+    const db = await getDatabase();
+    const rows = await db.getAllAsync<BookRow>(
+      `SELECT ${BOOK_COLUMNS} FROM books ORDER BY datetime(lastOpenedAt) DESC`,
+    );
+    return rows.map(mapBookRow);
+  },
+
   async listBooksInSaga(sagaId: string): Promise<Book[]> {
     const db = await getDatabase();
     const rows = await db.getAllAsync<BookRow>(
@@ -140,11 +184,13 @@ export const bookRepository = {
 
   async removeBook(bookId: string): Promise<void> {
     const db = await getDatabase();
-    // CASCADE elimina chapters; reading_progress y parsed_document_cache
-    // no tienen FK, así que se limpian explícitamente para no dejar huérfanos.
-    await db.runAsync('DELETE FROM reading_progress WHERE bookId = ?', [bookId]);
-    // Limpia el caché parseado en SQLite y sus archivos en disco (libros grandes).
+    // reading_progress no tiene FK, así que se borra a mano. Capítulos, notas y
+    // vínculos con colecciones se van por ON DELETE CASCADE.
+    await db.withTransactionAsync(async () => {
+      await db.runAsync('DELETE FROM reading_progress WHERE bookId = ?', [bookId]);
+      await db.runAsync('DELETE FROM books WHERE id = ?', [bookId]);
+    });
+    // El caché parseado toca archivos en disco → fuera de la transacción SQLite.
     await parsedDocumentRepository.removeParsedDocument(bookId);
-    await db.runAsync('DELETE FROM books WHERE id = ?', [bookId]);
   },
 };

@@ -53,6 +53,27 @@ export const settingsRepository = {
         );
       }
 
+      if (row.key === 'excludedFolders') {
+        const parsed = parseValue('excludedFolders', row.value);
+        nextSettings.excludedFolders = Array.isArray(parsed)
+          ? parsed.filter((item): item is string => typeof item === 'string')
+          : [];
+      }
+
+      if (row.key === 'readingTheme') {
+        const parsed = parseValue('readingTheme', row.value);
+        nextSettings.readingTheme = ['auto', 'day', 'sepia', 'night'].includes(parsed) ? parsed : 'auto';
+      }
+
+      if (row.key === 'cropPdfMargins') {
+        nextSettings.cropPdfMargins = parseValue('cropPdfMargins', row.value) !== false;
+      }
+
+      if (row.key === 'screenDim') {
+        const parsed = Number(parseValue('screenDim', row.value));
+        nextSettings.screenDim = Number.isFinite(parsed) ? Math.min(Math.max(parsed, 0), 0.8) : 0;
+      }
+
       if (row.key === 'libraryFolders') {
         const parsed = parseValue('libraryFolders', row.value);
         nextSettings.libraryFolders = Array.isArray(parsed)

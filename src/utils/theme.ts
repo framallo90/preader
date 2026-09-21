@@ -38,6 +38,36 @@ export const darkColors = {
 
 export type ThemeColors = typeof lightColors;
 
+/** Papel envejecido: mismo esquema claro con fondo cálido y tinta marrón. */
+export const sepiaColors: ThemeColors = {
+  ...lightColors,
+  background: '#efe6d0',
+  surface: '#f7f0dc',
+  surfaceMuted: '#e9dfc6',
+  readerSurface: '#f4ecd8',
+  readerAccent: '#e6dcc0',
+  text: '#433422',
+  textMuted: '#7a6a55',
+  border: '#ddd0b3',
+  highlight: '#ecd9a0',
+  highlightText: '#4a3a10',
+};
+
+export type ReadingMode = 'day' | 'sepia' | 'night';
+
+/** 'auto' sigue al modo oscuro de la app; el resto fuerza el tema del lector. */
+export function resolveReadingMode(theme: 'auto' | ReadingMode, darkMode: boolean): ReadingMode {
+  if (theme === 'auto') return darkMode ? 'night' : 'day';
+  return theme;
+}
+
+/** Colores del LECTOR (no de toda la app) para un modo de lectura. */
+export function getReaderColors(mode: ReadingMode): ThemeColors {
+  if (mode === 'night') return darkColors;
+  if (mode === 'sepia') return sepiaColors;
+  return lightColors;
+}
+
 export function getThemeColors(darkMode: boolean): ThemeColors {
   return darkMode ? darkColors : lightColors;
 }

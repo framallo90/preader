@@ -1,6 +1,6 @@
 import { Stack, router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import { AppButton } from '../src/components/AppButton';
 import { BookGridItem } from '../src/components/BookGridItem';
@@ -15,10 +15,22 @@ import { removeBookCover } from '../src/services/bookMetadataService';
 import { addIgnoredBook, clearIgnoredBook, getDisplayNameFromSafUri, getIgnoredBooksCount, restoreIgnoredBooks, scanLibraryFolders } from '../src/services/libraryScanService';
 import { compareBooksNaturally, getDisplayTitle } from '../src/utils/bookDisplay';
 import { filePickerService } from '../src/services/filePickerService';
-import { clearBookAudio } from '../src/services/openaiTtsService';
+import { clearBookPages } from '../src/services/pdfLocalService';
+import { clearBookAudio } from '../src/services/systemTtsService';
 import { bookProgressRepository } from '../src/storage/bookProgressRepository';
 import { bookRepository } from '../src/storage/bookRepository';
-import { Book } from '../src/types/storage';
+import { collectionRepository } from '../src/storage/collectionRepository';
+import { Book, Collection } from '../src/types/storage';
+
+// 'all' | 'reading' | 'to_read' | 'read' | 'favorite' | id de una colección
+type LibraryFilter = string;
+const BASE_FILTERS: Array<{ value: LibraryFilter; label: string }> = [
+  { value: 'all', label: 'Todos' },
+  { value: 'reading', label: 'Leyendo' },
+  { value: 'to_read', label: 'Para leer' },
+  { value: 'read', label: 'Leídos' },
+  { value: 'favorite', label: '♥ Favoritos' },
+];
 
 export default function HomeScreen() {
   const { colors, settings } = useAppSettings();
@@ -35,15 +47,20 @@ export default function HomeScreen() {
   // Carpetas de biblioteca como secciones expandibles + selector Leer/Escuchar.
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
   const [pendingBook, setPendingBook] = useState<Book | null>(null);
+  const [libraryFilter, setLibraryFilter] = useState<LibraryFilter>('all');
+  const [collections, setCollections] = useState<Collection[]>([]);
+  const [collectionBookIds, setCollectionBookIds] = useState<Set<string> | null>(null);
   const hasAutoOpenedRef = useRef(false);
 
   const loadRecentDocuments = useCallback(async () => {
     setIsLoading(true);
     try {
-      const [recent, lastOpened] = await Promise.all([
-        bookRepository.listRecentBooks(),
+      const [recent, lastOpened, loadedCollections] = await Promise.all([
+        bookRepository.listAllBooks(),
         bookRepository.getLastOpenedBook(),
+        collectionRepository.listCollections(),
       ]);
+      setCollections(loadedCollections);
       const progressEntries = await Promise.all(
         recent.map(async (book) => {
           const p = await bookProgressRepository.getProgress(book.id);
@@ -72,14 +89,14 @@ export default function HomeScreen() {
         // autorizadas se agregan solos antes de refrescar la lista.
         if (settings.libraryFolders.length > 0) {
           try {
-            await scanLibraryFolders(settings.libraryFolders);
+            await scanLibraryFolders(settings.libraryFolders, settings.excludedFolders);
           } catch {
             // El escaneo nunca debe romper el Home.
           }
         }
         await loadRecentDocuments();
       })();
-    }, [loadRecentDocuments, settings.libraryFolders]),
+    }, [loadRecentDocuments, settings.libraryFolders, settings.excludedFolders]),
   );
 
   const openReader = useCallback((documentId: string, replace = false, mode?: 'read' | 'listen') => {
@@ -96,10 +113,41 @@ export default function HomeScreen() {
   const handleRestoreHidden = useCallback(async () => {
     await restoreIgnoredBooks();
     if (settings.libraryFolders.length > 0) {
-      try { await scanLibraryFolders(settings.libraryFolders); } catch { /* no romper el Home */ }
+      try { await scanLibraryFolders(settings.libraryFolders, settings.excludedFolders); } catch { /* no romper el Home */ }
     }
     await loadRecentDocuments();
-  }, [settings.libraryFolders, loadRecentDocuments]);
+  }, [settings.libraryFolders, settings.excludedFolders, loadRecentDocuments]);
+
+  // Filtro por colección: los ids de sus libros se cargan al elegirla.
+  const isCollectionFilter = !BASE_FILTERS.some((filter) => filter.value === libraryFilter);
+  useEffect(() => {
+    if (!isCollectionFilter) {
+      setCollectionBookIds(null);
+      return;
+    }
+    let mounted = true;
+    void collectionRepository.listBookIdsInCollection(libraryFilter).then((ids) => {
+      if (mounted) setCollectionBookIds(new Set(ids));
+    });
+    return () => { mounted = false; };
+  }, [libraryFilter, isCollectionFilter, recentDocuments]);
+
+  const filteredDocuments = useMemo(() => {
+    switch (libraryFilter) {
+      case 'all':
+        return recentDocuments;
+      case 'reading':
+        return recentDocuments.filter((book) => (progressMap.get(book.id) ?? 0) > 0 && book.status !== 'read');
+      case 'to_read':
+        return recentDocuments.filter((book) => book.status === 'to_read');
+      case 'read':
+        return recentDocuments.filter((book) => book.status === 'read');
+      case 'favorite':
+        return recentDocuments.filter((book) => book.favorite);
+      default:
+        return collectionBookIds ? recentDocuments.filter((book) => collectionBookIds.has(book.id)) : [];
+    }
+  }, [libraryFilter, recentDocuments, progressMap, collectionBookIds]);
 
   // Agrupa los libros por carpeta. El nombre de los escaneados trae el prefijo
   // de la carpeta ("Game of saga/…"), que es el criterio confiable; el match
@@ -108,7 +156,7 @@ export default function HomeScreen() {
     const sections = settings.libraryFolders.map((folderUri) => {
       const treeId = folderUri.split('/tree/')[1] ?? '';
       const folderName = getDisplayNameFromSafUri(folderUri);
-      const books = recentDocuments
+      const books = filteredDocuments
         .filter(
           (book) =>
             book.name.startsWith(`${folderName}/`) ||
@@ -118,11 +166,12 @@ export default function HomeScreen() {
       return { folderUri, name: folderName, books };
     });
     const grouped = new Set(sections.flatMap((section) => section.books.map((b) => b.id)));
-    const ungrouped = recentDocuments
+    const ungrouped = filteredDocuments
       .filter((book) => !grouped.has(book.id))
       .sort(compareBooksNaturally);
-    return { sections, ungrouped };
-  }, [settings.libraryFolders, recentDocuments]);
+    // Con un filtro activo, las carpetas sin resultados no se muestran.
+    return { sections: sections.filter((section) => libraryFilter === 'all' || section.books.length > 0), ungrouped };
+  }, [settings.libraryFolders, filteredDocuments, libraryFilter]);
 
   useEffect(() => {
     if (hasAutoOpenedRef.current) return;
@@ -195,6 +244,7 @@ export default function HomeScreen() {
                     await documentAudioPlaybackService.stopAndUnload();
                   }
                   await clearBookAudio(document.id);
+                  await clearBookPages(document.id);
                   await removeBookCover(document.id);
                   await filePickerService.deleteStoredDocument(document.uri);
                   // Si el archivo sigue en una carpeta escaneada, que el
@@ -309,14 +359,42 @@ export default function HomeScreen() {
       ) : null}
 
       <View style={styles.sectionHeader}>
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>Recientes</Text>
+        <Text style={[styles.sectionTitle, { color: colors.text }]}>Biblioteca</Text>
         {!isLoading && recentDocuments.length > 0 ? (
           <Text style={[styles.sectionCount, { color: colors.textMuted }]}>
-            {recentDocuments.length} archivo{recentDocuments.length === 1 ? '' : 's'}
+            {libraryFilter === 'all'
+              ? `${recentDocuments.length} libro${recentDocuments.length === 1 ? '' : 's'}`
+              : `${filteredDocuments.length} de ${recentDocuments.length}`}
           </Text>
         ) : null}
         {isLoading ? <ActivityIndicator color={colors.primary} /> : null}
       </View>
+
+      {recentDocuments.length > 0 ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+          {[...BASE_FILTERS, ...collections.map((c) => ({ value: c.id, label: `📚 ${c.name}` }))].map((filter) => {
+            const active = libraryFilter === filter.value;
+            return (
+              <Pressable
+                key={filter.value}
+                onPress={() => setLibraryFilter(filter.value)}
+                style={[
+                  styles.filterChip,
+                  { borderColor: active ? colors.primary : colors.border, backgroundColor: active ? colors.accent : 'transparent' },
+                ]}
+              >
+                <Text style={[styles.filterChipText, { color: active ? colors.text : colors.textMuted }]}>{filter.label}</Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+      ) : null}
+
+      {!isLoading && recentDocuments.length > 0 && filteredDocuments.length === 0 ? (
+        <Text style={[styles.sectionHint, { color: colors.textMuted }]}>
+          No hay libros en esta lista. Mantené apretado un libro → "Sobre este libro" para agregarlo.
+        </Text>
+      ) : null}
 
       {ignoredCount > 0 ? (
         <View style={[styles.hiddenBanner, { backgroundColor: colors.surfaceMuted, borderColor: colors.border }]}>
@@ -417,6 +495,11 @@ export default function HomeScreen() {
               }]
             : []),
           {
+            value: 'about',
+            label: 'ℹ️ Sobre este libro',
+            description: 'Reseña, listas, colecciones, índice y anotaciones.',
+          },
+          {
             value: 'delete',
             label: '🗑 Eliminar de la biblioteca',
             description: 'Borra el libro, su progreso y el audio generado (pide confirmación).',
@@ -431,6 +514,11 @@ export default function HomeScreen() {
           if (value === 'delete') {
             setPendingBook(null);
             confirmDeleteDocument(book);
+            return;
+          }
+          if (value === 'about') {
+            setPendingBook(null);
+            router.push({ pathname: '/book', params: { bookId: book.id } });
             return;
           }
           if (value === 'restart') {
@@ -463,6 +551,9 @@ export default function HomeScreen() {
 }
 
 const styles = StyleSheet.create({
+  filterRow: { gap: 8, paddingVertical: 2 },
+  filterChip: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 13, paddingVertical: 7 },
+  filterChipText: { fontSize: 13, fontWeight: '600' },
   heroCard: { borderWidth: 1, borderRadius: 24, padding: 20, gap: 12 },
   heroEyebrow: { fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
   heroTitle: { fontSize: 29, fontWeight: '800', lineHeight: 35 },

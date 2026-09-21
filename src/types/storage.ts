@@ -8,6 +8,39 @@ export type StoredDocument = {
   lastOpenedAt: string;
 };
 
+/** Lista de lectura del libro (como "To Read" / "Have Read" de ReadEra). */
+export type BookStatus = 'none' | 'to_read' | 'read';
+
+/** Campos de un libro recién importado (los edita el usuario después). */
+export const NEW_BOOK_DEFAULTS = {
+  status: 'none' as BookStatus,
+  favorite: false,
+  rating: null,
+  review: null,
+};
+
+export type NoteType = 'bookmark' | 'quote' | 'note';
+
+/** Marcador, cita o nota. La posición es el offset de carácter en el texto. */
+export type BookNote = {
+  id: string;
+  bookId: string;
+  type: NoteType;
+  charIndex: number;
+  page: number | null;       // solo para mostrar (PDF)
+  body: string | null;       // texto citado
+  comment: string | null;    // lo que escribió el usuario
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type Collection = {
+  id: string;
+  name: string;
+  createdAt: string;
+  bookCount: number;
+};
+
 // === Nuevos tipos: jerarquía Saga → Libro → Capítulo ===
 
 export type Saga = {
@@ -29,6 +62,10 @@ export type Book = {
   type: string;
   importedAt: string;
   lastOpenedAt: string;
+  status: BookStatus;
+  favorite: boolean;
+  rating: number | null;     // 1-5 estrellas, null sin calificar
+  review: string | null;     // reseña propia
 };
 
 export type Chapter = {
@@ -40,27 +77,6 @@ export type Chapter = {
   povNumber: number | null;
   startChar: number;
   endChar: number;
-};
-
-export type Character = {
-  id: string;
-  sagaId: string | null;
-  name: string;
-  aliases: string[];         // guardado como JSON en SQLite
-  house: string | null;
-  description: string | null; // generado por Claude
-  firstSeenBookId: string | null;
-  firstSeenChapterId: string | null;
-  updatedAt: string;
-};
-
-export type ChapterContext = {
-  chapterId: string;
-  beforeSummary: string | null;   // qué recordar antes de leer
-  afterSummary: string | null;    // resumen al terminar
-  characters: string[];           // nombres de personajes que aparecen
-  keyEvents: string[];            // eventos importantes
-  extractedAt: string;
 };
 
 export type ReadingProgress = {
@@ -81,7 +97,17 @@ export type AppSettings = {
   reopenLastDocumentOnLaunch: boolean;
   /** Carpetas SAF autorizadas que se escanean en busca de libros. */
   libraryFolders: string[];
+  /** Subcarpetas que el escaneo saltea (ruta SAF decodificada, p. ej. "primary:Libros/Viejos"). */
+  excludedFolders: string[];
+  /** Tema del lector: 'auto' sigue al modo oscuro. */
+  readingTheme: ReadingTheme;
+  /** Recortar los márgenes blancos de los PDF. */
+  cropPdfMargins: boolean;
+  /** Atenuación extra sobre el lector (0-0.8): brillo por debajo del mínimo del sistema. */
+  screenDim: number;
 };
+
+export type ReadingTheme = 'auto' | 'day' | 'sepia' | 'night';
 
 export const DEFAULT_SETTINGS: AppSettings = {
   darkMode: false,
@@ -91,4 +117,8 @@ export const DEFAULT_SETTINGS: AppSettings = {
   keepScreenAwakeWhileReading: false,
   reopenLastDocumentOnLaunch: false,
   libraryFolders: [],
+  excludedFolders: [],
+  readingTheme: 'auto',
+  cropPdfMargins: true,
+  screenDim: 0,
 };
