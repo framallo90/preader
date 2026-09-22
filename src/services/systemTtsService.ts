@@ -16,10 +16,16 @@ export type SystemVoice = NativeVoice;
 // Por eso vive en cacheDirectory (el sistema puede purgarlo) y es chico.
 const MAX_CACHE_BYTES = 120 * 1024 * 1024;
 const SYNTHESIS_TIMEOUT_MS = 90_000;
-const VOICES_TTL_MS = 60_000;
+// Consultar las voces al motor cuesta cientos de ms en el teléfono y se hace
+// antes de cada play: se recuerdan un buen rato (Ajustes las refresca a mano).
+const VOICES_TTL_MS = 15 * 60_000;
 
 let voicesCache: { at: number; voices: SystemVoice[] } | null = null;
 let legacyCacheCleaned = false;
+// La poda del caché lista TODOS los archivos (una llamada por archivo): no se hace
+// en cada tramo sintetizado, sino cada tantos.
+let synthesizedSinceEviction = 0;
+const EVICTION_EVERY_CHUNKS = 25;
 
 function getCacheDirectory(): string {
   const base = FileSystem.cacheDirectory ?? FileSystem.documentDirectory;
@@ -106,12 +112,18 @@ export async function synthesizeSpeech(
     timer = setTimeout(() => reject(new Error('El motor de voz tardó demasiado en generar el audio.')), SYNTHESIS_TIMEOUT_MS);
   });
 
+  // Si gana el timeout, la síntesis sigue viva y más tarde la cancelan: ese
+  // rechazo ya no tiene a nadie esperándolo y salía como error sin atrapar.
+  const synthesis = getVoiceSynthesizerModule().synthesizeToFileAsync(text, voiceId, language, filePath);
+  synthesis.catch(() => {});
+
   try {
-    const uri = await Promise.race([
-      getVoiceSynthesizerModule().synthesizeToFileAsync(text, voiceId, language, filePath),
-      timeout,
-    ]);
-    void enforceCacheLimit(dir);
+    const uri = await Promise.race([synthesis, timeout]);
+    synthesizedSinceEviction += 1;
+    if (synthesizedSinceEviction >= EVICTION_EVERY_CHUNKS) {
+      synthesizedSinceEviction = 0;
+      void enforceCacheLimit(dir);
+    }
     return uri;
   } finally {
     if (timer) clearTimeout(timer);

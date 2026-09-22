@@ -115,6 +115,8 @@ function stripRunningLines(page: string, running: Set<string>): string {
   return lines.join('\n');
 }
 
+// Cuánto del final del texto hace falta mirar para decidir la unión de páginas.
+const TAIL_CHARS = 48;
 const SENTENCE_END = /[.!?…:;]["'»”’)\]]*$/;
 const STARTS_LOWERCASE = /^\p{Ll}/u;
 const ENDS_HYPHENATED = /\p{L}-$/u;
@@ -123,30 +125,75 @@ const ENDS_HYPHENATED = /\p{L}-$/u;
  * @param rawPages texto crudo por página (el índice ES el número de página)
  * @param clean    limpieza de texto que ya usa el resto de la app
  */
-export function joinPdfPages(rawPages: string[], clean: (raw: string) => string): JoinedPdfText {
-  const running = findRunningLines(rawPages);
-  let fullText = '';
+function createPageJoiner() {
+  // Se acumula en partes y se une UNA vez al final. Y para decidir cómo pegar una
+  // página solo se mira la COLA del texto. La primera versión hacía
+  // `regex.test(fullText)` y `fullText += …` en cada página: lineal en el largo
+  // acumulado, o sea cuadrático en el libro. En V8 no se notaba; en Hermes (el
+  // motor del teléfono) 1.500 páginas tardaban 30 s y un libro grande, minutos.
+  const parts: string[] = [];
+  let length = 0;
+  let tail = '';
   const pageOffsets: number[] = [];
 
-  for (const rawPage of rawPages) {
-    const cleaned = clean(stripRunningLines(String(rawPage ?? ''), running));
+  const push = (piece: string) => {
+    parts.push(piece);
+    length += piece.length;
+    tail = (tail + piece).slice(-TAIL_CHARS);
+  };
 
-    if (cleaned && fullText) {
-      const continuesParagraph = !SENTENCE_END.test(fullText) && STARTS_LOWERCASE.test(cleaned);
-      if (continuesParagraph && ENDS_HYPHENATED.test(fullText)) {
-        fullText = fullText.slice(0, -1); // palabra cortada por el cambio de página
+  const add = (cleaned: string) => {
+    if (cleaned && length > 0) {
+      const continuesParagraph = !SENTENCE_END.test(tail) && STARTS_LOWERCASE.test(cleaned);
+      if (continuesParagraph && ENDS_HYPHENATED.test(tail)) {
+        // Palabra cortada por el cambio de página: se saca el guión del final.
+        const last = parts.length - 1;
+        parts[last] = parts[last].slice(0, -1);
+        length -= 1;
+        tail = tail.slice(0, -1);
       } else if (continuesParagraph) {
-        fullText += ' ';
+        push(' ');
       } else {
-        fullText += '\n\n';
+        push('\n\n');
       }
     }
 
-    pageOffsets.push(fullText.length);
-    fullText += cleaned;
-  }
+    pageOffsets.push(length);
+    if (cleaned) push(cleaned);
+  };
 
-  return { fullText, pageOffsets };
+  const finish = (): JoinedPdfText => ({ fullText: parts.join(''), pageOffsets });
+  return { add, finish };
+}
+
+export function joinPdfPages(rawPages: string[], clean: (raw: string) => string): JoinedPdfText {
+  const running = findRunningLines(rawPages);
+  const joiner = createPageJoiner();
+  for (const rawPage of rawPages) {
+    joiner.add(clean(stripRunningLines(String(rawPage ?? ''), running)));
+  }
+  return joiner.finish();
+}
+
+/**
+ * Igual que joinPdfPages, pero cede el hilo cada tantas páginas. Se usa cuando el
+ * texto se prepara de fondo con el libro ya abierto: limpiar miles de páginas de
+ * un tirón congelaba la pantalla mientras el usuario leía.
+ */
+export async function joinPdfPagesAsync(
+  rawPages: string[],
+  clean: (raw: string) => string,
+  pause: () => Promise<void>,
+  pagesPerSlice = 40,
+): Promise<JoinedPdfText> {
+  const running = findRunningLines(rawPages);
+  await pause();
+  const joiner = createPageJoiner();
+  for (let index = 0; index < rawPages.length; index++) {
+    joiner.add(clean(stripRunningLines(String(rawPages[index] ?? ''), running)));
+    if (index % pagesPerSlice === pagesPerSlice - 1) await pause();
+  }
+  return joiner.finish();
 }
 
 /**

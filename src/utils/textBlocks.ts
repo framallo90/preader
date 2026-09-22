@@ -38,7 +38,12 @@ function chunkLongSentence(fullText: string, sentence: Span): Span[] {
   let remaining: Span | null = sentence;
 
   while (remaining && spanLength(remaining) > HARD_BLOCK_LENGTH) {
-    const splitPoint = findSplitPoint(fullText.slice(remaining.start, remaining.end), HARD_BLOCK_LENGTH);
+    // Solo hace falta mirar el tramo donde puede caer el corte (copiar todo el
+    // resto en cada vuelta era cuadrático en una "oración" gigante sin puntos).
+    const splitPoint = findSplitPoint(
+      fullText.slice(remaining.start, Math.min(remaining.end, remaining.start + HARD_BLOCK_LENGTH)),
+      HARD_BLOCK_LENGTH,
+    );
     const part = trimSpan(fullText, remaining.start, remaining.start + splitPoint);
     if (part) parts.push(part);
     remaining = trimSpan(fullText, remaining.start + splitPoint, remaining.end);
@@ -48,17 +53,50 @@ function chunkLongSentence(fullText: string, sentence: Span): Span[] {
   return parts;
 }
 
+// Las nueve limpiezas, en orden. Cada una es una pasada sobre el texto.
+const NORMALIZE_STEPS: [RegExp, string][] = [
+  [/\r\n/g, '\n'],
+  [/\r/g, '\n'],
+  [HYPHENATED_LINE_BREAK_PATTERN, '$1$2'],
+  [/\u0000/g, ''],
+  [/\u00A0/g, ' '],
+  [/[ \t]+\n/g, '\n'],
+  [/\n{3,}/g, '\n\n'],
+  [/[ \t]{2,}/g, ' '],
+];
+
+/** Arriba de esto, el texto se limpia por tramos en vez de entero. */
+const NORMALIZE_CHUNK_THRESHOLD = 2 * 1024 * 1024;
+const NORMALIZE_CHUNK = 512 * 1024;
+
+function normalizeOnce(value: string): string {
+  let out = value;
+  for (const [pattern, replacement] of NORMALIZE_STEPS) out = out.replace(pattern, replacement);
+  return out;
+}
+
 export function normalizeExtractedText(value: string) {
-  return value
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n')
-    .replace(HYPHENATED_LINE_BREAK_PATTERN, '$1$2')
-    .replace(/\u0000/g, '')
-    .replace(/\u00A0/g, ' ')
-    .replace(/[ \t]+\n/g, '\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .replace(/[ \t]{2,}/g, ' ')
-    .trim();
+  // Cada `.replace()` aloca un texto nuevo del tamaño del libro: en un TXT o
+  // un DOCX grande (que se normalizan ENTEROS, no por página como el PDF) son
+  // nueve copias completas vivas a la vez. Pasado cierto tamaño se limpia por
+  // tramos: el pico de memoria baja de nueve copias del libro a nueve de medio
+  // mega. Se corta en un salto de línea para no partir ninguna de las reglas.
+  if (value.length <= NORMALIZE_CHUNK_THRESHOLD) return normalizeOnce(value).trim();
+
+  const parts: string[] = [];
+  let from = 0;
+  while (from < value.length) {
+    let to = Math.min(from + NORMALIZE_CHUNK, value.length);
+    if (to < value.length) {
+      const at = value.lastIndexOf('\n', to);
+      // +1 para quedarnos CON el salto: las reglas de renglón lo necesitan.
+      if (at > from) to = at + 1;
+    }
+    parts.push(normalizeOnce(value.slice(from, to)));
+    from = to;
+  }
+  // Una pasada final sobre lo unido: arregla lo que quedó justo en los cortes.
+  return normalizeOnce(parts.join('')).trim();
 }
 
 /**
@@ -73,7 +111,8 @@ export function normalizeExtractedText(value: string) {
  * apuntando a otro lugar del texto.
  */
 export function buildTextBlocks(fullText: string): TextBlock[] {
-  if (!fullText.trim()) {
+  // (Sin `fullText.trim()`: copiaba el libro entero solo para ver si está vacío.)
+  if (!/\S/.test(fullText)) {
     return [];
   }
 
@@ -109,10 +148,29 @@ export function buildTextBlocks(fullText: string): TextBlock[] {
     if (whole) blockSpans.push(whole);
   }
 
-  return blockSpans.map((span, index) => ({
+  return blockSpans.map((span, index) => makeTextBlock(fullText, index, span.start, span.end));
+}
+
+/**
+ * Un bloque que NO se queda con su propio recorte del texto.
+ *
+ * Antes cada bloque guardaba `fullText.slice(...)`, así que un libro de 3 M de
+ * caracteres vivía dos veces en memoria: el texto completo y otra vez repartido
+ * en quince mil pedacitos. Acá el texto se corta la PRIMERA vez que alguien lo
+ * pide (y queda guardado desde entonces), y en una sesión de lectura solo se
+ * piden los bloques que se dibujan o se narran: unas decenas.
+ *
+ * Para quien lo usa sigue siendo `block.text`, un string común.
+ */
+export function makeTextBlock(fullText: string, index: number, startChar: number, endChar: number): TextBlock {
+  let recorte: string | undefined;
+  return {
     index,
-    text: fullText.slice(span.start, span.end),
-    startChar: span.start,
-    endChar: span.end,
-  }));
+    startChar,
+    endChar,
+    get text(): string {
+      if (recorte === undefined) recorte = fullText.slice(startChar, endChar);
+      return recorte;
+    },
+  };
 }

@@ -12,6 +12,7 @@ import java.io.File
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 
 /**
  * Sintetiza texto a un archivo WAV con el motor TTS del sistema (offline y gratis).
@@ -40,6 +41,9 @@ class VoiceSynthesizerModule : Module() {
 
   private var textToSpeech: TextToSpeech? = null
   private var isInitializing = false
+  // Los avisos de "motor listo" llegan por el hilo principal; el trabajo que
+  // los sigue (listar voces, sintetizar) no puede correr ahi.
+  private val callbackExecutor = Executors.newSingleThreadExecutor()
 
   override fun definition() = ModuleDefinition {
     Name("VoiceSynthesizer")
@@ -49,6 +53,7 @@ class VoiceSynthesizerModule : Module() {
       textToSpeech?.stop()
       textToSpeech?.shutdown()
       textToSpeech = null
+      callbackExecutor.shutdownNow()
     }
 
     AsyncFunction("getVoicesAsync") { promise: Promise ->
@@ -143,8 +148,15 @@ class VoiceSynthesizerModule : Module() {
 
       val result = engine.synthesizeToFile(text, Bundle(), tempFile, utteranceId)
       if (result != TextToSpeech.SUCCESS) {
-        pendingSyntheses.remove(utteranceId)
-        promise.reject("ERR_SYNTHESIS_START", "El motor TTS rechazo el pedido de sintesis.", null)
+        // El motor puede haber avisado YA por onError, que llega por un hilo de
+        // binder. Si esa promesa ya se resolvio ahi, volver a rechazarla lanza
+        // PromiseAlreadySettledException y en release eso CIERRA LA APP. Solo
+        // rechaza el que logra sacarla del mapa.
+        val pending = pendingSyntheses.remove(utteranceId)
+        if (pending != null) {
+          pending.tempFile.delete()
+          pending.promise.reject("ERR_SYNTHESIS_START", "El motor TTS rechazo el pedido de sintesis.", null)
+        }
       }
     } catch (error: Exception) {
       promise.reject("ERR_SYNTHESIS", error.message ?: "No se pudo sintetizar el audio.", error)
@@ -248,15 +260,34 @@ class VoiceSynthesizerModule : Module() {
     }
 
     try {
-      textToSpeech = TextToSpeech(context) { status ->
-        val engine = textToSpeech
-        if (status != TextToSpeech.SUCCESS || engine == null) {
-          finishInitialization(null, "No se pudo iniciar el motor de voz de Android. Revisa que haya un motor TTS instalado.")
-          return@TextToSpeech
+      // OJO CON EL ORDEN. Si no hay ningun motor TTS usable (ninguno instalado,
+      // o el predeterminado no se puede vincular), Android ejecuta onInit DENTRO
+      // del constructor, antes de que exista la referencia. Leyendo la propiedad
+      // desde el callback se veia null, se daba el inicio por fallido, y al
+      // volver el constructor se guardaba igual la instancia MUERTA: desde ahi
+      // todos los pedidos usaban un motor inservible y no se reintentaba nunca
+      // (ni despues de que el usuario instalara el motor). La instancia solo se
+      // guarda cuando el inicio salio bien.
+      val holder = arrayOfNulls<TextToSpeech>(1)
+      var statusFromConstructor: Int? = null
+      val handleStatus = { status: Int ->
+        val engine = holder[0]
+        when {
+          engine == null -> statusFromConstructor = status // onInit corrio dentro del constructor
+          status != TextToSpeech.SUCCESS -> {
+            engine.shutdown()
+            finishInitialization(null, "No se pudo iniciar el motor de voz de Android. Revisa que haya un motor TTS instalado.")
+          }
+          else -> {
+            engine.setOnUtteranceProgressListener(progressListener)
+            synchronized(stateLock) { textToSpeech = engine }
+            finishInitialization(engine, null)
+          }
         }
-        engine.setOnUtteranceProgressListener(progressListener)
-        finishInitialization(engine, null)
       }
+      val created = TextToSpeech(context, TextToSpeech.OnInitListener { handleStatus(it) })
+      holder[0] = created
+      statusFromConstructor?.let { handleStatus(it) }
     } catch (error: Exception) {
       finishInitialization(null, error.message ?: "No se pudo crear el motor de voz de Android.")
     }
@@ -267,14 +298,18 @@ class VoiceSynthesizerModule : Module() {
   private fun finishInitialization(engine: TextToSpeech?, errorMessage: String?) {
     val callbacks = synchronized(stateLock) {
       isInitializing = false
-      if (engine == null) {
-        textToSpeech?.shutdown()
-        textToSpeech = null
-      }
+      if (engine == null) textToSpeech = null
       pendingInitializations.toList().also { pendingInitializations.clear() }
     }
-    for (callback in callbacks) {
-      if (engine != null) callback.onReady(engine) else callback.onError(errorMessage ?: "Error de voz.")
+    if (callbacks.isEmpty()) return
+    // Android avisa que el motor esta listo desde el HILO PRINCIPAL. Lo que
+    // sigue son llamadas sincronicas al servicio TTS (listar voces cuesta
+    // cientos de ms, y despues la sintesis): correrlas ahi congelaba la
+    // interfaz justo al tocar Reproducir por primera vez.
+    callbackExecutor.execute {
+      for (callback in callbacks) {
+        if (engine != null) callback.onReady(engine) else callback.onError(errorMessage ?: "Error de voz.")
+      }
     }
   }
 

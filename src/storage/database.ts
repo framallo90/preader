@@ -1,15 +1,58 @@
 import { SQLiteDatabase, openDatabaseAsync } from 'expo-sqlite';
 
+// Nombre heredado de cuando la app se llamaba así: cambiarlo dejaría la biblioteca
+// del teléfono en un archivo huérfano.
 const DATABASE_NAME = 'pdf-voice-reader.db';
-const CURRENT_DB_VERSION = 4;
+const CURRENT_DB_VERSION = 6;
 let databasePromise: Promise<SQLiteDatabase> | null = null;
 
 export async function getDatabase() {
   if (!databasePromise) {
-    databasePromise = openDatabaseAsync(DATABASE_NAME);
+    databasePromise = openDatabaseAsync(DATABASE_NAME).catch((error) => {
+      // Si abrir falló, que el próximo intento vuelva a probar en vez de quedar
+      // pegado a una promesa rechazada para siempre.
+      databasePromise = null;
+      throw error;
+    });
   }
 
   return databasePromise;
+}
+
+/**
+ * Suelta la instancia para que el próximo `getDatabase()` vuelva a abrir.
+ *
+ * El objeto nativo de SQLite puede quedar liberado por debajo (pasa al
+ * actualizar la app con el proceso vivo). A partir de ahí TODA consulta falla
+ * con "shared object already released" y la biblioteca se ve vacía, con un
+ * cartel de error, hasta que la cierres y la abras a mano.
+ */
+export function resetDatabaseHandle() {
+  databasePromise = null;
+}
+
+/**
+ * Corre algo contra la base y, si el objeto nativo quedó liberado por debajo,
+ * la reabre y lo intenta UNA vez más.
+ *
+ * Pasa al actualizar la app con el proceso vivo: a partir de ahí toda consulta
+ * falla y la pantalla queda en un error sin salida, aunque los datos estén
+ * intactos. Reabrir es barato y lo arregla.
+ */
+export async function withDatabaseRetry<T>(run: () => Promise<T>): Promise<T> {
+  try {
+    return await run();
+  } catch (error) {
+    if (!isStaleDatabaseError(error)) throw error;
+    resetDatabaseHandle();
+    return run();
+  }
+}
+
+/** ¿El error es "la base quedó inutilizable" y conviene reabrir y reintentar? */
+export function isStaleDatabaseError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /already released|NativeStatement|NativeDatabase/i.test(message);
 }
 
 export async function initializeDatabase() {
@@ -17,6 +60,7 @@ export async function initializeDatabase() {
 
   await db.execAsync(`
     PRAGMA journal_mode = WAL;
+    PRAGMA synchronous = NORMAL;
     PRAGMA foreign_keys = ON;
 
     -- === Legacy (mantenido para compatibilidad) ===
@@ -29,7 +73,13 @@ export async function initializeDatabase() {
       lastOpenedAt TEXT NOT NULL
     );
 
-    -- === Nuevas tablas: jerarquía Saga → Libro → Capítulo ===
+    -- OJO: esto vive dentro de un template literal de JavaScript, así que acá NO
+    -- se pueden usar comillas invertidas.
+    -- La tabla sagas y las columnas books.sagaId / books.orderIndex son un
+    -- resto de una jerarquía saga → libro que nunca se terminó. Ya NO se leen ni
+    -- se escriben desde el código (ver bookRepository). Se dejan porque sacar una
+    -- columna en SQLite obliga a reconstruir la tabla entera, y no molestan.
+    -- Si algún día se hacen las series de libros, la base ya está.
 
     CREATE TABLE IF NOT EXISTS sagas (
       id TEXT PRIMARY KEY NOT NULL,
@@ -157,6 +207,19 @@ async function runMigrations(db: SQLiteDatabase) {
     await addColumnIfMissing(db, 'books', 'favorite', 'INTEGER NOT NULL DEFAULT 0');
     await addColumnIfMissing(db, 'books', 'rating', 'INTEGER');
     await addColumnIfMissing(db, 'books', 'review', 'TEXT');
+  }
+
+  if (version < 5) {
+    // v5: el progreso recuerda la página y sobre qué texto se midió (los PDF abren
+    // al instante con un documento provisorio y el texto llega después).
+    await addColumnIfMissing(db, 'reading_progress', 'page', 'INTEGER');
+    await addColumnIfMissing(db, 'reading_progress', 'textLength', 'INTEGER');
+  }
+
+  if (version < 6) {
+    // v6: resumen del libro (la sinopsis que trae el archivo, las primeras
+    // líneas de la prosa, o lo que escribas vos).
+    await addColumnIfMissing(db, 'books', 'summary', 'TEXT');
   }
 
   if (version < CURRENT_DB_VERSION) {

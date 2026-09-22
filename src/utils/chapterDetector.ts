@@ -4,10 +4,34 @@ import { ChapterInfo } from '../types/document';
 const POV_CHAPTER_PATTERN = /^([A-ZÁÉÍÓÚÑÜ][A-ZÁÉÍÓÚÑÜ\s]{1,30})\t\((\d+)\)$/;
 
 // Capítulos especiales sin número
-const SPECIAL_CHAPTER_PATTERN = /^(PRÓLOGO|EPÍLOGO|PREFACIO|PRESENTACIÓN|INTRODUCCIÓN)$/;
+const SPECIAL_CHAPTER_PATTERN = /^(PRÓLOGO|EPÍLOGO|PREFACIO|PRESENTACIÓN|INTRODUCCIÓN|PROLOGUE|EPILOGUE|PREFACE|INTRODUCTION)$/i;
 
-// Tabs que separan palabras (artefacto de conversión ePUB→PDF)
-const TAB_WORD_SEPARATOR = /([^\n])\t([^\n(])/g;
+// Encabezado genérico: "Capítulo 8", "CAPÍTULO XII. Del buen suceso", "Chapter 3",
+// "Parte II", "Libro primero". Solo si la línea es corta (un título, no prosa).
+//
+// Lo que sigue a la palabra tiene que ser un NÚMERO: cifras, romanos o un
+// ordinal/cardinal escrito. Antes se aceptaba "cualquier palabra en minúscula"
+// y eso metía prosa en el índice: "Parte superior del cuerpo…", "Canto rodado
+// sobre la ladera…" o "Section headers were common…" entraban como capítulos,
+// porque en un PDF los renglones vienen cortados a ~70 caracteres y queda una
+// línea en blanco antes de cada párrafo.
+const NUMBER_WORD = [
+  'primer[oa]?|segund[oa]|tercer[oa]?|cuart[oa]|quint[oa]|sext[oa]|s[eé]ptim[oa]|octav[oa]|noven[oa]',
+  'd[eé]cim[oa]|und[eé]cim[oa]|duod[eé]cim[oa]|[uú]ltim[oa]|final',
+  'uno|dos|tres|cuatro|cinco|seis|siete|ocho|nueve|diez|once|doce|trece|catorce|quince|veinte|treinta',
+  'first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last',
+  'one|two|three|four|five|six|seven|eight|nine|ten',
+].join('|');
+// Romanos acotados a I-XXXIX: con l/c/d/m entraban palabras corrientes
+// ("mi", "dic", "mil") como si fueran números de capítulo.
+const GENERIC_CHAPTER_PATTERN = new RegExp(
+  '^(?:cap[ií]tulo|chapter|parte|part|libro|book|secci[oó]n|section|canto)' +
+    String.raw`\s+(?:\d{1,4}|[ivx]{1,7}|(?:` +
+    NUMBER_WORD +
+    String.raw`))\b[.:\s-]*(.{0,70})$`,
+  'i',
+);
+const MAX_HEADING_LENGTH = 90;
 
 /**
  * Limpia los artefactos de conversión ePUB→PDF:
@@ -71,8 +95,8 @@ export function cleanPdfProse(text: string): string {
 }
 
 /**
- * Detecta capítulos en el texto extraído de un PDF de ASOIAF.
- * Retorna un array de ChapterInfo con posición, personaje POV y número.
+ * Detecta capítulos en el texto cuando el libro no trae índice propio: encabezados
+ * genéricos ("Capítulo 8", "Parte II", "PRÓLOGO") y los de tipo POV ("BRAN (1)").
  */
 export function detectChapters(bookId: string, fullText: string): ChapterInfo[] {
   const lines = fullText.split('\n');
@@ -81,13 +105,14 @@ export function detectChapters(bookId: string, fullText: string): ChapterInfo[] 
   let chapterOrderIndex = 0;
 
   // Primera pasada: encontrar posiciones de los encabezados de capítulo
-  const chapterHeaders: Array<{
+  const chapterHeaders: {
     title: string;
     povCharacter: string | null;
     povNumber: number | null;
     startChar: number;
-  }> = [];
+  }[] = [];
 
+  let previousBlank = true;
   for (const line of lines) {
     const trimmed = line.trim();
     const lineLength = line.length + 1; // +1 por el \n
@@ -101,6 +126,11 @@ export function detectChapters(bookId: string, fullText: string): ChapterInfo[] 
         startChar: charOffset,
       });
       charOffset += lineLength;
+      // También acá: sin esto, el "hubo una línea en blanco antes" del
+      // encabezado POV se filtraba a la PRIMERA LÍNEA DE LA PROSA que le
+      // sigue, y esa línea entraba al índice como un capítulo fantasma que
+      // partía en dos el capítulo real.
+      previousBlank = false;
       continue;
     }
 
@@ -113,8 +143,19 @@ export function detectChapters(bookId: string, fullText: string): ChapterInfo[] 
         startChar: charOffset,
       });
       charOffset += lineLength;
+      previousBlank = false;
       continue;
     }
+
+    // Un encabezado genérico tiene que estar SOLO en su renglón (línea corta y
+    // precedida por una en blanco): "capítulo 3" en medio de un párrafo no cuenta.
+    if (trimmed.length <= MAX_HEADING_LENGTH && previousBlank && GENERIC_CHAPTER_PATTERN.test(trimmed)) {
+      chapterHeaders.push({ title: trimmed, povCharacter: null, povNumber: null, startChar: charOffset });
+      charOffset += lineLength;
+      previousBlank = false;
+      continue;
+    }
+    previousBlank = trimmed.length === 0;
 
     charOffset += lineLength;
   }

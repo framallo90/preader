@@ -18,6 +18,6 @@ android {
 }
 
 dependencies {
-  // Misma versión que usaba expo-pdf-text-extract: extracción de texto.
-  implementation 'com.tom-roush:pdfbox-android:2.0.27.0'
+  // Pdfium nativo: texto por página, índice y metadatos.
+  implementation 'io.legere:pdfiumandroid:1.0.35'
 }

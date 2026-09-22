@@ -1,11 +1,13 @@
 import { Stack, router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Image } from 'expo-image';
+import { ActivityIndicator, Alert, FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { AppButton } from '../src/components/AppButton';
 import { BookGridItem } from '../src/components/BookGridItem';
 import { OptionPickerModal } from '../src/components/OptionPickerModal';
 import { Screen } from '../src/components/Screen';
+import { Chip, Icon, IconButton, IconName } from '../src/components/ui';
 import { useAppSettings } from '../src/hooks/useAppSettings';
 import {
   documentAudioPlaybackService,
@@ -14,33 +16,95 @@ import {
 import { removeBookCover } from '../src/services/bookMetadataService';
 import { addIgnoredBook, clearIgnoredBook, getDisplayNameFromSafUri, getIgnoredBooksCount, restoreIgnoredBooks, scanLibraryFolders } from '../src/services/libraryScanService';
 import { compareBooksNaturally, getDisplayTitle } from '../src/utils/bookDisplay';
+import { foldText } from '../src/utils/textSearch';
+import { getDocumentTypeLabel } from '../src/utils/formatters';
+import { radius } from '../src/utils/theme';
 import { filePickerService } from '../src/services/filePickerService';
+import { isComicFile } from '../src/services/bookTypes';
+import { backfillCovers } from '../src/services/coverBackfillService';
+import { remainingLabel } from '../src/utils/readingTime';
 import { clearBookPages } from '../src/services/pdfLocalService';
 import { clearBookAudio } from '../src/services/systemTtsService';
 import { bookProgressRepository } from '../src/storage/bookProgressRepository';
 import { bookRepository } from '../src/storage/bookRepository';
+import { withDatabaseRetry } from '../src/storage/database';
 import { collectionRepository } from '../src/storage/collectionRepository';
-import { Book, Collection } from '../src/types/storage';
+import { parsedDocumentRepository } from '../src/storage/parsedDocumentRepository';
+import { Book, Collection, LibrarySort } from '../src/types/storage';
+
+// Un escaneo automático como mucho cada tanto; "Restaurar ocultos" fuerza uno.
+const SCAN_MIN_INTERVAL_MS = 2 * 60 * 1000;
+
+const SORT_OPTIONS: { value: LibrarySort; label: string; description: string; icon: IconName }[] = [
+  { value: 'recent', label: 'Recientes', description: 'Lo último que abriste, primero.', icon: 'time-outline' },
+  { value: 'title', label: 'Título', description: 'Alfabético por título.', icon: 'text-outline' },
+  { value: 'author', label: 'Autor', description: 'Agrupa la biblioteca por autor.', icon: 'person-outline' },
+];
+
+function compareByAuthor(a: Book, b: Book): number {
+  const byAuthor = (a.author ?? '\uffff').localeCompare(b.author ?? '\uffff', 'es', { sensitivity: 'base' });
+  return byAuthor !== 0 ? byAuthor : compareBooksNaturally(a, b);
+}
+
+/** Orden de la biblioteca. 'recent' respeta el orden de la base (último abierto primero). */
+function sortBooks(books: Book[], sort: LibrarySort): Book[] {
+  if (sort === 'title') return [...books].sort(compareBooksNaturally);
+  if (sort === 'author') return [...books].sort(compareByAuthor);
+  return books;
+}
 
 // 'all' | 'reading' | 'to_read' | 'read' | 'favorite' | id de una colección
 type LibraryFilter = string;
-const BASE_FILTERS: Array<{ value: LibraryFilter; label: string }> = [
-  { value: 'all', label: 'Todos' },
-  { value: 'reading', label: 'Leyendo' },
-  { value: 'to_read', label: 'Para leer' },
-  { value: 'read', label: 'Leídos' },
-  { value: 'favorite', label: '♥ Favoritos' },
+const BASE_FILTERS: { value: LibraryFilter; label: string; icon: IconName }[] = [
+  { value: 'all', label: 'Todos', icon: 'grid-outline' },
+  { value: 'reading', label: 'Leyendo', icon: 'book-outline' },
+  { value: 'to_read', label: 'Para leer', icon: 'bookmark-outline' },
+  { value: 'read', label: 'Leídos', icon: 'checkmark-done-outline' },
+  { value: 'favorite', label: 'Favoritos', icon: 'heart' },
 ];
 
+/** Tres libros por fila: es lo que entra cómodo en un teléfono. */
+const LIBRARY_COLUMNS = 3;
+
+/** Encabezado para los libros a los que no se les pudo sacar el autor. */
+const SIN_AUTOR = 'Sin autor';
+
+type LibrarySection = { folderUri: string; name: string; books: Book[] };
+
+type LibraryRow =
+  | { kind: 'folder'; key: string; section: LibrarySection }
+  | { kind: 'books'; key: string; books: Book[] }
+  | { kind: 'subtitle'; key: string; text: string };
+/** Lo único que el Inicio necesita saber del reproductor. */
+type PlaybackBadge = { documentId: string | null; isPlaying: boolean; isPreparing: boolean };
+
+function toPlaybackBadge(snapshot: DocumentPlaybackSnapshot): PlaybackBadge {
+  return {
+    documentId: snapshot.documentId,
+    isPlaying: snapshot.isPlaying,
+    isPreparing: snapshot.isPreparing,
+  };
+}
+
+function samePlaybackBadge(a: PlaybackBadge, b: PlaybackBadge): boolean {
+  return a.documentId === b.documentId && a.isPlaying === b.isPlaying && a.isPreparing === b.isPreparing;
+}
+
 export default function HomeScreen() {
-  const { colors, settings } = useAppSettings();
+  const { colors, settings, updateSettings, isReady: areSettingsReady } = useAppSettings();
   const [recentDocuments, setRecentDocuments] = useState<Book[]>([]);
   const [progressMap, setProgressMap] = useState<Map<string, number>>(new Map());
   const [lastOpenedDocument, setLastOpenedDocument] = useState<Book | null>(null);
+  const [continueSize, setContinueSize] = useState<{ textLength: number | null; pageCount: number | null }>({
+    textLength: null,
+    pageCount: null,
+  });
   const [activePlaybackDocument, setActivePlaybackDocument] = useState<Book | null>(null);
-  const [playbackSnapshot, setPlaybackSnapshot] = useState<DocumentPlaybackSnapshot>(
-    documentAudioPlaybackService.getSnapshot(),
-  );
+  // Del reproductor, el Inicio solo muestra QUÉ libro suena y si está sonando o
+  // preparando. Guardar el snapshot entero lo redibujaba cuatro veces por segundo
+  // (el tiempo de reproducción cambia siempre), incluso con el lector en pantalla
+  // y el Inicio montado abajo, sin nada visible que actualizar.
+  const [playback, setPlayback] = useState<PlaybackBadge>(() => toPlaybackBadge(documentAudioPlaybackService.getSnapshot()));
   const [isLoading, setIsLoading] = useState(true);
   const [isImporting, setIsImporting] = useState(false);
   const [ignoredCount, setIgnoredCount] = useState(0);
@@ -48,30 +112,48 @@ export default function HomeScreen() {
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
   const [pendingBook, setPendingBook] = useState<Book | null>(null);
   const [libraryFilter, setLibraryFilter] = useState<LibraryFilter>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [isSortPickerVisible, setIsSortPickerVisible] = useState(false);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [collectionBookIds, setCollectionBookIds] = useState<Set<string> | null>(null);
   const hasAutoOpenedRef = useRef(false);
 
+  // La lista al día para el generador de tapas, sin meterla como dependencia
+  // (si no, cada tapa nueva reiniciaría el recorrido).
+  const recentDocumentsRef = useRef<Book[]>([]);
+  const hasLoadedOnceRef = useRef(false);
   const loadRecentDocuments = useCallback(async () => {
-    setIsLoading(true);
-    try {
-      const [recent, lastOpened, loadedCollections] = await Promise.all([
+    // El spinner solo la primera vez: al volver de un libro la lista ya está y
+    // se actualiza en el lugar, sin parpadeo.
+    if (!hasLoadedOnceRef.current) setIsLoading(true);
+
+    const leerTodo = () =>
+      Promise.all([
         bookRepository.listAllBooks(),
         bookRepository.getLastOpenedBook(),
         collectionRepository.listCollections(),
+        bookRepository.listProgressPercentages(),
+        getIgnoredBooksCount(),
       ]);
+
+    try {
+      // Con reintento: si la base quedó inutilizable (la app se actualizó con el
+      // proceso vivo), se reabre en vez de mostrar la biblioteca vacía.
+      const [recent, lastOpened, loadedCollections, progress, ignored] = await withDatabaseRetry(leerTodo);
       setCollections(loadedCollections);
-      const progressEntries = await Promise.all(
-        recent.map(async (book) => {
-          const p = await bookProgressRepository.getProgress(book.id);
-          return [book.id, p?.percentage ?? 0] as [string, number];
-        }),
-      );
-      const newProgressMap = new Map(progressEntries.filter(([, pct]) => pct > 0));
+      recentDocumentsRef.current = recent;
       setRecentDocuments(recent);
-      setProgressMap(newProgressMap);
+      setProgressMap(progress);
       setLastOpenedDocument(lastOpened);
-      setIgnoredCount(await getIgnoredBooksCount());
+      // El tamaño solo del libro de la tarjeta, para decir cuánto falta.
+      if (lastOpened) {
+        void parsedDocumentRepository.getReadingSize(lastOpened.id).then(setContinueSize);
+      } else {
+        setContinueSize({ textLength: null, pageCount: null });
+      }
+      setIgnoredCount(ignored);
+      hasLoadedOnceRef.current = true;
     } catch (error) {
       Alert.alert(
         'No se pudieron cargar los recientes',
@@ -82,20 +164,36 @@ export default function HomeScreen() {
     }
   }, []);
 
+  // Biblioteca por descubrimiento: la lista se muestra YA con lo que hay en la
+  // base; el escaneo de las carpetas corre de fondo y, solo si encontró libros
+  // nuevos, refresca. Antes el Inicio esperaba el escaneo entero cada vez que
+  // volvías de un libro.
+  const lastScanAtRef = useRef(0);
+  // Qué carpetas se escanearon la última vez. Si la lista cambió (acabás de
+  // agregar una en Ajustes), el escaneo NO espera el intervalo: si no, la
+  // carpeta nueva no mostraba un solo libro hasta dos minutos después.
+  const lastScanKeyRef = useRef('');
   useFocusEffect(
     useCallback(() => {
+      let active = true;
       void (async () => {
-        // Biblioteca por descubrimiento: los libros nuevos en las carpetas
-        // autorizadas se agregan solos antes de refrescar la lista.
-        if (settings.libraryFolders.length > 0) {
-          try {
-            await scanLibraryFolders(settings.libraryFolders, settings.excludedFolders);
-          } catch {
-            // El escaneo nunca debe romper el Home.
-          }
-        }
         await loadRecentDocuments();
+        if (!active || settings.libraryFolders.length === 0) return;
+        const scanKey = `${settings.libraryFolders.join('|')}##${settings.excludedFolders.join('|')}`;
+        const sameFolders = scanKey === lastScanKeyRef.current;
+        if (sameFolders && Date.now() - lastScanAtRef.current < SCAN_MIN_INTERVAL_MS) return;
+        lastScanAtRef.current = Date.now();
+        lastScanKeyRef.current = scanKey;
+        try {
+          const added = await scanLibraryFolders(settings.libraryFolders, settings.excludedFolders);
+          if (active && added > 0) await loadRecentDocuments();
+        } catch {
+          // El escaneo nunca debe romper el Home.
+        }
       })();
+      return () => {
+        active = false;
+      };
     }, [loadRecentDocuments, settings.libraryFolders, settings.excludedFolders]),
   );
 
@@ -109,9 +207,15 @@ export default function HomeScreen() {
     setPendingBook(book);
   }, []);
 
+  // Estables entre renders: si cambiaran de identidad, el memo de BookGridItem
+  // no serviría de nada.
+  const handleOpenBook = useCallback((book: Book) => openReader(book.id), [openReader]);
+
   // Restaurar ocultos + re-escanear + refrescar, todo de una.
   const handleRestoreHidden = useCallback(async () => {
     await restoreIgnoredBooks();
+    lastScanAtRef.current = Date.now();
+    lastScanKeyRef.current = `${settings.libraryFolders.join('|')}##${settings.excludedFolders.join('|')}`;
     if (settings.libraryFolders.length > 0) {
       try { await scanLibraryFolders(settings.libraryFolders, settings.excludedFolders); } catch { /* no romper el Home */ }
     }
@@ -133,21 +237,33 @@ export default function HomeScreen() {
   }, [libraryFilter, isCollectionFilter, recentDocuments]);
 
   const filteredDocuments = useMemo(() => {
+    let books: Book[];
     switch (libraryFilter) {
       case 'all':
-        return recentDocuments;
+        books = recentDocuments;
+        break;
       case 'reading':
-        return recentDocuments.filter((book) => (progressMap.get(book.id) ?? 0) > 0 && book.status !== 'read');
+        books = recentDocuments.filter((book) => (progressMap.get(book.id) ?? 0) > 0 && book.status !== 'read');
+        break;
       case 'to_read':
-        return recentDocuments.filter((book) => book.status === 'to_read');
+        books = recentDocuments.filter((book) => book.status === 'to_read');
+        break;
       case 'read':
-        return recentDocuments.filter((book) => book.status === 'read');
+        books = recentDocuments.filter((book) => book.status === 'read');
+        break;
       case 'favorite':
-        return recentDocuments.filter((book) => book.favorite);
+        books = recentDocuments.filter((book) => book.favorite);
+        break;
       default:
-        return collectionBookIds ? recentDocuments.filter((book) => collectionBookIds.has(book.id)) : [];
+        books = collectionBookIds ? recentDocuments.filter((book) => collectionBookIds.has(book.id)) : [];
     }
-  }, [libraryFilter, recentDocuments, progressMap, collectionBookIds]);
+    // Búsqueda por título, autor o nombre de archivo, sin distinguir tildes ni mayúsculas.
+    const query = foldText(searchQuery.trim());
+    if (query) {
+      books = books.filter((book) => foldText(`${getDisplayTitle(book)} ${book.author ?? ''} ${book.name}`).includes(query));
+    }
+    return books;
+  }, [libraryFilter, recentDocuments, progressMap, collectionBookIds, searchQuery]);
 
   // Agrupa los libros por carpeta. El nombre de los escaneados trae el prefijo
   // de la carpeta ("Game of saga/…"), que es el criterio confiable; el match
@@ -156,52 +272,101 @@ export default function HomeScreen() {
     const sections = settings.libraryFolders.map((folderUri) => {
       const treeId = folderUri.split('/tree/')[1] ?? '';
       const folderName = getDisplayNameFromSafUri(folderUri);
-      const books = filteredDocuments
-        .filter(
+      const books = sortBooks(
+        filteredDocuments.filter(
           (book) =>
             book.name.startsWith(`${folderName}/`) ||
             (treeId !== '' && book.uri.includes(`/tree/${treeId}/`)),
-        )
-        .sort(compareBooksNaturally);
+        ),
+        settings.librarySort,
+      );
       return { folderUri, name: folderName, books };
     });
     const grouped = new Set(sections.flatMap((section) => section.books.map((b) => b.id)));
-    const ungrouped = filteredDocuments
-      .filter((book) => !grouped.has(book.id))
-      .sort(compareBooksNaturally);
-    // Con un filtro activo, las carpetas sin resultados no se muestran.
-    return { sections: sections.filter((section) => libraryFilter === 'all' || section.books.length > 0), ungrouped };
-  }, [settings.libraryFolders, filteredDocuments, libraryFilter]);
+    const ungrouped = sortBooks(
+      filteredDocuments.filter((book) => !grouped.has(book.id)),
+      settings.librarySort,
+    );
+    // Con un filtro o una búsqueda activos, las carpetas sin resultados no se muestran.
+    const isFiltering = libraryFilter !== 'all' || searchQuery.trim().length > 0;
+    return { sections: sections.filter((section) => !isFiltering || section.books.length > 0), ungrouped };
+  }, [settings.libraryFolders, settings.librarySort, filteredDocuments, libraryFilter, searchQuery]);
 
+  // Las tapas de los libros que entraron por escaneo y nunca se abrieron se
+  // generan acá, de fondo. SOLO con el Inicio a la vista: el módulo nativo
+  // mantiene un PDF abierto por vez, así que hacer esto con un libro abierto le
+  // cerraría el documento al lector en cada tapa.
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+      // Un respiro antes de arrancar: primero que se vea la biblioteca.
+      const timer = setTimeout(() => {
+        void backfillCovers(recentDocumentsRef.current, {
+          isCancelled: () => cancelled,
+          onCover: (bookId, coverUri) => {
+            // Se actualiza esa tapa nada más, sin volver a leer la base entera.
+            // También en la ref, para que al volver al Inicio no se reintente
+            // una tapa que ya está hecha.
+            recentDocumentsRef.current = recentDocumentsRef.current.map((book) =>
+              book.id === bookId ? { ...book, coverUri } : book,
+            );
+            setRecentDocuments((previous) =>
+              previous.map((book) => (book.id === bookId ? { ...book, coverUri } : book)),
+            );
+            setLastOpenedDocument((previous) =>
+              previous && previous.id === bookId ? { ...previous, coverUri } : previous,
+            );
+          },
+        });
+      }, 900);
+      return () => {
+        cancelled = true;
+        clearTimeout(timer);
+      };
+    }, []),
+  );
+
+  // Reabrir el último libro es cosa del ARRANQUE. El ajuste vive en un contexto
+  // compartido y el Inicio queda montado debajo de Ajustes: si el efecto mirara
+  // el valor, activar la opción abría el lector encima de Ajustes ahí mismo.
+  // Se decide una sola vez, apenas los ajustes están leídos.
   useEffect(() => {
-    if (hasAutoOpenedRef.current) return;
+    if (!areSettingsReady || hasAutoOpenedRef.current) return;
+    hasAutoOpenedRef.current = true; // el arranque ya pasó: no se repite
     if (!settings.reopenLastDocumentOnLaunch) return;
     void bookRepository.getLastOpenedBook().then((book) => {
-      if (book && !hasAutoOpenedRef.current) {
-        hasAutoOpenedRef.current = true;
-        openReader(book.id);
-      }
+      if (book) openReader(book.id);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [settings.reopenLastDocumentOnLaunch]);
+  }, [areSettingsReady]);
 
   useEffect(() => {
     let isMounted = true;
     let requestId = 0;
-    const syncPlaybackDocument = async (snapshot: DocumentPlaybackSnapshot) => {
-      const currentRequestId = ++requestId;
-      setPlaybackSnapshot(snapshot);
-      if (!snapshot.documentId) {
+    let lastDocumentId: string | null | undefined;
+
+    const syncPlayback = (snapshot: DocumentPlaybackSnapshot) => {
+      const badge = toPlaybackBadge(snapshot);
+      // React corta solo si el estado no cambió, pero solo si es el MISMO objeto:
+      // por eso se compara campo a campo antes de tocar el estado.
+      setPlayback((previous) => (samePlaybackBadge(previous, badge) ? previous : badge));
+
+      // El libro solo se busca cuando cambia de libro. Antes se consultaba la
+      // base cuatro veces por segundo durante toda la escucha.
+      if (badge.documentId === lastDocumentId) return;
+      lastDocumentId = badge.documentId;
+      if (!badge.documentId) {
         if (isMounted) setActivePlaybackDocument(null);
         return;
       }
-      const storedDocument = await bookRepository.getBookById(snapshot.documentId);
-      if (isMounted && currentRequestId === requestId) setActivePlaybackDocument(storedDocument);
+      const currentRequestId = ++requestId;
+      void bookRepository.getBookById(badge.documentId).then((storedDocument) => {
+        if (isMounted && currentRequestId === requestId) setActivePlaybackDocument(storedDocument);
+      });
     };
-    void syncPlaybackDocument(documentAudioPlaybackService.getSnapshot());
-    const unsubscribe = documentAudioPlaybackService.subscribe((snapshot) => {
-      void syncPlaybackDocument(snapshot);
-    });
+
+    syncPlayback(documentAudioPlaybackService.getSnapshot());
+    const unsubscribe = documentAudioPlaybackService.subscribe(syncPlayback);
     return () => {
       isMounted = false;
       unsubscribe();
@@ -220,7 +385,7 @@ export default function HomeScreen() {
     } catch (error) {
       Alert.alert(
         'No se pudo abrir el archivo',
-        error instanceof Error ? error.message : 'Elige otro PDF e intenta de nuevo.',
+        error instanceof Error ? error.message : 'Elegí otro archivo e intentá de nuevo.',
       );
     } finally {
       setIsImporting(false);
@@ -231,7 +396,7 @@ export default function HomeScreen() {
     (document: Book) => {
       Alert.alert(
         'Eliminar libro',
-        'Se borrara de recientes, progreso y cache local de audio.',
+        'Se borrará de recientes, junto con su progreso y el audio generado.',
         [
           { text: 'Cancelar', style: 'cancel' },
           {
@@ -240,7 +405,7 @@ export default function HomeScreen() {
             onPress: () => {
               void (async () => {
                 try {
-                  if (playbackSnapshot.documentId === document.id) {
+                  if (playback.documentId === document.id) {
                     await documentAudioPlaybackService.stopAndUnload();
                   }
                   await clearBookAudio(document.id);
@@ -255,7 +420,7 @@ export default function HomeScreen() {
                 } catch (error) {
                   Alert.alert(
                     'No se pudo eliminar',
-                    error instanceof Error ? error.message : 'No se pudo limpiar el documento local.',
+                    error instanceof Error ? error.message : 'No se pudo limpiar el libro local.',
                   );
                 }
               })();
@@ -264,214 +429,366 @@ export default function HomeScreen() {
         ],
       );
     },
-    [loadRecentDocuments, playbackSnapshot.documentId],
+    [loadRecentDocuments, playback.documentId],
   );
 
   const pendingProgress = pendingBook ? (progressMap.get(pendingBook.id) ?? 0) : 0;
 
   const playbackCardVisible = Boolean(
-    activePlaybackDocument && (playbackSnapshot.isPlaying || playbackSnapshot.isPreparing),
+    activePlaybackDocument && (playback.isPlaying || playback.isPreparing),
   );
 
   const playbackStatusLabel = useMemo(() => {
-    if (playbackSnapshot.isPreparing) return 'Preparando audio';
-    if (playbackSnapshot.isPlaying) return 'Reproduciendo ahora';
+    if (playback.isPreparing) return 'Preparando audio';
+    if (playback.isPlaying) return 'Reproduciendo ahora';
     return 'Listo para seguir';
-  }, [playbackSnapshot.isPlaying, playbackSnapshot.isPreparing]);
+  }, [playback.isPlaying, playback.isPreparing]);
 
-  return (
-    <Screen colors={colors} scroll>
-      <Stack.Screen options={{ title: 'Inicio' }} />
-      {recentDocuments.length === 0 ? (
-        <View style={[styles.heroCard, { backgroundColor: colors.readerSurface, borderColor: colors.border }]}>
-          <Text style={[styles.heroEyebrow, { color: colors.primary }]}>Lector personal offline</Text>
-          <Text style={[styles.heroTitle, { color: colors.text }]}>Escucha tus PDFs con una interfaz calma</Text>
-          <Text style={[styles.heroSubtitle, { color: colors.textMuted }]}>
-            Abre un PDF, escucha el texto en voz alta y retoma justo donde lo dejaste sin depender de la nube.
-          </Text>
-          <View style={styles.heroActions}>
-            <AppButton
-              label={isImporting ? 'Abriendo...' : 'Abrir archivo'}
-              onPress={() => { void handleOpenDocument(); }}
-              disabled={isImporting}
-              colors={colors}
-              fullWidth
-            />
-            <AppButton
-              label="Ajustes"
-              onPress={() => router.push('/settings')}
-              variant="secondary"
-              colors={colors}
-              fullWidth
-            />
-          </View>
-        </View>
-      ) : (
-        // Con biblioteca ya armada, el hero gigante sobra: fila compacta.
-        <View style={styles.heroCompact}>
-          <View style={{ flex: 1 }}>
-            <AppButton
-              label={isImporting ? 'Abriendo...' : '+ Abrir archivo'}
-              onPress={() => { void handleOpenDocument(); }}
-              disabled={isImporting}
-              colors={colors}
-              compact
-              fullWidth
-            />
-          </View>
-          <AppButton
-            label="Ajustes"
-            onPress={() => router.push('/settings')}
-            variant="secondary"
-            colors={colors}
-            compact
-          />
-        </View>
-      )}
+  const continueProgress = lastOpenedDocument ? (progressMap.get(lastOpenedDocument.id) ?? 0) : 0;
+  // Cuánto falta del libro de la tarjeta. Se pide el tamaño de ESE libro nada
+  // más (una consulta liviana), no el de toda la biblioteca.
+  // Un cómic son imágenes, y un PDF escaneado no tiene texto: en los dos casos
+  // ofrecer "Escuchar" llevaba a un lector con la voz deshabilitada.
+  const continueCanNarrate = Boolean(
+    lastOpenedDocument &&
+      !isComicFile(lastOpenedDocument.type, lastOpenedDocument.name) &&
+      (continueSize.textLength === null ||
+        continueSize.textLength > (continueSize.pageCount ?? 1) * 100),
+  );
+  const continueRemaining = lastOpenedDocument
+    ? remainingLabel({
+        textLength: continueSize.textLength,
+        pageCount: continueSize.pageCount,
+        percentage: continueProgress,
+        isComic: isComicFile(lastOpenedDocument.type, lastOpenedDocument.name),
+      })
+    : null;
+  const libraryCountLabel =
+    libraryFilter === 'all' && !searchQuery.trim()
+      ? `${recentDocuments.length} libro${recentDocuments.length === 1 ? '' : 's'}`
+      : `${filteredDocuments.length} de ${recentDocuments.length}`;
 
-      {playbackCardVisible && activePlaybackDocument ? (
-        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <Text style={[styles.cardEyebrow, { color: colors.primary }]}>{playbackStatusLabel}</Text>
-          <Text style={[styles.continueTitle, { color: colors.text }]}>{getDisplayTitle(activePlaybackDocument)}</Text>
-          <Text style={[styles.sectionHint, { color: colors.textMuted }]}>
-            El audio sigue vivo fuera del lector. Puedes volver a esta pantalla o controlarlo desde la notificacion del sistema.
-          </Text>
-          <AppButton label="Volver al lector" onPress={() => openReader(activePlaybackDocument.id)} colors={colors} fullWidth />
-          <AppButton
-            label="Detener"
-            onPress={() => { void documentAudioPlaybackService.stopAndUnload(); }}
-            variant="secondary"
-            colors={colors}
-            fullWidth
-          />
-        </View>
-      ) : null}
+  // La biblioteca como FILAS: una por cabecera de carpeta y una por cada terna
+  // de libros. Antes se montaban TODOS los libros de una, con su tapa
+  // decodificada: con 100 libros son ~800 vistas y decenas de MB de imágenes
+  // en el primer dibujado del Inicio.
+  const libraryRows = useMemo<LibraryRow[]>(() => {
+    const rows: LibraryRow[] = [];
+    const pushBooks = (books: Book[], prefix: string) => {
+      for (let i = 0; i < books.length; i += LIBRARY_COLUMNS) {
+        const slice = books.slice(i, i + LIBRARY_COLUMNS);
+        rows.push({ kind: 'books', key: `${prefix}-${slice[0].id}`, books: slice });
+      }
+    };
+    // Ordenando por autor, la biblioteca se agrupa POR AUTOR (no por carpeta):
+    // es lo que se espera al elegir ese orden, y deja ver de un vistazo todo lo
+    // que tenés de cada uno.
+    if (settings.librarySort === 'author') {
+      let currentAuthor: string | null = null;
+      let pendingBooks: Book[] = [];
+      const flush = () => {
+        if (pendingBooks.length > 0) pushBooks(pendingBooks, `a-${currentAuthor ?? 'sin'}`);
+        pendingBooks = [];
+      };
+      for (const book of filteredDocuments) {
+        const author = book.author?.trim() || SIN_AUTOR;
+        if (author !== currentAuthor) {
+          flush();
+          currentAuthor = author;
+          rows.push({ kind: 'subtitle', key: `au-${author}`, text: author.toUpperCase() });
+        }
+        pendingBooks.push(book);
+      }
+      flush();
+      return rows;
+    }
 
-      {lastOpenedDocument ? (
-        <View style={[styles.card, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <Text style={[styles.cardEyebrow, { color: colors.primary }]}>Seguir leyendo</Text>
-          <Text style={[styles.continueTitle, { color: colors.text }]}>{getDisplayTitle(lastOpenedDocument)}</Text>
-          <Text style={[styles.sectionHint, { color: colors.textMuted }]}>
-            Retoma el documento mas reciente desde el ultimo bloque guardado, sin volver a importarlo.
-          </Text>
-          <AppButton label="Continuar" onPress={() => openReader(lastOpenedDocument.id)} colors={colors} fullWidth />
-        </View>
-      ) : null}
+    for (const section of librarySections.sections) {
+      rows.push({ kind: 'folder', key: `f-${section.folderUri}`, section });
+      if (expandedFolders[section.folderUri] ?? true) pushBooks(section.books, section.folderUri);
+    }
+    if (librarySections.ungrouped.length > 0) {
+      if (librarySections.sections.length > 0) {
+        rows.push({ kind: 'subtitle', key: 'otros', text: 'OTROS LIBROS' });
+      }
+      pushBooks(librarySections.ungrouped, 'sueltos');
+    }
+    return rows;
+  }, [librarySections, expandedFolders, settings.librarySort, filteredDocuments]);
 
-      <View style={styles.sectionHeader}>
-        <Text style={[styles.sectionTitle, { color: colors.text }]}>Biblioteca</Text>
-        {!isLoading && recentDocuments.length > 0 ? (
-          <Text style={[styles.sectionCount, { color: colors.textMuted }]}>
-            {libraryFilter === 'all'
-              ? `${recentDocuments.length} libro${recentDocuments.length === 1 ? '' : 's'}`
-              : `${filteredDocuments.length} de ${recentDocuments.length}`}
-          </Text>
-        ) : null}
-        {isLoading ? <ActivityIndicator color={colors.primary} /> : null}
-      </View>
-
-      {recentDocuments.length > 0 ? (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
-          {[...BASE_FILTERS, ...collections.map((c) => ({ value: c.id, label: `📚 ${c.name}` }))].map((filter) => {
-            const active = libraryFilter === filter.value;
-            return (
-              <Pressable
-                key={filter.value}
-                onPress={() => setLibraryFilter(filter.value)}
-                style={[
-                  styles.filterChip,
-                  { borderColor: active ? colors.primary : colors.border, backgroundColor: active ? colors.accent : 'transparent' },
-                ]}
-              >
-                <Text style={[styles.filterChipText, { color: active ? colors.text : colors.textMuted }]}>{filter.label}</Text>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
-      ) : null}
-
-      {!isLoading && recentDocuments.length > 0 && filteredDocuments.length === 0 ? (
-        <Text style={[styles.sectionHint, { color: colors.textMuted }]}>
-          No hay libros en esta lista. Mantené apretado un libro → "Sobre este libro" para agregarlo.
-        </Text>
-      ) : null}
-
-      {ignoredCount > 0 ? (
-        <View style={[styles.hiddenBanner, { backgroundColor: colors.surfaceMuted, borderColor: colors.border }]}>
-          <Text style={[styles.hiddenBannerText, { color: colors.textMuted }]}>
-            {ignoredCount} libro{ignoredCount === 1 ? '' : 's'} oculto{ignoredCount === 1 ? '' : 's'} (borrados antes)
-          </Text>
-          <AppButton
-            label="Restaurar"
-            onPress={() => { void handleRestoreHidden(); }}
-            variant="secondary"
-            colors={colors}
-            compact
-          />
-        </View>
-      ) : null}
-
-      {!isLoading && recentDocuments.length === 0 ? (
-        <View style={[styles.emptyState, { backgroundColor: colors.surfaceMuted, borderColor: colors.border }]}>
-          <Text style={[styles.emptyTitle, { color: colors.text }]}>Todavia no hay documentos</Text>
-          <Text style={[styles.emptySubtitle, { color: colors.textMuted }]}>
-            Empieza con un PDF de texto. Si el archivo es un escaneo sin texto embebido, la app lo va a informar.
-          </Text>
-        </View>
-      ) : null}
-
-      {librarySections.sections.map((section) => {
-        const isExpanded = expandedFolders[section.folderUri] ?? true;
+  const renderLibraryRow = useCallback(
+    ({ item }: { item: LibraryRow }) => {
+      if (item.kind === 'subtitle') {
+        return <Text style={[styles.subsectionTitle, { color: colors.textMuted }]}>{item.text}</Text>;
+      }
+      if (item.kind === 'folder') {
+        const expanded = expandedFolders[item.section.folderUri] ?? true;
         return (
-          <View key={section.folderUri} style={styles.folderGroup}>
-            <Pressable
-              onPress={() =>
-                setExpandedFolders((prev) => ({ ...prev, [section.folderUri]: !isExpanded }))
-              }
-              style={[styles.folderHeader, { backgroundColor: colors.surfaceMuted, borderColor: colors.border }]}
-            >
-              <Text style={[styles.folderChevron, { color: colors.primary }]}>{isExpanded ? '▾' : '▸'}</Text>
-              <Text style={[styles.folderName, { color: colors.text }]} numberOfLines={1}>
-                📁 {section.name}
-              </Text>
-              <Text style={[styles.folderCount, { color: colors.textMuted }]}>
-                {section.books.length} libro{section.books.length === 1 ? '' : 's'}
-              </Text>
-            </Pressable>
-            {isExpanded ? (
-              <View style={styles.grid}>
-                {section.books.map((document) => (
-                  <BookGridItem
-                    key={document.id}
-                    book={document}
+          <Pressable
+            onPress={() => setExpandedFolders((prev) => ({ ...prev, [item.section.folderUri]: !expanded }))}
+            style={[styles.folderHeader, { backgroundColor: colors.surface, borderColor: colors.border }]}
+            accessibilityRole="button"
+          >
+            <Icon name="folder-outline" size={18} color={colors.primary} />
+            <Text style={[styles.folderName, { color: colors.text }]} numberOfLines={1}>
+              {item.section.name}
+            </Text>
+            <Text style={[styles.folderCount, { color: colors.textMuted }]}>{item.section.books.length}</Text>
+            <Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={18} color={colors.textMuted} />
+          </Pressable>
+        );
+      }
+      return (
+        <View style={styles.grid}>
+          {item.books.map((document) => (
+            <BookGridItem
+              key={document.id}
+              book={document}
+              colors={colors}
+              progress={progressMap.get(document.id)}
+              onOpen={handleOpenBook}
+              onLongPress={openChooser}
+            />
+          ))}
+        </View>
+      );
+    },
+    [colors, expandedFolders, progressMap, handleOpenBook, openChooser],
+  );
+  return (
+    <Screen
+      colors={colors}
+      floating={
+        <Pressable
+          onPress={() => { void handleOpenDocument(); }}
+          disabled={isImporting}
+          accessibilityRole="button"
+          accessibilityLabel="Abrir un archivo"
+          style={({ pressed }) => [styles.fab, { backgroundColor: colors.primary, opacity: isImporting ? 0.6 : pressed ? 0.85 : 1 }]}
+        >
+          {isImporting ? <ActivityIndicator color={colors.primaryText} /> : <Icon name="add" size={30} color={colors.primaryText} />}
+        </Pressable>
+      }
+    >
+      <Stack.Screen options={{ headerShown: false }} />
+
+      <FlatList
+        data={libraryRows}
+        keyExtractor={(row) => row.key}
+        renderItem={renderLibraryRow}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={styles.listContent}
+        // Sin getItemLayout a propósito: el título ocupa una o dos líneas, así
+        // que la altura de una fila no es fija. La virtualización igual funciona;
+        // lo único que se pierde es saltar a un índice, que acá no se usa.
+        removeClippedSubviews
+        initialNumToRender={6}
+        windowSize={7}
+        ListHeaderComponent={
+          // Un ELEMENTO, no un componente: pasar una función definida acá adentro
+          // vuelve a montar la cabecera en cada render y el campo de búsqueda
+          // perdería el foco a la primera letra.
+          <View style={styles.listHeader}>
+            {/* Cabecera propia: marca a la izquierda, ajustes a la derecha. */}
+            <View style={styles.header}>
+              <View style={styles.brand}>
+                {/* Miniatura del ícono de la app ("b." sobre vidrio): la misma marca que en el launcher. */}
+                <Image source={require('../assets/brand-mark.png')} style={styles.brandMark} contentFit="contain" />
+                <Text style={[styles.brandTitle, { color: colors.text }]}>Bardo</Text>
+              </View>
+              <View style={styles.headerActions}>
+                {recentDocuments.length > 0 ? (
+                  <IconButton
+                    name={isSearchOpen ? 'close' : 'search-outline'}
+                    label={isSearchOpen ? 'Cerrar búsqueda' : 'Buscar en la biblioteca'}
+                    onPress={() => {
+                      if (isSearchOpen) setSearchQuery('');
+                      setIsSearchOpen((open) => !open);
+                    }}
                     colors={colors}
-                    progress={progressMap.get(document.id)}
-                    onOpen={() => openReader(document.id)}
-                    onLongPress={() => openChooser(document)}
+                    variant="tonal"
+                    active={isSearchOpen}
+                    size={22}
                   />
-                ))}
+                ) : null}
+                <IconButton name="settings-outline" label="Ajustes" onPress={() => router.push('/settings')} colors={colors} variant="tonal" size={22} />
+              </View>
+            </View>
+
+            {isSearchOpen ? (
+              <View style={[styles.searchField, { backgroundColor: colors.surface, borderColor: colors.primary }]}>
+                <Icon name="search-outline" size={18} color={colors.textMuted} />
+                <TextInput
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  placeholder="Título, autor o archivo"
+                  placeholderTextColor={colors.textMuted}
+                  autoFocus
+                  returnKeyType="search"
+                  style={[styles.searchInput, { color: colors.text }]}
+                />
+                {searchQuery ? (
+                  <IconButton name="backspace-outline" label="Borrar búsqueda" onPress={() => setSearchQuery('')} colors={colors} size={20} />
+                ) : null}
               </View>
             ) : null}
+
+            {playbackCardVisible && activePlaybackDocument ? (
+              <Pressable
+                onPress={() => openReader(activePlaybackDocument.id)}
+                style={[styles.nowPlaying, { backgroundColor: colors.primary }]}
+                accessibilityRole="button"
+                accessibilityLabel="Volver al libro que suena"
+              >
+                <Icon name={playback.isPreparing ? 'hourglass-outline' : 'volume-high'} size={20} color={colors.primaryText} />
+                <View style={styles.nowPlayingText}>
+                  <Text style={[styles.nowPlayingLabel, { color: colors.primaryText }]}>{playbackStatusLabel}</Text>
+                  <Text style={[styles.nowPlayingTitle, { color: colors.primaryText }]} numberOfLines={1}>
+                    {getDisplayTitle(activePlaybackDocument)}
+                  </Text>
+                </View>
+                <Pressable
+                  onPress={() => { void documentAudioPlaybackService.stopAndUnload().catch(() => {}); }}
+                  hitSlop={10}
+                  accessibilityRole="button"
+                  accessibilityLabel="Detener la voz"
+                  style={styles.nowPlayingStop}
+                >
+                  <Icon name="stop" size={20} color={colors.primaryText} />
+                </Pressable>
+              </Pressable>
+            ) : null}
+
+            {lastOpenedDocument ? (
+              <View style={[styles.continueCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                <Pressable onPress={() => openReader(lastOpenedDocument.id)} style={styles.continueBody} accessibilityRole="button">
+                  {lastOpenedDocument.coverUri ? (
+                    <Image source={{ uri: lastOpenedDocument.coverUri }} style={styles.continueCover} contentFit="cover" />
+                  ) : (
+                    <View style={[styles.continueCover, { backgroundColor: colors.accent, alignItems: 'center', justifyContent: 'center' }]}>
+                      <Icon name="book-outline" size={26} color={colors.primary} />
+                    </View>
+                  )}
+                  <View style={styles.continueText}>
+                    <Text style={[styles.eyebrow, { color: colors.primary }]}>SEGUIR LEYENDO</Text>
+                    <Text style={[styles.continueTitle, { color: colors.text }]} numberOfLines={2}>
+                      {getDisplayTitle(lastOpenedDocument)}
+                    </Text>
+                    {lastOpenedDocument.author ? (
+                      <Text style={[styles.continueAuthor, { color: colors.textMuted }]} numberOfLines={1}>
+                        {lastOpenedDocument.author}
+                      </Text>
+                    ) : null}
+                    <View style={[styles.progressTrack, { backgroundColor: colors.surfaceMuted }]}>
+                      <View style={[styles.progressFill, { backgroundColor: colors.warm, width: `${Math.min(Math.max(continueProgress, 2), 100)}%` }]} />
+                    </View>
+                    <Text style={[styles.progressLabel, { color: colors.textMuted }]}>
+                      {continueProgress > 0 ? `${Math.max(1, Math.round(continueProgress))} % leído` : 'Sin empezar'} · {getDocumentTypeLabel(lastOpenedDocument.type)}
+                {continueRemaining ? ` · te faltan ${continueRemaining}` : ''}
+                    </Text>
+                  </View>
+                </Pressable>
+                <View style={styles.continueActions}>
+                  <AppButton label="Continuar" icon="book-outline" onPress={() => openReader(lastOpenedDocument.id)} colors={colors} compact style={styles.continueButton} />
+                  {/* Sin texto no hay nada que narrar: un cómic, o un PDF escaneado. */}
+                  {continueCanNarrate ? (
+                    <AppButton label="Escuchar" icon="headset-outline" onPress={() => openReader(lastOpenedDocument.id, false, 'listen')} variant="secondary" colors={colors} compact style={styles.continueButton} />
+                  ) : null}
+                </View>
+              </View>
+            ) : null}
+
+            <View style={styles.sectionHeader}>
+              <Text style={[styles.sectionTitle, { color: colors.text }]}>Biblioteca</Text>
+              <View style={styles.sectionActions}>
+                {isLoading ? <ActivityIndicator color={colors.primary} /> : recentDocuments.length > 0 ? (
+                  <Text style={[styles.sectionCount, { color: colors.textMuted }]}>{libraryCountLabel}</Text>
+                ) : null}
+                {recentDocuments.length > 1 ? (
+                  <IconButton name="swap-vertical-outline" label="Ordenar la biblioteca" onPress={() => setIsSortPickerVisible(true)} colors={colors} size={20} />
+                ) : null}
+              </View>
+            </View>
+
+            {recentDocuments.length > 0 ? (
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterRow}>
+                {BASE_FILTERS.map((filter) => (
+                  <Chip
+                    key={filter.value}
+                    label={filter.label}
+                    icon={filter.icon}
+                    active={libraryFilter === filter.value}
+                    onPress={() => setLibraryFilter(filter.value)}
+                    colors={colors}
+                  />
+                ))}
+                {collections.map((collection) => (
+                  <Chip
+                    key={collection.id}
+                    label={collection.name}
+                    icon="albums-outline"
+                    active={libraryFilter === collection.id}
+                    onPress={() => setLibraryFilter(collection.id)}
+                    colors={colors}
+                  />
+                ))}
+              </ScrollView>
+            ) : null}
+
+            {!isLoading && recentDocuments.length > 0 && filteredDocuments.length === 0 ? (
+              <View style={[styles.emptyState, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                <Icon name={searchQuery.trim() ? 'search-outline' : 'albums-outline'} size={28} color={colors.textMuted} />
+                <Text style={[styles.emptyTitle, { color: colors.text }]}>
+                  {searchQuery.trim() ? `Nada con "${searchQuery.trim()}"` : 'No hay libros en esta lista'}
+                </Text>
+                <Text style={[styles.emptySubtitle, { color: colors.textMuted }]}>
+                  {searchQuery.trim()
+                    ? 'Probá con otra palabra del título, el autor o el nombre del archivo.'
+                    : 'Mantené apretado un libro y elegí "Sobre este libro" para sumarlo.'}
+                </Text>
+              </View>
+            ) : null}
+
+            {ignoredCount > 0 ? (
+              <View style={[styles.hiddenBanner, { backgroundColor: colors.surfaceMuted, borderColor: colors.border }]}>
+                <Icon name="eye-off-outline" size={18} color={colors.textMuted} />
+                <Text style={[styles.hiddenBannerText, { color: colors.textMuted }]}>
+                  {ignoredCount} libro{ignoredCount === 1 ? '' : 's'} oculto{ignoredCount === 1 ? '' : 's'}
+                </Text>
+                <AppButton label="Restaurar" onPress={() => { void handleRestoreHidden(); }} variant="ghost" colors={colors} compact />
+              </View>
+            ) : null}
+
+            {!isLoading && recentDocuments.length === 0 ? (
+              <View style={[styles.emptyState, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+                <View style={[styles.emptyIcon, { backgroundColor: colors.accent }]}>
+                  <Icon name="library-outline" size={30} color={colors.primary} />
+                </View>
+                <Text style={[styles.emptyTitle, { color: colors.text }]}>Tu biblioteca está vacía</Text>
+                <Text style={[styles.emptySubtitle, { color: colors.textMuted }]}>
+                  Tocá + para abrir un PDF, EPUB, TXT, DOCX o un cómic. También podés elegir carpetas del teléfono en Ajustes para que los libros aparezcan solos.
+                </Text>
+                <AppButton label="Abrir un archivo" icon="add" onPress={() => { void handleOpenDocument(); }} disabled={isImporting} colors={colors} />
+              </View>
+            ) : null}
+
           </View>
-        );
-      })}
+        }
+      />
 
-      {librarySections.ungrouped.length > 0 && librarySections.sections.length > 0 ? (
-        <Text style={[styles.sectionTitle, { color: colors.text, fontSize: 16 }]}>Otros libros</Text>
-      ) : null}
-
-      <View style={styles.grid}>
-        {librarySections.ungrouped.map((document) => (
-          <BookGridItem
-            key={document.id}
-            book={document}
-            colors={colors}
-            progress={progressMap.get(document.id)}
-            onOpen={() => openReader(document.id)}
-            onLongPress={() => openChooser(document)}
-          />
-        ))}
-      </View>
+      <OptionPickerModal
+        title="Ordenar por"
+        visible={isSortPickerVisible}
+        options={SORT_OPTIONS}
+        selectedValue={settings.librarySort}
+        colors={colors}
+        onClose={() => setIsSortPickerVisible(false)}
+        onSelect={(value) => {
+          setIsSortPickerVisible(false);
+          void updateSettings({ librarySort: value as LibrarySort });
+        }}
+      />
 
       <OptionPickerModal
         title={pendingBook ? getDisplayTitle(pendingBook) : '¿Cómo querés seguir?'}
@@ -479,30 +796,40 @@ export default function HomeScreen() {
         options={[
           {
             value: 'read',
-            label: '📖 Leer',
-            description: pendingProgress > 0 ? `Retoma en el ${pendingProgress.toFixed(0)}%.` : 'Empieza desde la primera página.',
+            label: 'Leer',
+            icon: 'book-outline',
+            description: pendingProgress > 0 ? `Retoma en el ${pendingProgress.toFixed(0)} %.` : 'Empieza desde la primera página.',
           },
+          // Un cómic son imágenes: no hay nada que narrar y la opción llevaba a un
+          // lector con la voz deshabilitada.
+          ...(pendingBook && isComicFile(pendingBook.type, pendingBook.name)
+            ? []
+            : [{
+                value: 'listen',
+                label: 'Escuchar',
+                icon: 'headset-outline' as const,
+                description: pendingProgress > 0 ? `La voz arranca en el ${pendingProgress.toFixed(0)} %.` : 'La voz arranca desde el principio.',
+              }]),
           {
-            value: 'listen',
-            label: '🎧 Escuchar',
-            description: pendingProgress > 0 ? `La voz arranca en el ${pendingProgress.toFixed(0)}%.` : 'La voz arranca desde el principio.',
+            value: 'about',
+            label: 'Sobre este libro',
+            icon: 'information-circle-outline',
+            description: 'Índice, anotaciones, listas, colecciones y reseña.',
           },
           ...(pendingProgress > 0
             ? [{
                 value: 'restart',
-                label: '🔄 Empezar de nuevo',
-                description: 'Borra tu progreso y arranca desde cero (pide confirmación).',
+                label: 'Empezar de nuevo',
+                icon: 'refresh-outline' as const,
+                description: 'Borra el progreso y arranca desde cero (pide confirmación).',
               }]
             : []),
           {
-            value: 'about',
-            label: 'ℹ️ Sobre este libro',
-            description: 'Reseña, listas, colecciones, índice y anotaciones.',
-          },
-          {
             value: 'delete',
-            label: '🗑 Eliminar de la biblioteca',
+            label: 'Eliminar de la biblioteca',
+            icon: 'trash-outline',
             description: 'Borra el libro, su progreso y el audio generado (pide confirmación).',
+            danger: true,
           },
         ]}
         selectedValue=""
@@ -551,48 +878,61 @@ export default function HomeScreen() {
 }
 
 const styles = StyleSheet.create({
-  filterRow: { gap: 8, paddingVertical: 2 },
-  filterChip: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 13, paddingVertical: 7 },
-  filterChipText: { fontSize: 13, fontWeight: '600' },
-  heroCard: { borderWidth: 1, borderRadius: 24, padding: 20, gap: 12 },
-  heroEyebrow: { fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
-  heroTitle: { fontSize: 29, fontWeight: '800', lineHeight: 35 },
-  heroSubtitle: { fontSize: 16, lineHeight: 24 },
-  heroActions: { gap: 10, marginTop: 6 },
-  card: { borderWidth: 1, borderRadius: 22, padding: 18, gap: 10 },
-  cardEyebrow: { fontSize: 12, fontWeight: '700', textTransform: 'uppercase', letterSpacing: 0.5 },
+  header: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingTop: 2 },
+  headerActions: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  searchField: { flexDirection: 'row', alignItems: 'center', gap: 8, borderWidth: 1.5, borderRadius: radius.md, paddingLeft: 12, paddingRight: 4 },
+  searchInput: { flex: 1, paddingVertical: 10, fontSize: 15 },
+  sectionActions: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  brand: { flexDirection: 'row', alignItems: 'center', gap: 10 },
+  brandMark: { width: 34, height: 34 },
+  // Wordmark en Lora Bold (embebida por el plugin expo-font de app.json; en Android la familia es el
+  // nombre del archivo). Sin fontWeight: con una fuente propia, Android sintetizaría otra negrita encima.
+  brandTitle: { fontSize: 28, fontFamily: 'Lora-Bold', letterSpacing: -0.3 },
+  fab: {
+    width: 60,
+    height: 60,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 6,
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+  },
+  nowPlaying: { flexDirection: 'row', alignItems: 'center', gap: 12, borderRadius: radius.lg, paddingHorizontal: 16, paddingVertical: 12 },
+  nowPlayingText: { flex: 1 },
+  nowPlayingLabel: { fontSize: 11.5, fontWeight: '700', letterSpacing: 0.6, textTransform: 'uppercase', opacity: 0.85 },
+  nowPlayingTitle: { fontSize: 15, fontWeight: '700' },
+  nowPlayingStop: { width: 36, height: 36, borderRadius: 12, alignItems: 'center', justifyContent: 'center', backgroundColor: 'rgba(255,255,255,0.18)' },
+  continueCard: { borderWidth: 1, borderRadius: radius.xl, padding: 14, gap: 12 },
+  continueBody: { flexDirection: 'row', gap: 14 },
+  continueCover: { width: 78, height: 112, borderRadius: 10, overflow: 'hidden' },
+  continueText: { flex: 1, gap: 4, justifyContent: 'center' },
+  eyebrow: { fontSize: 11.5, fontWeight: '800', letterSpacing: 0.8 },
+  continueTitle: { fontSize: 18, fontWeight: '800', lineHeight: 23 },
+  continueAuthor: { fontSize: 13.5 },
+  progressTrack: { height: 6, borderRadius: 999, overflow: 'hidden', marginTop: 4 },
+  progressFill: { height: '100%', borderRadius: 999 },
+  progressLabel: { fontSize: 12.5 },
+  continueActions: { flexDirection: 'row', gap: 10 },
+  continueButton: { flex: 1 },
   sectionHeader: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: 12 },
-  sectionTitle: { fontSize: 20, fontWeight: '700' },
-  sectionCount: { fontSize: 13 },
-  sectionHint: { fontSize: 14, lineHeight: 20 },
-  continueTitle: { fontSize: 18, fontWeight: '700' },
-  emptyState: { borderWidth: 1, borderRadius: 20, padding: 18, gap: 8 },
-  folderGroup: { gap: 10 },
+  sectionTitle: { fontSize: 21, fontWeight: '800', letterSpacing: -0.3 },
+  sectionCount: { fontSize: 13, fontWeight: '600' },
+  subsectionTitle: { fontSize: 12, fontWeight: '700', letterSpacing: 0.8 },
+  filterRow: { gap: 8, paddingVertical: 2 },
+  emptyState: { borderWidth: 1, borderRadius: radius.xl, padding: 22, gap: 10, alignItems: 'center' },
+  emptyIcon: { width: 60, height: 60, borderRadius: 20, alignItems: 'center', justifyContent: 'center' },
+  emptyTitle: { fontSize: 17, fontWeight: '700', textAlign: 'center' },
+  emptySubtitle: { fontSize: 14, lineHeight: 20, textAlign: 'center' },
+  folderGroup: { gap: 12 },
+  listContent: { padding: 20, paddingBottom: 96, gap: 12 },
+  listHeader: { gap: 18 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, rowGap: 16 },
-  heroCompact: { flexDirection: 'row', alignItems: 'center', gap: 10 },
-  hiddenBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-    borderWidth: 1,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-  },
+  hiddenBanner: { flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderRadius: radius.md, paddingLeft: 14, paddingRight: 6, paddingVertical: 6 },
   hiddenBannerText: { flex: 1, fontSize: 13 },
-  folderHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    borderWidth: 1,
-    borderRadius: 14,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-  },
-  folderChevron: { fontSize: 14, fontWeight: '800' },
+  folderHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderRadius: radius.md, paddingHorizontal: 14, paddingVertical: 12 },
   folderName: { flex: 1, fontSize: 15, fontWeight: '700' },
-  folderCount: { fontSize: 12 },
-  emptyTitle: { fontSize: 17, fontWeight: '600' },
-  emptySubtitle: { fontSize: 14, lineHeight: 20 },
+  folderCount: { fontSize: 12.5, fontWeight: '600' },
 });

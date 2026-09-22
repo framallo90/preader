@@ -19,14 +19,28 @@ export type ChapterInfo = {
 export type DocumentMetadata = {
   title: string | null;
   author: string | null;
+  /** Sinopsis que trae el archivo (EPUB, DOCX y PDF la declaran). */
+  summary?: string | null;
   /** Imagen de portada en base64, lista para persistir como archivo local. */
   coverBase64: string | null;
-  /** Extensión de la portada ('.jpg', '.png') si coverBase64 está presente. */
+  /** Extensión de la portada ('.jpg', '.png') si hay portada. */
   coverExtension: string | null;
+  /** Portada ya extraída a un archivo temporal (lectura nativa), en vez de base64. */
+  coverFileUri?: string | null;
 };
 
-/** Datos del lector visual de un PDF (páginas reales dibujadas en el teléfono). */
+/**
+ * Datos del lector visual por páginas: un PDF (páginas dibujadas en el teléfono) o
+ * un cómic (cada página es una imagen del archivo).
+ */
 export type PdfPageInfo = {
+  /** 'comic': CBZ/CBR/CB7/CBT. Ausente = PDF. */
+  kind?: 'pdf' | 'comic';
+  /**
+   * true mientras el texto se prepara de fondo: las páginas ya se leen, pero la voz
+   * y la búsqueda todavía no. Un documento así nunca se guarda en el caché.
+   */
+  textPending?: boolean;
   pageCount: number;
   /** ancho/alto de la página sin recortar; null si no se pudo medir. */
   pageAspect: number | null;
@@ -35,7 +49,7 @@ export type PdfPageInfo = {
   /** Caja de contenido [left, top, right, bottom] en 0..1, o null sin recorte. */
   crop: [number, number, number, number] | null;
   /** Índice real del documento; vacío si el PDF no trae. */
-  outline: Array<{ title: string; pageIndex: number; level: number }>;
+  outline: { title: string; pageIndex: number; level: number }[];
   /** false en PDFs escaneados: se leen las páginas, pero no hay texto para la voz. */
   hasText: boolean;
 };

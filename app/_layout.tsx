@@ -8,6 +8,7 @@ import { AppSettingsProvider, useAppSettings } from '../src/hooks/useAppSettings
 import { initializeDatabase } from '../src/storage/database';
 import { parsedDocumentRepository } from '../src/storage/parsedDocumentRepository';
 import { runtimeStateRepository } from '../src/storage/runtimeStateRepository';
+import { lightColors } from '../src/utils/theme';
 
 function logBootRecoveryWarning(message: string, error: unknown) {
   const details = error instanceof Error ? error.message : String(error);
@@ -33,13 +34,14 @@ function RootNavigator() {
         screenOptions={{
           animation: 'slide_from_right',
           headerStyle: { backgroundColor: colors.background },
-          headerTintColor: colors.text,
+          headerTintColor: colors.primary,
           headerShadowVisible: false,
-          headerTitleStyle: { fontSize: 17, fontWeight: '700' },
+          headerTitleStyle: { fontSize: 17, fontWeight: '700', color: colors.text },
+          headerBackButtonDisplayMode: 'minimal',
           contentStyle: { backgroundColor: colors.background },
         }}
       >
-        <Stack.Screen name="index" options={{ title: 'Inicio' }} />
+        <Stack.Screen name="index" options={{ title: 'Bardo', headerShown: false }} />
         <Stack.Screen name="reader" options={{ title: 'Lector' }} />
         <Stack.Screen name="book" options={{ title: 'Sobre este libro' }} />
         <Stack.Screen name="settings" options={{ title: 'Ajustes' }} />
@@ -70,7 +72,7 @@ export default function RootLayout() {
       try {
         await parsedDocumentRepository.ensureCacheVersion();
       } catch (error) {
-        logBootRecoveryWarning('No se pudo verificar la version del cache', error);
+        logBootRecoveryWarning('No se pudo verificar la versión del caché', error);
       }
 
       try {
@@ -106,7 +108,7 @@ export default function RootLayout() {
   if (!isDatabaseReady) {
     return (
       <View style={styles.bootContainer}>
-        <ActivityIndicator color="#4DB6D0" size="large" />
+        <ActivityIndicator color={lightColors.primary} size="large" />
         <Text style={styles.bootText}>Preparando base local...</Text>
       </View>
     );
@@ -127,11 +129,11 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 12,
-    backgroundColor: '#f7f4ee',
+    backgroundColor: lightColors.background,
     paddingHorizontal: 24,
   },
-  bootError: { backgroundColor: '#f6e8e6' },
-  bootText: { color: '#253038', fontSize: 16 },
-  bootTitle: { color: '#253038', fontSize: 20, fontWeight: '700', textAlign: 'center' },
-  bootSubtitle: { color: '#8f4a43', fontSize: 15, textAlign: 'center' },
+  bootError: { backgroundColor: lightColors.warmSoft },
+  bootText: { color: lightColors.text, fontSize: 16 },
+  bootTitle: { color: lightColors.text, fontSize: 20, fontWeight: '700', textAlign: 'center' },
+  bootSubtitle: { color: lightColors.danger, fontSize: 15, textAlign: 'center' },
 });

@@ -7,6 +7,8 @@ type ProgressRow = {
   blockIndex: number;
   charIndex: number | null;
   percentage: number | null;
+  page: number | null;
+  textLength: number | null;
   updatedAt: string;
 };
 
@@ -17,6 +19,8 @@ function mapProgressRow(row: ProgressRow): ReadingProgress {
     blockIndex: row.blockIndex,
     charIndex: row.charIndex ?? 0,
     percentage: row.percentage ?? 0,
+    page: row.page ?? null,
+    textLength: row.textLength ?? null,
     updatedAt: row.updatedAt,
   };
 }
@@ -40,7 +44,7 @@ export const bookProgressRepository = {
   async getProgress(bookId: string): Promise<ReadingProgress | null> {
     const db = await getDatabase();
     const row = await db.getFirstAsync<ProgressRow>(
-      'SELECT bookId, chapterId, blockIndex, charIndex, percentage, updatedAt FROM reading_progress WHERE bookId = ?',
+      'SELECT bookId, chapterId, blockIndex, charIndex, percentage, page, textLength, updatedAt FROM reading_progress WHERE bookId = ?',
       [bookId],
     );
     return row ? mapProgressRow(row) : null;
@@ -52,17 +56,21 @@ export const bookProgressRepository = {
     blockIndex: number;
     charIndex: number;
     percentage: number;
+    page?: number | null;
+    textLength?: number | null;
   }): Promise<void> {
     await serializeByBook(progress.bookId, async () => {
       const db = await getDatabase();
       await db.runAsync(
-        `INSERT INTO reading_progress (bookId, chapterId, blockIndex, charIndex, percentage, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?)
+        `INSERT INTO reading_progress (bookId, chapterId, blockIndex, charIndex, percentage, page, textLength, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(bookId) DO UPDATE SET
            chapterId = excluded.chapterId,
            blockIndex = excluded.blockIndex,
            charIndex = excluded.charIndex,
            percentage = excluded.percentage,
+           page = excluded.page,
+           textLength = excluded.textLength,
            updatedAt = excluded.updatedAt`,
         [
           progress.bookId,
@@ -70,6 +78,8 @@ export const bookProgressRepository = {
           progress.blockIndex,
           progress.charIndex,
           progress.percentage,
+          progress.page ?? null,
+          progress.textLength ?? null,
           new Date().toISOString(),
         ],
       );

@@ -14,6 +14,7 @@
  */
 const MIN_WRAPPED_LINE_LENGTH = 40;
 const ENDS_SENTENCE = /[.!?…:]["'»”’)\]]*$/;
+const STARTS_LOWERCASE = /^\p{Ll}/u;
 
 export function prepareSpeechText(text: string): string {
   const lines = text.split('\n');
@@ -25,11 +26,14 @@ export function prepareSpeechText(text: string): string {
 
     const line = lines[i].trim();
     const nextLine = lines[i + 1].trim();
+    // Una línea corta es un título o un verso… salvo que la siguiente empiece en
+    // minúscula: entonces es el final de un renglón cortado ("El aire olía" /
+    // "a pan recién hecho") y se une.
     const keepBreak =
       line.length === 0 ||
       nextLine.length === 0 ||
       ENDS_SENTENCE.test(line) ||
-      line.length < MIN_WRAPPED_LINE_LENGTH;
+      (line.length < MIN_WRAPPED_LINE_LENGTH && !STARTS_LOWERCASE.test(nextLine));
 
     result += keepBreak ? '\n' : ' ';
   }

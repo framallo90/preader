@@ -1,9 +1,9 @@
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 
-import { Book, NEW_BOOK_DEFAULTS, StoredDocument } from '../types/storage';
+import { Book, NEW_BOOK_DEFAULTS } from '../types/storage';
 import { createBookFingerprint, getFileExtension, safeDisplayFileName } from '../utils/documentId';
-import { SUPPORTED_MIME_TYPES } from './parserRegistry';
+import { PICKER_MIME_TYPES, resolveBookType } from './bookTypes';
 
 function getDocumentsDirectory() {
   if (!FileSystem.documentDirectory) {
@@ -43,7 +43,13 @@ async function copyAssetToDocuments(asset: DocumentPicker.DocumentPickerAsset): 
   const documentsDirectory = getDocumentsDirectory();
   const destinationUri = `${documentsDirectory}/${documentId}${extension}`;
   await FileSystem.deleteAsync(destinationUri, { idempotent: true });
-  await FileSystem.copyAsync({ from: asset.uri, to: destinationUri });
+  // El selector ya dejó una copia en el caché de la app: moverla es instantáneo;
+  // copiarla de nuevo duplicaba el archivo (un cómic pesa cientos de MB).
+  try {
+    await FileSystem.moveAsync({ from: asset.uri, to: destinationUri });
+  } catch {
+    await FileSystem.copyAsync({ from: asset.uri, to: destinationUri });
+  }
   const destinationInfo = await FileSystem.getInfoAsync(destinationUri);
   if (!destinationInfo.exists) {
     throw new Error('No se pudo guardar una copia local del archivo dentro de la app.');
@@ -52,9 +58,9 @@ async function copyAssetToDocuments(asset: DocumentPicker.DocumentPickerAsset): 
 }
 
 export const filePickerService = {
-  async pickDocument(sagaId?: string, orderIndex = 0): Promise<Book | null> {
+  async pickDocument(): Promise<Book | null> {
     const result = await DocumentPicker.getDocumentAsync({
-      type: [...SUPPORTED_MIME_TYPES],
+      type: [...PICKER_MIME_TYPES],
       copyToCacheDirectory: true,
       multiple: false,
     });
@@ -64,19 +70,23 @@ export const filePickerService = {
     }
 
     const asset = result.assets[0];
+    const bookType = resolveBookType(asset.mimeType, safeDisplayFileName(asset.name));
+    if (!bookType) {
+      await FileSystem.deleteAsync(asset.uri, { idempotent: true }).catch(() => {});
+      throw new Error('Formato no soportado. Bardo abre PDF, EPUB, TXT, DOCX y cómics (CBZ, CBR, CB7, CBT).');
+    }
     const { documentId, documentName, destinationUri } = await copyAssetToDocuments(asset);
 
     const now = new Date().toISOString();
     const book: Book = {
       id: documentId,
-      sagaId: sagaId ?? null,
       name: documentName,
       title: null,
       author: null,
       coverUri: null,
-      orderIndex,
+      summary: null,
       uri: destinationUri,
-      type: asset.mimeType ?? 'application/pdf',
+      type: bookType,
       importedAt: now,
       lastOpenedAt: now,
       ...NEW_BOOK_DEFAULTS,

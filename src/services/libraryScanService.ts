@@ -4,10 +4,17 @@
  * El usuario autoriza carpetas via Storage Access Framework; en cada
  * escaneo se detectan archivos soportados nuevos y se agregan solos a la
  * biblioteca, sin copiarlos (se referencian in-place por content://).
- * Los PDF se materializan a copia local recién al abrirlos, porque el
- * extractor nativo necesita un file:// real.
+ * Los libros se abren donde están; solo si un proveedor no permite leerlos en
+ * el lugar se copian dentro de la app (ensureLocalPdfCopy).
+ *
+ * El listado de carpetas lo hace el módulo nativo en UNA consulta por carpeta
+ * (nombre, tamaño y tipo de cada entrada). Con expo-file-system eran dos o tres
+ * llamadas por archivo: escanear una carpeta grande tardaba segundos, y se hacía
+ * cada vez que se volvía al Inicio.
  */
 import * as FileSystem from 'expo-file-system/legacy';
+
+import { DocumentTreeEntry, getBardoArchiveModule, isBardoArchiveAvailable } from '../../modules/bardo-archive';
 
 import { getDatabase } from '../storage/database';
 import { bookRepository } from '../storage/bookRepository';
@@ -22,6 +29,11 @@ const SUPPORTED_EXTENSIONS: Record<string, string> = {
   '.epub': 'application/epub+zip',
   '.txt': 'text/plain',
   '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  // Cómics: el contenedor real (zip, rar, 7z, tar) se detecta al abrir.
+  '.cbz': 'application/x-comic',
+  '.cbr': 'application/x-comic',
+  '.cb7': 'application/x-comic',
+  '.cbt': 'application/x-comic',
 };
 
 const IGNORED_BOOKS_KEY = 'library.ignoredBookIds';
@@ -54,17 +66,32 @@ async function saveIgnoredBookIds(ids: Set<string>): Promise<void> {
   );
 }
 
+// La lista de ignorados se lee, se modifica y se guarda entera: dos borrados
+// casi juntos leían la misma copia y el segundo pisaba al primero (el libro
+// borrado reaparecía solo en el próximo escaneo). Se encadenan.
+let ignoredChain: Promise<unknown> = Promise.resolve();
+
+function serializeIgnored<T>(task: () => Promise<T>): Promise<T> {
+  const next = ignoredChain.then(task, task);
+  ignoredChain = next.catch(() => {});
+  return next;
+}
+
 export async function addIgnoredBook(bookId: string): Promise<void> {
-  const ids = await getIgnoredBookIds();
-  ids.add(bookId);
-  await saveIgnoredBookIds(ids);
+  await serializeIgnored(async () => {
+    const ids = await getIgnoredBookIds();
+    ids.add(bookId);
+    await saveIgnoredBookIds(ids);
+  });
 }
 
 export async function clearIgnoredBook(bookId: string): Promise<void> {
-  const ids = await getIgnoredBookIds();
-  if (ids.delete(bookId)) {
-    await saveIgnoredBookIds(ids);
-  }
+  await serializeIgnored(async () => {
+    const ids = await getIgnoredBookIds();
+    if (ids.delete(bookId)) {
+      await saveIgnoredBookIds(ids);
+    }
+  });
 }
 
 /**
@@ -76,10 +103,14 @@ export async function getIgnoredBooksCount(): Promise<number> {
 }
 
 export async function restoreIgnoredBooks(): Promise<number> {
-  const ids = await getIgnoredBookIds();
-  const count = ids.size;
-  if (count > 0) await saveIgnoredBookIds(new Set());
-  return count;
+  // También encolado: un borrado en vuelo escribiendo después del restore
+  // dejaba ese libro oculto igual.
+  return serializeIgnored(async () => {
+    const ids = await getIgnoredBookIds();
+    const count = ids.size;
+    if (count > 0) await saveIgnoredBookIds(new Set());
+    return count;
+  });
 }
 
 /** Pide al usuario que elija una carpeta. Devuelve su URI SAF o null. */
@@ -112,58 +143,118 @@ function getExtension(name: string): string {
  */
 const MAX_SCAN_DEPTH = 4;
 
+/** Entradas de una carpeta SAF: nativo si está, expo-file-system si no. */
+/** ¿El archivo sigue donde dice la fila? Ante la duda, se asume que sí. */
+async function uriExists(uri: string): Promise<boolean> {
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    return info.exists;
+  } catch {
+    return true;
+  }
+}
+
+async function listFolder(folderUri: string): Promise<DocumentTreeEntry[]> {
+  if (isBardoArchiveAvailable()) {
+    return getBardoArchiveModule().listDocumentTreeAsync(folderUri);
+  }
+  const uris = await StorageAccessFramework.readDirectoryAsync(folderUri);
+  const entries: DocumentTreeEntry[] = [];
+  for (const uri of uris) {
+    const info = await FileSystem.getInfoAsync(uri);
+    if (!info.exists) continue;
+    entries.push({
+      uri,
+      name: getDisplayNameFromSafUri(uri),
+      isDirectory: info.isDirectory,
+      size: 'size' in info && typeof info.size === 'number' ? info.size : null,
+    });
+  }
+  return entries;
+}
+
+let scanInFlight: Promise<number> | null = null;
+let scanInFlightKey = '';
+
 export async function scanLibraryFolders(folderUris: string[], excludedPaths: string[] = []): Promise<number> {
+  // Dos pantallas pidiendo EL MISMO escaneo a la vez comparten el mismo trabajo.
+  // Si las carpetas cambiaron (recién agregaste una), es otro pedido y se encola:
+  // antes devolvía el resultado del escaneo viejo y la carpeta nueva no aparecía.
+  const key = `${folderUris.join('|')}##${excludedPaths.join('|')}`;
+  if (scanInFlight && scanInFlightKey === key) return scanInFlight;
+  const previous = scanInFlight;
+  const run = (async () => {
+    if (previous) await previous.catch(() => {});
+    return runScan(folderUris, excludedPaths);
+  })();
+  scanInFlight = run;
+  scanInFlightKey = key;
+  void run.catch(() => {}).finally(() => {
+    if (scanInFlight === run) {
+      scanInFlight = null;
+      scanInFlightKey = '';
+    }
+  });
+  return run;
+}
+
+async function runScan(folderUris: string[], excludedPaths: string[]): Promise<number> {
   const ignoredIds = await getIgnoredBookIds();
+  // URIs ya conocidos, de una sola consulta: el escaneo solo mira lo nuevo.
+  const knownUris = new Set(await bookRepository.listBookUris());
   let added = 0;
 
   const scanFolder = async (folderUri: string, depth: number): Promise<void> => {
-    let entries: string[] = [];
+    let entries: DocumentTreeEntry[] = [];
     try {
-      entries = await StorageAccessFramework.readDirectoryAsync(folderUri);
-      console.log(`[scan] carpeta ${folderUri.slice(-30)} (nivel ${depth}): ${entries.length} entradas`);
+      entries = await listFolder(folderUri);
     } catch (error) {
       console.warn('[scan] no se pudo leer la carpeta:', error instanceof Error ? error.message : error);
       return; // permiso revocado / carpeta borrada
     }
 
-    for (const entryUri of entries) {
-      const displayName = getDisplayNameFromSafUri(entryUri);
+    for (const entry of entries) {
       try {
-        const info = await FileSystem.getInfoAsync(entryUri);
-        if (!info.exists) continue;
-
-        // Subcarpeta: recursar (con tope de profundidad) para descubrir libros
-        // adentro. Antes se salteaban y quedaban invisibles.
-        if (info.isDirectory) {
-          if (isFolderExcluded(entryUri, excludedPaths)) continue;
-          if (depth < MAX_SCAN_DEPTH) await scanFolder(entryUri, depth + 1);
+        if (entry.isDirectory) {
+          if (isFolderExcluded(entry.uri, excludedPaths)) continue;
+          if (depth < MAX_SCAN_DEPTH) await scanFolder(entry.uri, depth + 1);
           continue;
         }
 
-        const mimeType = SUPPORTED_EXTENSIONS[getExtension(displayName)];
+        const mimeType = SUPPORTED_EXTENSIONS[getExtension(entry.name)];
         if (!mimeType) continue;
+        if (knownUris.has(entry.uri)) continue;
 
-        // Barato: si este URI ya está en la biblioteca, no hay nada que hacer.
-        if (await bookRepository.getBookByUri(entryUri)) continue;
-
-        const fileSize = 'size' in info ? info.size : undefined;
-        const id = await createBookFingerprint(entryUri, fileSize, `${displayName}:${fileSize ?? 0}`);
+        const fileSize = entry.size ?? undefined;
+        const id = await createBookFingerprint(entry.uri, fileSize, `${entry.name}:${fileSize ?? 0}`);
 
         // Mismo contenido ya importado, o eliminado por el usuario: no duplicar.
         if (ignoredIds.has(id)) continue;
-        if (await bookRepository.getBookById(id)) continue;
+        const existing = await bookRepository.getBookById(id);
+        if (existing) {
+          // El mismo libro en otra carpeta o con otro nombre: si el archivo al
+          // que apuntaba YA NO ESTÁ, se movió y hay que corregir la ruta (si no,
+          // el libro no abre más). Si el viejo sigue existiendo, esto es una
+          // segunda copia: se deja como estaba, porque reapuntar en cada escaneo
+          // hacía que el libro fuera y viniera entre las dos rutas.
+          if (existing.uri !== entry.uri && !(await uriExists(existing.uri))) {
+            await bookRepository.saveBook({ ...existing, uri: entry.uri, name: entry.name });
+            knownUris.add(entry.uri);
+          }
+          continue;
+        }
 
         const now = new Date().toISOString();
         const book: Book = {
-          id, sagaId: null, name: displayName, title: null, author: null, coverUri: null,
-          orderIndex: 0, uri: entryUri, type: mimeType, importedAt: now, lastOpenedAt: now,
+          id, name: entry.name, title: null, author: null, coverUri: null, summary: null,
+          uri: entry.uri, type: mimeType, importedAt: now, lastOpenedAt: now,
           ...NEW_BOOK_DEFAULTS,
         };
         await bookRepository.saveBook(book);
+        knownUris.add(entry.uri);
         added += 1;
-        console.log(`[scan] agregado: ${displayName}`);
       } catch (error) {
-        console.warn(`[scan] fallo ${displayName}:`, error instanceof Error ? error.message : error);
+        console.warn(`[scan] fallo ${entry.name}:`, error instanceof Error ? error.message : error);
         continue; // un archivo/carpeta ilegible no frena el resto del escaneo
       }
     }
@@ -177,9 +268,9 @@ export async function scanLibraryFolders(folderUris: string[], excludedPaths: st
 }
 
 /**
- * El extractor PDF nativo necesita un archivo local (file://).
- * Para libros descubiertos por escaneo (content://) se crea una copia
- * dentro de la app la primera vez que se abren, y se reutiliza después.
+ * Plan B para un content:// que no se puede leer en el lugar (un proveedor en la
+ * nube que entrega el archivo por un pipe, sin seek): se copia adentro de la app.
+ * Lo normal es abrir el archivo donde está, sin copiar nada.
  */
 export async function ensureLocalPdfCopy(bookId: string, sourceUri: string): Promise<string> {
   if (!FileSystem.documentDirectory) {

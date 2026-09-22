@@ -1,11 +1,14 @@
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 
-import { ThemeColors } from '../utils/theme';
+import { ThemeColors, radius } from '../utils/theme';
+import { Icon, IconName, Sheet } from './ui';
 
 type Option = {
   value: string;
   label: string;
   description?: string;
+  icon?: IconName;
+  danger?: boolean;
 };
 
 type OptionPickerModalProps = {
@@ -18,6 +21,7 @@ type OptionPickerModalProps = {
   onSelect: (value: string) => void;
 };
 
+/** Hoja con una lista de opciones (una por fila); la elegida se marca. */
 export function OptionPickerModal({
   title,
   visible,
@@ -28,131 +32,65 @@ export function OptionPickerModal({
   onSelect,
 }: OptionPickerModalProps) {
   return (
-    <Modal visible={visible} animationType="slide" transparent onRequestClose={onClose}>
-      <View style={[styles.overlay, { backgroundColor: colors.scrim }]}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-
-        <View
-          style={[
-            styles.sheet,
-            {
-              backgroundColor: colors.surface,
-              borderColor: colors.border,
-            },
-          ]}
-        >
-          <View style={styles.header}>
-            <Text style={[styles.title, { color: colors.text }]}>{title}</Text>
-            <Pressable onPress={onClose}>
-              <Text style={[styles.closeLabel, { color: colors.primary }]}>Cerrar</Text>
+    <Sheet visible={visible} onClose={onClose} colors={colors} title={title}>
+      <View style={[styles.list, { borderColor: colors.border, backgroundColor: colors.surface }]}>
+        {options.map((option, index) => {
+          const isSelected = option.value === selectedValue;
+          const tint = option.danger ? colors.danger : isSelected ? colors.primary : colors.text;
+          return (
+            <Pressable
+              key={option.value}
+              onPress={() => onSelect(option.value)}
+              accessibilityRole="button"
+              accessibilityState={{ selected: isSelected }}
+              style={({ pressed }) => [
+                styles.option,
+                index < options.length - 1 ? { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border } : null,
+                { backgroundColor: isSelected ? colors.accent : pressed ? colors.surfaceMuted : 'transparent' },
+              ]}
+            >
+              {option.icon ? (
+                <View style={[styles.optionIcon, { backgroundColor: option.danger ? colors.warmSoft : colors.accent }]}>
+                  <Icon name={option.icon} size={19} color={option.danger ? colors.danger : colors.primary} />
+                </View>
+              ) : null}
+              <View style={styles.optionText}>
+                <Text style={[styles.optionLabel, { color: tint }]}>{option.label}</Text>
+                {option.description ? (
+                  <Text style={[styles.optionDescription, { color: colors.textMuted }]}>{option.description}</Text>
+                ) : null}
+              </View>
+              {isSelected ? <Icon name="checkmark-circle" size={22} color={colors.primary} /> : null}
             </Pressable>
-          </View>
-
-          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.listContent}>
-            {options.map((option) => {
-              const isSelected = option.value === selectedValue;
-
-              return (
-                <Pressable
-                  key={option.value}
-                  onPress={() => onSelect(option.value)}
-                  style={[
-                    styles.option,
-                    {
-                      backgroundColor: isSelected ? colors.accent : colors.surfaceMuted,
-                      borderColor: isSelected ? colors.primary : colors.border,
-                    },
-                  ]}
-                >
-                  <View style={styles.optionHeader}>
-                    <Text style={[styles.optionLabel, { color: colors.text }]}>{option.label}</Text>
-                    {isSelected ? (
-                      <View
-                        style={[
-                          styles.selectionBadge,
-                          {
-                            backgroundColor: colors.primary,
-                          },
-                        ]}
-                      >
-                        <Text style={[styles.selectionBadgeText, { color: colors.primaryText }]}>
-                          Actual
-                        </Text>
-                      </View>
-                    ) : null}
-                  </View>
-                  {option.description ? (
-                    <Text style={[styles.optionDescription, { color: colors.textMuted }]}>
-                      {option.description}
-                    </Text>
-                  ) : null}
-                </Pressable>
-              );
-            })}
-          </ScrollView>
-        </View>
+          );
+        })}
       </View>
-    </Modal>
+    </Sheet>
   );
 }
 
 const styles = StyleSheet.create({
-  overlay: {
-    flex: 1,
-    justifyContent: 'flex-end',
-  },
-  sheet: {
-    maxHeight: '72%',
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
+  list: {
     borderWidth: 1,
-    padding: 18,
-    gap: 16,
-  },
-  header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  title: {
-    fontSize: 18,
-    fontWeight: '700',
-  },
-  closeLabel: {
-    fontSize: 15,
-    fontWeight: '700',
-  },
-  listContent: {
-    gap: 10,
-    paddingBottom: 20,
+    borderRadius: radius.lg,
+    overflow: 'hidden',
   },
   option: {
-    borderWidth: 1,
-    borderRadius: 14,
-    padding: 14,
-    gap: 4,
-  },
-  optionHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
+    gap: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    minHeight: 54,
   },
+  optionIcon: { width: 36, height: 36, borderRadius: 11, alignItems: 'center', justifyContent: 'center' },
+  optionText: { flex: 1, gap: 2 },
   optionLabel: {
-    fontSize: 15,
+    fontSize: 15.5,
     fontWeight: '600',
   },
   optionDescription: {
     fontSize: 13,
     lineHeight: 18,
-  },
-  selectionBadge: {
-    borderRadius: 999,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-  },
-  selectionBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
   },
 });

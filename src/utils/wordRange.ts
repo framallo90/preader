@@ -3,7 +3,11 @@ export type WordRange = {
   end: number;
 } | null;
 
-const WORD_CHARACTER = /[A-Za-zÀ-ÖØ-öø-ÿ0-9'-]/;
+// Cualquier letra o número Unicode, más apóstrofo y guión. Antes era un rango
+// Latin-1 a mano: en un libro polaco o checo la palabra que suena se cortaba en
+// la primera letra fuera del rango ("Kraków" resaltaba sólo "Krak"), y en ruso
+// o griego no resaltaba nada.
+const WORD_CHARACTER = /[\p{L}\p{N}'-]/u;
 
 export function getWordRangeAt(text: string, charIndex: number): WordRange {
   if (!text) {

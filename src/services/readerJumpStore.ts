@@ -4,11 +4,14 @@
  * tener foco. Evita depender de cómo el router propaga parámetros entre
  * pantallas ya montadas.
  */
-let pending: { bookId: string; charIndex: number } | null = null;
+type PendingJump = { bookId: string; charIndex: number | null; listen: boolean };
+
+let pending: PendingJump | null = null;
 
 export const readerJumpStore = {
-  request(bookId: string, charIndex: number) {
-    pending = { bookId, charIndex };
+  /** Pide abrir el libro en una posición y, si se quiere, empezar a escuchar. */
+  request(bookId: string, charIndex: number | null, listen = false) {
+    pending = { bookId, charIndex, listen };
   },
 
   /** Devuelve el salto pendiente para ESTE libro y lo descarta. */
@@ -17,5 +20,17 @@ export const readerJumpStore = {
     const { charIndex } = pending;
     pending = null;
     return charIndex;
+  },
+
+  /**
+   * Igual que consume() pero devuelve también si hay que arrancar la voz.
+   * Lo usa el lector, que necesita las dos cosas de una sola lectura (consumir
+   * dos veces perdería la primera).
+   */
+  consumeRequest(bookId: string): { charIndex: number | null; listen: boolean } | null {
+    if (!pending || pending.bookId !== bookId) return null;
+    const { charIndex, listen } = pending;
+    pending = null;
+    return { charIndex, listen };
   },
 };

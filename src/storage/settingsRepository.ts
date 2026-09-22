@@ -1,5 +1,5 @@
 import { getDatabase } from './database';
-import { AppSettings, DEFAULT_SETTINGS } from '../types/storage';
+import { AppSettings, AUTO_SCROLL_SPEEDS, DEFAULT_SETTINGS, MAX_TEXT_MARGIN, MIN_TEXT_MARGIN } from '../types/storage';
 
 type SettingsRow = {
   key: string;
@@ -74,6 +74,55 @@ export const settingsRepository = {
         nextSettings.screenDim = Number.isFinite(parsed) ? Math.min(Math.max(parsed, 0), 0.8) : 0;
       }
 
+      if (row.key === 'fontFamily') {
+        const parsed = parseValue('fontFamily', row.value);
+        nextSettings.fontFamily = parsed === 'serif' ? 'serif' : 'sans';
+      }
+
+      if (row.key === 'lineHeight') {
+        const parsed = Number(parseValue('lineHeight', row.value));
+        nextSettings.lineHeight = Number.isFinite(parsed) ? Math.min(Math.max(parsed, 1.3), 2.0) : DEFAULT_SETTINGS.lineHeight;
+      }
+
+      if (row.key === 'justifyText') {
+        nextSettings.justifyText = parseValue('justifyText', row.value) === true;
+      }
+
+      if (row.key === 'pdfAsText') {
+        nextSettings.pdfAsText = parseValue('pdfAsText', row.value) === true;
+      }
+
+      if (row.key === 'tapEdgesTurnPage') {
+        nextSettings.tapEdgesTurnPage = parseValue('tapEdgesTurnPage', row.value) === true;
+      }
+
+      if (row.key === 'autoScrollSpeed') {
+        const parsed = parseValue('autoScrollSpeed', row.value);
+        if (typeof parsed === 'number' && AUTO_SCROLL_SPEEDS.includes(parsed)) {
+          nextSettings.autoScrollSpeed = parsed;
+        }
+      }
+
+      if (row.key === 'horizontalPages') {
+        nextSettings.horizontalPages = parseValue('horizontalPages', row.value) === true;
+      }
+
+      if (row.key === 'volumeKeysTurnPage') {
+        nextSettings.volumeKeysTurnPage = parseValue('volumeKeysTurnPage', row.value) === true;
+      }
+
+      if (row.key === 'textMargin') {
+        const parsed = parseValue('textMargin', row.value);
+        if (typeof parsed === 'number' && Number.isFinite(parsed)) {
+          nextSettings.textMargin = Math.min(Math.max(parsed, MIN_TEXT_MARGIN), MAX_TEXT_MARGIN);
+        }
+      }
+
+      if (row.key === 'librarySort') {
+        const parsed = parseValue('librarySort', row.value);
+        nextSettings.librarySort = ['recent', 'title', 'author'].includes(parsed) ? parsed : 'recent';
+      }
+
       if (row.key === 'libraryFolders') {
         const parsed = parseValue('libraryFolders', row.value);
         nextSettings.libraryFolders = Array.isArray(parsed)
@@ -86,7 +135,7 @@ export const settingsRepository = {
   },
 
   async saveSettings(patch: Partial<AppSettings>) {
-    const entries = Object.entries(patch) as Array<[AppSettingKey, AppSettings[AppSettingKey]]>;
+    const entries = Object.entries(patch) as [AppSettingKey, AppSettings[AppSettingKey]][];
 
     if (entries.length === 0) {
       return;

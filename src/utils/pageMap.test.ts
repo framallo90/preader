@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { charForPage, pageForChar } from './pageMap';
+import { charForPage, pageForChar, pageForProgress } from './pageMap';
 
 // Libro típico: tapa e índice sin texto (offsets repetidos en 0),
 // después páginas con contenido.
@@ -46,5 +46,34 @@ describe('charForPage', () => {
   it('clampa páginas fuera de rango', () => {
     expect(charForPage(-1, offsets, totalLength)).toBe(charForPage(0, offsets, totalLength));
     expect(charForPage(99, offsets, totalLength)).toBe(charForPage(6, offsets, totalLength));
+  });
+});
+
+describe('pageForProgress', () => {
+  // Páginas 1 a 3 sin texto (láminas): todas empiezan en el mismo offset que la 4.
+  const offsets = [0, 100, 100, 100, 100, 250];
+  const total = 400;
+
+  it('sin página conocida, decide el texto', () => {
+    expect(pageForProgress(50, null, offsets, total)).toBe(0);
+    expect(pageForProgress(100, null, offsets, total)).toBe(4);
+  });
+
+  it('entre páginas que empiezan en el mismo offset, manda la página conocida', () => {
+    expect(pageForProgress(100, 1, offsets, total)).toBe(1);
+    expect(pageForProgress(100, 3, offsets, total)).toBe(3);
+  });
+
+  it('una página conocida que no coincide con la posición se ignora', () => {
+    expect(pageForProgress(300, 1, offsets, total)).toBe(5);
+    expect(pageForProgress(50, 4, offsets, total)).toBe(0);
+    expect(pageForProgress(50, 99, offsets, total)).toBe(0);
+  });
+
+  it('un cómic (todas las páginas con su línea) respeta cada página', () => {
+    const comic = [0, 10, 20, 30];
+    for (let page = 0; page < comic.length; page++) {
+      expect(pageForProgress(comic[page] + 4, page, comic, 40)).toBe(page);
+    }
   });
 });

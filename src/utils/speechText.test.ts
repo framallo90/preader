@@ -37,6 +37,10 @@ describe('prepareSpeechText', () => {
     expect(prepareSpeechText(text)).toBe(text);
   });
 
+  it('une una línea corta cuando la siguiente empieza en minúscula (renglón cortado, no título)', () => {
+    expect(prepareSpeechText(['El aire olía', 'a pan recién hecho y a tierra mojada.'].join(NL))).toBe('El aire olía a pan recién hecho y a tierra mojada.');
+  });
+
   it('no toca un texto sin saltos de línea', () => {
     expect(prepareSpeechText('Una sola línea.')).toBe('Una sola línea.');
     expect(prepareSpeechText('')).toBe('');

@@ -21,3 +21,19 @@ describe('getWordRangeAt', () => {
     expect(getWordRangeAt('   ', 1)).toBeNull();
   });
 });
+
+describe('palabras fuera del alfabeto latino básico', () => {
+  it('no corta una palabra con letras del latín extendido', () => {
+    const texto = 'Vivía en Kraków desde chico.';
+    const inicio = texto.indexOf('Kraków');
+    const rango = getWordRangeAt(texto, inicio);
+    expect(texto.slice(rango!.start, rango!.end)).toBe('Kraków');
+  });
+
+  it('resalta también en cirílico y griego', () => {
+    const ruso = 'Он читал книгу вечером.';
+    const inicio = ruso.indexOf('книгу');
+    const rango = getWordRangeAt(ruso, inicio);
+    expect(ruso.slice(rango!.start, rango!.end)).toBe('книгу');
+  });
+});

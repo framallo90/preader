@@ -2,19 +2,34 @@ import { memo, useMemo } from 'react';
 import { Pressable, StyleSheet, Text } from 'react-native';
 
 import { TextBlock } from '../types/document';
+import { ReaderFontFamily } from '../types/storage';
 import { prepareSpeechText } from '../utils/speechText';
 import { ThemeColors } from '../utils/theme';
 import { WordRange } from '../utils/wordRange';
+
+/** Separación entre bloques: va como margen para que forme parte del alto de la celda. */
+export const BLOCK_GAP = 4;
+/** Padding vertical del bloque (arriba + abajo). */
+export const BLOCK_VERTICAL_PADDING = 12;
+/** Padding horizontal del bloque (izquierda + derecha). */
+export const BLOCK_HORIZONTAL_PADDING = 24;
 
 type ReaderBlockCardProps = {
   block: TextBlock;
   isActive: boolean;
   colors: ThemeColors;
   fontSize: number;
+  /** Tipografía del lector (sans o serif del sistema), interlineado y justificado. */
+  fontFamily?: ReaderFontFamily;
+  lineHeightScale?: number;
+  justify?: boolean;
   wordRange: WordRange;
-  onPress: () => void;
+  /** Estables (no cambian por render): reciben el bloque, así el memo de la tarjeta funciona. */
+  onPressBlock: (block: TextBlock) => void;
   /** Mantener apretado: guardar cita o nota de este párrafo. */
-  onLongPress?: () => void;
+  onLongPressBlock?: (block: TextBlock) => void;
+  /** Alto real de la celda una vez dibujada (para posicionar la lista con exactitud). */
+  onMeasured?: (index: number, height: number) => void;
 };
 
 /**
@@ -27,11 +42,15 @@ function ReaderBlockCardBase({
   isActive,
   colors,
   fontSize,
+  fontFamily = 'sans',
+  lineHeightScale = 1.68,
+  justify = false,
   wordRange,
-  onPress,
-  onLongPress,
+  onPressBlock,
+  onLongPressBlock,
+  onMeasured,
 }: ReaderBlockCardProps) {
-  const lineHeight = Math.round(fontSize * 1.68);
+  const lineHeight = Math.round(fontSize * lineHeightScale);
   // Un TXT o PDF trae los renglones cortados donde terminaba la línea impresa.
   // Se muestran unidos para que el párrafo fluya; el reemplazo es 1 a 1, así que
   // los índices de la palabra que suena siguen valiendo.
@@ -47,12 +66,19 @@ function ReaderBlockCardBase({
 
   return (
     <Pressable
-      onPress={onPress}
-      onLongPress={onLongPress}
+      onPress={() => onPressBlock(block)}
+      onLongPress={onLongPressBlock ? () => onLongPressBlock(block) : undefined}
+      onLayout={onMeasured ? (event) => onMeasured(block.index, event.nativeEvent.layout.height + BLOCK_GAP) : undefined}
       delayLongPress={350}
       style={[styles.block, isActive ? { backgroundColor: colors.readerAccent } : null]}
     >
-      <Text style={[styles.text, { color: colors.text, fontSize, lineHeight }]}>
+      <Text
+        style={[
+          styles.text,
+          { color: colors.text, fontSize, lineHeight, textAlign: justify ? 'justify' : 'left' },
+          fontFamily === 'serif' ? styles.serif : null,
+        ]}
+      >
         {activeWord ? (
           <>
             {activeWord.before}
@@ -85,6 +111,9 @@ export const ReaderBlockCard = memo(
     prev.block === next.block &&
     prev.isActive === next.isActive &&
     prev.fontSize === next.fontSize &&
+    prev.fontFamily === next.fontFamily &&
+    prev.lineHeightScale === next.lineHeightScale &&
+    prev.justify === next.justify &&
     prev.colors === next.colors &&
     prev.wordRange === next.wordRange,
 );
@@ -94,9 +123,14 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 6,
+    marginBottom: BLOCK_GAP,
   },
   text: {
     fontWeight: '400',
+  },
+  // 'serif' es la familia con serifas del sistema (Noto Serif en Android).
+  serif: {
+    fontFamily: 'serif',
   },
   activeWord: {
     borderRadius: 6,

@@ -12,7 +12,7 @@ export function getDisplayTitle(book: Pick<Book, 'title' | 'name'>): string {
 
 export function cleanFileName(name: string): string {
   const withoutFolder = name.includes('/') ? name.slice(name.lastIndexOf('/') + 1) : name;
-  return withoutFolder.replace(/\.(pdf|epub|txt|docx)$/i, '').trim() || withoutFolder;
+  return withoutFolder.replace(/\.(pdf|epub|txt|docx|cbz|cbr|cb7|cbt|zip|rar|7z|tar)$/i, '').trim() || withoutFolder;
 }
 
 /**

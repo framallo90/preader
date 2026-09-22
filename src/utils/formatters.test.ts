@@ -30,6 +30,9 @@ describe('formatShortDate', () => {
 
 describe('getDocumentTypeLabel', () => {
   it('pdf', () => expect(getDocumentTypeLabel('application/pdf')).toBe('PDF'));
-  it('otro mime', () => expect(getDocumentTypeLabel('application/epub+zip')).toBe('EPUB+ZIP'));
+  it('otro mime', () => expect(getDocumentTypeLabel('application/epub+zip')).toBe('EPUB'));
+  it('cómic', () => expect(getDocumentTypeLabel('application/x-comic')).toBe('CÓMIC'));
+  it('txt', () => expect(getDocumentTypeLabel('text/plain')).toBe('TXT'));
+  it('docx', () => expect(getDocumentTypeLabel('application/vnd.openxmlformats-officedocument.wordprocessingml.document')).toBe('DOCX'));
   it('null → genérico', () => expect(getDocumentTypeLabel(null)).toBe('Archivo'));
 });

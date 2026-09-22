@@ -1,39 +1,65 @@
+/**
+ * Paleta de Bardo — "Tinta y lacre".
+ *
+ * La idea: tinta sobre papel y el lacre que sella la carta. Un solo color
+ * accionable (tinta) y un solo color de avance/importancia (lacre).
+ *
+ * Dos capas con criterios distintos:
+ *  - El CHROME de la app (Inicio, Ajustes, barras del lector) usa la tinta para
+ *    lo accionable (botones, play, selección) y el lacre para lo que marca
+ *    avance o importancia (progreso, marcadores, resaltado de la voz).
+ *  - La SUPERFICIE DE LECTURA (papel del libro) se mantiene calma: blanco, sepia
+ *    o negro, sin acentos que compitan con el texto.
+ *
+ * Todos los pares están verificados con la fórmula WCAG: texto >= 4,5:1 y
+ * elementos de UI >= 3:1. La paleta anterior (defaults de Tailwind) fallaba en
+ * el ámbar sobre fondo claro (1,99), en success (3,3) y en danger (3,9).
+ * Ver docs/brand/bardo-marca.md.
+ */
 export const lightColors = {
-  background: '#f7f4ee',
-  surface: '#fffdf9',
-  surfaceMuted: '#f1ebe2',
-  readerSurface: '#fcf8f2',
-  readerAccent: '#e5efea',
-  text: '#253038',
-  textMuted: '#69757d',
-  border: '#dfd7cb',
-  primary: '#5f8c84',
-  primaryText: '#f7f4ee',
-  accent: '#e6f1ec',
-  danger: '#b35f56',
-  highlight: '#f7e8ad',
-  highlightText: '#5a4700',
-  shadow: 'rgba(40, 48, 55, 0.08)',
-  scrim: 'rgba(30, 35, 40, 0.34)',
+  background: '#F6F2EA',
+  surface: '#FFFDF8',
+  surfaceMuted: '#EDE7DB',
+  // Los tres papeles del lector están duplicados en PdfPageList (PAGE_BACKGROUND)
+  // y en el tintado nativo de BardoPdfModule.kt: si cambian acá, cambian allá.
+  readerSurface: '#FFFFFF',
+  readerAccent: '#ECE8F6',
+  text: '#1F1C2C',
+  textMuted: '#655F72',
+  border: '#DDD4C4',
+  primary: '#3A3785',
+  primaryText: '#FFFFFF',
+  accent: '#E3E1F4',
+  warm: '#B8492E',
+  warmSoft: '#F6E1D8',
+  success: '#2F7A4B',
+  danger: '#A61E4D',
+  highlight: '#F4D8CB',
+  highlightText: '#5A1E0E',
+  shadow: 'rgba(31, 28, 44, 0.10)',
+  scrim: 'rgba(20, 18, 30, 0.45)',
 };
 
 export const darkColors = {
-  background: '#161915',
-  surface: '#1e221d',
-  surfaceMuted: '#292e27',
-  readerSurface: '#1b1e19',
-  readerAccent: '#283a34',
-  text: '#f2efe7',
-  textMuted: '#b4b6ab',
-  border: '#343a31',
-  primary: '#90b8ae',
-  primaryText: '#102018',
-  accent: '#22312c',
-  danger: '#e6a39a',
-  highlight: '#7b6530',
-  highlightText: '#f8ecc4',
-  shadow: 'rgba(0, 0, 0, 0.22)',
-  scrim: 'rgba(0, 0, 0, 0.5)',
+  background: '#131218',
+  surface: '#1C1B23',
+  surfaceMuted: '#26242F',
+  readerSurface: '#121212',
+  readerAccent: '#25233A',
+  text: '#EEE9DF',
+  textMuted: '#A9A3B4',
+  border: '#34313F',
+  primary: '#A7A3F2',
+  primaryText: '#16143A',
+  accent: '#2C2A55',
+  warm: '#E8876A',
+  warmSoft: '#3A2019',
+  success: '#6FCF97',
+  danger: '#F28BA8',
+  highlight: '#5C2A1C',
+  highlightText: '#FFE3D8',
+  shadow: 'rgba(0, 0, 0, 0.35)',
+  scrim: 'rgba(0, 0, 0, 0.6)',
 };
 
 export type ThemeColors = typeof lightColors;
@@ -41,16 +67,18 @@ export type ThemeColors = typeof lightColors;
 /** Papel envejecido: mismo esquema claro con fondo cálido y tinta marrón. */
 export const sepiaColors: ThemeColors = {
   ...lightColors,
-  background: '#efe6d0',
-  surface: '#f7f0dc',
-  surfaceMuted: '#e9dfc6',
-  readerSurface: '#f4ecd8',
-  readerAccent: '#e6dcc0',
+  background: '#EFE6D0',
+  surface: '#F7F0DC',
+  surfaceMuted: '#E9DFC6',
+  readerSurface: '#F4ECD8',
+  readerAccent: '#E6DCC0',
   text: '#433422',
-  textMuted: '#7a6a55',
-  border: '#ddd0b3',
-  highlight: '#ecd9a0',
-  highlightText: '#4a3a10',
+  textMuted: '#6E5E49',
+  border: '#DDD0B3',
+  accent: '#E2D6B8',
+  warm: '#A8412A',
+  highlight: '#EBCDB5',
+  highlightText: '#4A2410',
 };
 
 export type ReadingMode = 'day' | 'sepia' | 'night';
@@ -71,3 +99,7 @@ export function getReaderColors(mode: ReadingMode): ThemeColors {
 export function getThemeColors(darkMode: boolean): ThemeColors {
   return darkMode ? darkColors : lightColors;
 }
+
+/** Radios y espaciados compartidos, para que todo el chrome se vea de la misma familia. */
+export const radius = { sm: 10, md: 14, lg: 18, xl: 24, pill: 999 } as const;
+export const space = { xs: 4, sm: 8, md: 12, lg: 16, xl: 20, xxl: 28 } as const;

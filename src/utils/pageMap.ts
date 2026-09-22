@@ -29,3 +29,23 @@ export function charForPage(page: number, pageOffsets: number[], totalLength: nu
   const end = safePage + 1 < pageOffsets.length ? pageOffsets[safePage + 1] : totalLength;
   return Math.min(totalLength, Math.floor((start + Math.max(end, start)) / 2));
 }
+
+/**
+ * Página de una posición guardada. Varias páginas pueden empezar en el MISMO offset
+ * (láminas, páginas en blanco, un cómic entero): ahí el texto solo no alcanza para
+ * saber en cuál se estaba, y pageForChar devuelve siempre la última. Si se conoce
+ * la página (`knownPage`) y es compatible con el offset, manda la página.
+ */
+export function pageForProgress(
+  absoluteChar: number,
+  knownPage: number | null,
+  pageOffsets: number[],
+  totalLength: number,
+): number {
+  if (knownPage !== null && knownPage >= 0 && knownPage < pageOffsets.length) {
+    const start = pageOffsets[knownPage];
+    const end = knownPage + 1 < pageOffsets.length ? pageOffsets[knownPage + 1] : totalLength;
+    if (absoluteChar >= start && absoluteChar <= Math.max(end, start)) return knownPage;
+  }
+  return pageForChar(absoluteChar, pageOffsets);
+}

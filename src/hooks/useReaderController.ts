@@ -4,12 +4,16 @@ import { documentAudioPlaybackService } from '../services/documentAudioPlaybackS
 import { ParsedDocument } from '../types/document';
 import { getAbsoluteCharIndex, getPositionFromAbsoluteChar } from '../utils/documentProgress';
 import { clamp } from '../utils/math';
+import { progressFootprint } from '../utils/progressRemap';
 import { WordRange, getWordRangeAt } from '../utils/wordRange';
 
 type ProgressSnapshot = {
   blockIndex: number;
   charIndex: number;
   percentage: number;
+  absoluteCharIndex: number;
+  page: number | null;
+  textLength: number;
 };
 
 type UseReaderControllerParams = {
@@ -92,7 +96,15 @@ export function useReaderController({
     onErrorRef.current?.(message);
   }, []);
 
-  const persistAbsoluteChar = useCallback(async (absoluteCharIndex: number, force = false) => {
+  /**
+   * Mueve la posición y, si toca, la guarda.
+   *
+   * `skipPersist` es para los avisos que llegan del reproductor MIENTRAS suena:
+   * ahí el servicio de audio ya guarda por su cuenta, y sin esto la misma
+   * posición se escribía dos veces por segundo durante toda la escucha (una
+   * saga son horas). La pantalla igual se actualiza.
+   */
+  const persistAbsoluteChar = useCallback(async (absoluteCharIndex: number, force = false, skipPersist = false) => {
     const activeDocument = documentRef.current;
     // Sin documento (primer render, antes de que cargue) NO persistimos: si no,
     // getPositionFromAbsoluteChar(null) devuelve 0/0/0 y pisaría el progreso
@@ -106,14 +118,22 @@ export function useReaderController({
 
     setCurrentBlockIndex(nextPosition.blockIndex);
     setCurrentCharIndex(nextPosition.charIndex);
-    setProgressPercentage(nextPosition.percentage);
-
-    const activeBlock = activeDocument?.blocks[nextPosition.blockIndex];
-    setCurrentWordRange(
-      activeBlock ? getWordRangeAt(activeBlock.text, nextPosition.charIndex) : null,
+    // Redondeado: con dos decimales cambiaba en cada aviso del reproductor
+    // (cuatro por segundo) y volvía a dibujar la pantalla entera del lector
+    // por un número que se muestra sin decimales.
+    setProgressPercentage((previous) =>
+      Math.round(previous * 10) === Math.round(nextPosition.percentage * 10) ? previous : nextPosition.percentage,
     );
 
-    const shouldPersist = force || Date.now() - lastPersistedAtRef.current > 700;
+    const activeBlock = activeDocument?.blocks[nextPosition.blockIndex];
+    const nextWordRange = activeBlock ? getWordRangeAt(activeBlock.text, nextPosition.charIndex) : null;
+    // Mientras la voz lee una palabra larga hay varios avisos con el MISMO
+    // rango; devolver un objeto nuevo cada vez redibujaba el lector igual.
+    setCurrentWordRange((previous) =>
+      previous?.start === nextWordRange?.start && previous?.end === nextWordRange?.end ? previous : nextWordRange,
+    );
+
+    const shouldPersist = !skipPersist && (force || Date.now() - lastPersistedAtRef.current > 700);
 
     if (shouldPersist) {
       lastPersistedAtRef.current = Date.now();
@@ -121,6 +141,8 @@ export function useReaderController({
         blockIndex: nextPosition.blockIndex,
         charIndex: nextPosition.charIndex,
         percentage: nextPosition.percentage,
+        absoluteCharIndex: nextPosition.absoluteCharIndex,
+        ...progressFootprint(activeDocument, nextPosition.absoluteCharIndex),
       });
     }
   }, []);
@@ -197,6 +219,12 @@ export function useReaderController({
         return;
       }
 
+      // Sin tramo activo (grilla rehecha, otro libro) el rango llega en 0-0 y
+      // esto guardaría el principio del libro encima del progreso real.
+      if (snapshot.chunkCount === 0 || snapshot.chunkEndChar <= snapshot.chunkStartChar) {
+        return;
+      }
+
       if (snapshot.didJustFinish) {
         void persistAbsoluteChar(activeDocument.fullText.length, true);
         return;
@@ -209,7 +237,8 @@ export function useReaderController({
         activeDocument.fullText.length,
       );
 
-      void persistAbsoluteChar(absoluteCharIndex, !snapshot.isPlaying);
+      // Sonando manda el servicio de audio, que ya escribe él mismo.
+      void persistAbsoluteChar(absoluteCharIndex, !snapshot.isPlaying, snapshot.isPlaying);
     });
   }, [persistAbsoluteChar]);
 

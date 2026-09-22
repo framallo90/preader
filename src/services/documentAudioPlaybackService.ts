@@ -8,10 +8,12 @@ import {
 import { bookProgressRepository } from '../storage/bookProgressRepository';
 import { ParsedDocument } from '../types/document';
 import { getAbsoluteCharIndex, getPositionFromAbsoluteChar } from '../utils/documentProgress';
+import { pagePercentage, progressFootprint } from '../utils/progressRemap';
 import { detectLanguage } from '../utils/languageDetect';
 import { clamp } from '../utils/math';
 import { prepareSpeechText } from '../utils/speechText';
-import { SynthesisChunk, buildSynthesisChunks } from '../utils/synthesisSegments';
+import { SynthesisChunk, buildAnchoredChunks, buildSentenceSpans, chunkIndexForChar } from '../utils/synthesisSegments';
+import { Span } from '../utils/textSpans';
 import { resolveVoice } from '../utils/voices';
 import { audioSessionService } from './audioSessionService';
 import { cancelPendingSynthesis, listVoices, synthesizeSpeech } from './systemTtsService';
@@ -64,10 +66,11 @@ function getChunkLength(chunk: SynthesisChunk | null) {
 }
 
 function buildChunkId(documentId: string, chunk: SynthesisChunk, voiceId: string | null) {
-  // Incluye el rango de caracteres del tramo: si cambia el chunking (tamaño de
-  // tramo), la clave cambia y no se reutiliza un WAV viejo por un tramo distinto.
+  // La clave es el RANGO de texto (no el número de tramo): la grilla de tramos se
+  // ancla donde se empieza a escuchar, así que el mismo trozo de texto puede ser
+  // el tramo 3 hoy y el 7 mañana, y el audio ya sintetizado tiene que servir igual.
   const len = chunk.endChar - chunk.startChar;
-  return `${documentId}--chunk-${chunk.index}-${chunk.startChar}-${len}--${voiceId ?? 'default'}`;
+  return `${documentId}--chunk-${chunk.startChar}-${len}--${voiceId ?? 'default'}`;
 }
 
 class DocumentAudioPlaybackService {
@@ -76,15 +79,19 @@ class DocumentAudioPlaybackService {
   private listeners = new Set<PlaybackListener>();
   private snapshot: PlaybackSnapshot = DEFAULT_SNAPSHOT;
   private playbackSessionId = 0;
+  // Sube en cada pausa. El avance al tramo siguiente lo mira justo antes de
+  // sonar: sin esto, pausar durante el hueco entre tramos (notificación o
+  // pantalla bloqueada) no se notaba y la voz arrancaba sola al terminar.
+  private pauseGeneration = 0;
   private activeSourceKey: string | null = null;
   private activeDocument: ParsedDocument | null = null;
   private activeChunks: SynthesisChunk[] = [];
-  // Cache de tramos por documento: buildSynthesisChunks es determinista pero
-  // caro (recorre los 2.5M chars). Sin esto se recalculaba en CADA avance de
-  // tramo, causando un hitch audible en cada frontera.
-  private chunksCacheDocId: string | null = null;
-  private chunksCacheLen = -1;
-  private chunksCache: SynthesisChunk[] = [];
+  // Oraciones del documento activo: lo único caro (recorrer el texto entero) se
+  // hace una vez; los tramos se re-arman desde ellas en milisegundos cada vez que
+  // el usuario arranca a escuchar desde otro punto.
+  private sentencesDocId: string | null = null;
+  private sentencesLen = -1;
+  private sentences: Span[] = [];
   private activeChunkIndex = 0;
   private activePlaybackRate = 1;
   // Voz RESUELTA para el libro activo (según su idioma) y la elegida en Ajustes.
@@ -141,15 +148,41 @@ class DocumentAudioPlaybackService {
   private getChunkIndexForAbsoluteChar(absoluteCharIndex: number) {
     if (this.activeChunks.length === 0) return 0;
     const safe = clamp(absoluteCharIndex, 0, this.activeDocument?.fullText.length ?? 0);
-    for (let i = 0; i < this.activeChunks.length; i++) {
-      if (safe <= this.activeChunks[i].endChar) return i;
+    return Math.max(chunkIndexForChar(this.activeChunks, safe), 0);
+  }
+
+  /**
+   * Grilla de tramos anclada donde arranca la escucha: el primer tramo es corto
+   * para que suene enseguida. Se re-ancla solo cuando el usuario pide un punto
+   * fuera del tramo activo; el avance natural entre tramos conserva la grilla.
+   */
+  private ensureChunksFor(document: ParsedDocument, absoluteCharIndex: number, reanchor: boolean) {
+    if (this.sentencesDocId !== document.id || this.sentencesLen !== document.fullText.length) {
+      this.sentences = buildSentenceSpans(document.fullText);
+      this.sentencesDocId = document.id;
+      this.sentencesLen = document.fullText.length;
+      // El índice apunta a la grilla vieja: sin resetearlo queda fuera de rango
+      // y lo que se publica (tramo actual, si es el último) pasa a ser mentira.
+      this.activeChunks = [];
+      this.activeChunkIndex = 0;
     }
-    return Math.max(this.activeChunks.length - 1, 0);
+    if (this.activeChunks.length === 0) {
+      this.activeChunks = buildAnchoredChunks(document.fullText, this.sentences, absoluteCharIndex);
+      return;
+    }
+    if (!reanchor) return;
+    const current = this.activeChunks[this.activeChunkIndex];
+    const insideCurrent = current && absoluteCharIndex >= current.startChar && absoluteCharIndex <= current.endChar;
+    if (!insideCurrent) {
+      this.activeChunks = buildAnchoredChunks(document.fullText, this.sentences, absoluteCharIndex);
+    }
   }
 
   private handlePlayerStatus = (status: AudioStatus) => {
     const activeChunk = this.getActiveChunk();
-    const isLastChunk = this.activeChunkIndex >= this.activeChunks.length - 1;
+    // Sin tramo activo no se sabe dónde está la lectura: "terminó el último"
+    // con la grilla vacía daba true (0 >= -1) y marcaba el libro como leído.
+    const isLastChunk = Boolean(activeChunk) && this.activeChunkIndex >= this.activeChunks.length - 1;
     const didFinishDocument = Boolean(status.didJustFinish && isLastChunk);
 
     this.updateSnapshot({
@@ -172,7 +205,9 @@ class DocumentAudioPlaybackService {
     // no en cada tick de status mientras está pausado (escribiría SQLite cada 250 ms).
     const justPaused = this.lastObservedIsPlaying && !status.playing;
     this.lastObservedIsPlaying = status.playing;
-    void this.persistProgressFromStatus(status, status.didJustFinish || justPaused);
+    // Guardar corre cada 250 ms mientras suena: un SQLite ocupado no debe
+    // convertirse en una lluvia de rechazos sin atrapar.
+    void this.persistProgressFromStatus(status, status.didJustFinish || justPaused).catch(() => {});
 
     if (status.didJustFinish && !isLastChunk) {
       // Marca el hueco entre tramos como "preparando" YA: si no, por un instante
@@ -206,12 +241,14 @@ class DocumentAudioPlaybackService {
     this.lastPersistedAbsoluteCharIndex = absoluteCharIndex;
     this.lastPersistedAt = Date.now();
 
+    const footprint = progressFootprint(doc, pos.absoluteCharIndex);
     await bookProgressRepository.saveProgress({
       bookId: doc.id,
       chapterId: null, // chapterRepository.getChapterAtChar puede enriquecer esto async
       blockIndex: pos.blockIndex,
       charIndex: pos.charIndex,
-      percentage: pos.percentage,
+      ...footprint,
+      percentage: doc.pdf && footprint.page !== null ? pagePercentage(footprint.page, doc.pdf.pageCount) : pos.percentage,
     });
   }
 
@@ -326,15 +363,14 @@ class DocumentAudioPlaybackService {
     await audioSessionService.ensureReady();
     if (!this.isSessionActive(sessionId)) return null;
 
-    this.activeDocument = document;
-    // Invalida también por longitud del texto: si el server re-procesa el MISMO
-    // id con un fullText distinto, los offsets viejos cortarían mal el nuevo.
-    if (this.chunksCacheDocId !== document.id || this.chunksCacheLen !== document.fullText.length) {
-      this.chunksCache = buildSynthesisChunks(document.fullText);
-      this.chunksCacheDocId = document.id;
-      this.chunksCacheLen = document.fullText.length;
+    // Si el documento cambió (u otro texto con el mismo id: el provisorio de un
+    // PDF vs. el definitivo), las oraciones y los tramos se rehacen.
+    if (this.activeDocument?.id !== document.id) {
+      this.activeChunks = [];
+      this.activeChunkIndex = 0;
     }
-    this.activeChunks = this.chunksCache;
+    this.activeDocument = document;
+    this.ensureChunksFor(document, absoluteCharIndex, targetIndexOverride === undefined);
 
     if (this.activeChunks.length === 0) throw new Error('No se pudieron preparar tramos de audio.');
 
@@ -364,7 +400,9 @@ class DocumentAudioPlaybackService {
 
     if (!mp3Uri || !this.isSessionActive(sessionId)) return null;
 
-    const sourceKey = `${document.id}:${voiceId}:${targetChunk.index}`;
+    // Por rango, no por número de tramo: tras re-anclar la grilla, el tramo 3 puede
+    // ser otro texto y el player tiene que cargar el archivo nuevo.
+    const sourceKey = buildChunkId(document.id, targetChunk, voiceId);
 
     if (this.activeSourceKey !== sourceKey) {
       this.lastPersistedAt = 0;
@@ -375,6 +413,10 @@ class DocumentAudioPlaybackService {
       this.activeChunkIndex = targetIndex;
       await this.waitUntilLoaded(player, sessionId);
     } else if (!player.currentStatus.isLoaded) {
+      // El índice también acá: el mismo RANGO puede ser el tramo 2 ahora y el 5
+      // después de re-anclar la grilla. Si no se actualiza, el avance al tramo
+      // siguiente salta al equivocado.
+      this.activeChunkIndex = targetIndex;
       await this.waitUntilLoaded(player, sessionId);
     } else {
       this.activeChunkIndex = targetIndex;
@@ -424,6 +466,7 @@ class DocumentAudioPlaybackService {
     const metadata = this.activeMetadata;
     const sessionId = this.playbackSessionId;
     const expectedIndex = this.activeChunkIndex;
+    const pauseGeneration = this.pauseGeneration;
 
     const task = (async () => {
       if (!this.isSessionActive(sessionId) || this.activeChunkIndex !== expectedIndex) {
@@ -439,6 +482,12 @@ class DocumentAudioPlaybackService {
       this.player.setActiveForLockScreen(true, metadata ?? { title: doc.fileName, artist: 'Bardo' });
       await this.player.seekTo(0);
       if (!this.isSessionActive(sessionId)) return;
+      // Pausaste mientras se preparaba este tramo: queda cargado y en el punto
+      // justo, pero no suena hasta que toques play de nuevo.
+      if (this.pauseGeneration !== pauseGeneration) {
+        this.updateSnapshot({ isPlaying: false, isPreparing: false });
+        return;
+      }
       this.player.play();
     })();
 
@@ -465,7 +514,9 @@ class DocumentAudioPlaybackService {
     if (!chunk || !duration) return;
     const safe = clamp(absoluteCharIndex, chunk.startChar, chunk.endChar);
     const seconds = ((safe - chunk.startChar) / getChunkLength(chunk)) * duration;
-    await player.seekTo(seconds);
+    // Caer EXACTO en el final deja el player "terminado sin evento" y no suena
+    // nada (pasa al retomar un libro que se había escuchado hasta el final).
+    await player.seekTo(Math.min(seconds, Math.max(0, duration - 0.75)));
   }
 
   // ─── Public API ────────────────────────────────────────────────────────────
@@ -480,6 +531,7 @@ class DocumentAudioPlaybackService {
 
   async play(document: ParsedDocument, voiceId: string | null, rate: number, absoluteCharIndex: number, metadata?: AudioMetadata) {
     const sessionId = this.startPlaybackSession();
+    this.pauseGeneration += 1; // pedir sonido cancela cualquier pausa anterior
     this.activePlaybackRate = rate;
     this.activeMetadata = metadata;
     this.preferredVoiceId = voiceId;
@@ -511,9 +563,46 @@ class DocumentAudioPlaybackService {
     this.player.play();
   }
 
+  /**
+   * Deja listo el primer tramo desde una posición SIN reproducir nada: se llama al
+   * abrir el libro, así el play suena al instante. No toca la sesión activa: si
+   * hay algo sonando (este u otro libro) no hace nada.
+   */
+  async prewarm(document: ParsedDocument, voiceId: string | null, blockIndex: number, charIndex: number) {
+    if (this.snapshot.isPlaying || this.snapshot.isPreparing) return;
+    // Otro libro cargado (en pausa): no se le pisa el idioma ni la grilla.
+    if (this.activeDocument && this.activeDocument.id !== document.id) return;
+    try {
+      const absoluteCharIndex = getAbsoluteCharIndex(document, blockIndex, charIndex);
+      if (this.sentencesDocId !== document.id || this.sentencesLen !== document.fullText.length) {
+        this.sentences = buildSentenceSpans(document.fullText);
+        this.sentencesDocId = document.id;
+        this.sentencesLen = document.fullText.length;
+        this.activeChunks = [];
+        this.activeChunkIndex = 0;
+      }
+      // La misma grilla que va a usar play() desde acá: el tramo queda cacheado por rango.
+      const chunks = buildAnchoredChunks(document.fullText, this.sentences, absoluteCharIndex);
+      const index = chunkIndexForChar(chunks, absoluteCharIndex);
+      const chunk = chunks[index];
+      if (!chunk) return;
+      const resolved = await this.resolveVoiceFor(document, voiceId);
+      if (this.snapshot.isPlaying || this.snapshot.isPreparing) return;
+      this.activeLanguage = resolved.language;
+      await this.prepareChunk(document, chunk, resolved.voiceId, this.playbackSessionId, true);
+    } catch {
+      // Precalentar es opcional: si falla, play() lo sintetiza como siempre.
+    }
+  }
+
   async pause() {
-    if (!this.player) return;
+    this.pauseGeneration += 1; // corta un avance de tramo en vuelo
+    if (!this.player) {
+      this.updateSnapshot({ isPlaying: false, isPreparing: false });
+      return;
+    }
     this.player.pause();
+    this.updateSnapshot({ isPlaying: false });
     await this.persistProgressFromStatus(this.player.currentStatus, true);
   }
 
@@ -549,8 +638,8 @@ class DocumentAudioPlaybackService {
     this.preferredVoiceId = voiceId;
     const doc = this.activeDocument;
     if (!doc) return;
-    void this.resolveVoiceFor(doc, voiceId).then((resolved) => {
-      if (this.activeDocument !== doc || this.preferredVoiceId !== voiceId) return;
+    void this.resolveVoiceFor(doc, voiceId).catch(() => null).then((resolved) => {
+      if (!resolved || this.activeDocument !== doc || this.preferredVoiceId !== voiceId) return;
       this.activeVoiceId = resolved.voiceId;
       this.activeLanguage = resolved.language;
     });
@@ -584,6 +673,34 @@ class DocumentAudioPlaybackService {
       }
       // Último tramo: quedarse justo antes del final, sin caer al limbo.
       await this.player.seekTo(Math.max(0, duration - 0.75));
+      return;
+    }
+
+    // Retroceder más allá del principio del tramo: se carga el anterior y se sigue
+    // desde su final. Con tramos cortos (el primero dura ~10 s), sin esto "15 s
+    // atrás" solo reiniciaba el tramo actual.
+    if (deltaSeconds < 0 && target < 0 && this.activeChunkIndex > 0 && this.activeDocument && !this.advancingPromise) {
+      const doc = this.activeDocument;
+      const previous = this.activeChunks[this.activeChunkIndex - 1];
+      // La grilla pudo rehacerse (otro libro, texto re-extraído) mientras el
+      // índice seguía apuntando a la vieja: sin tramo anterior no hay nada que cargar.
+      if (!previous) {
+        await this.player.seekTo(0);
+        return;
+      }
+      const sessionId = this.playbackSessionId;
+      const wasPlaying = status.playing;
+      const remaining = -target; // segundos que faltan retroceder dentro del tramo anterior
+      this.updateSnapshot({ isPreparing: true });
+      try {
+        const loaded = await this.ensureChunkLoaded(doc, this.activeVoiceId, previous.startChar, sessionId, this.activeChunkIndex - 1);
+        if (!loaded || !this.isSessionActive(sessionId) || !this.player) return;
+        const previousDuration = this.player.currentStatus.duration || 0;
+        await this.player.seekTo(Math.max(0, previousDuration - remaining));
+        if (wasPlaying) this.player.play();
+      } finally {
+        if (this.isSessionActive(sessionId)) this.updateSnapshot({ isPreparing: false });
+      }
       return;
     }
 

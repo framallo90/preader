@@ -1,6 +1,6 @@
 # Bardo
 
-A personal book reader for Android. Open a PDF, EPUB, TXT or DOCX and read it or listen to it while you look at the real page of the document — the narration knows which page it is on and turns it for you. Everything happens on the phone: no server, no accounts, no API keys and no connection.
+A book reader and narrator for Android. Open a PDF, EPUB, TXT, DOCX or a comic (CBZ, CBR, CB7, CBT) and read it or listen to it while you look at the real page — the narration knows which page it is on and turns it for you. Everything happens on the phone: no server, no accounts, no API keys and no connection. Books open instantly, like ReadEra.
 
 *(Versión en español: [README.md](./README.md))*
 
@@ -29,7 +29,8 @@ A personal book reader for Android. Open a PDF, EPUB, TXT or DOCX and read it or
 | App | React Native + Expo SDK 55 + TypeScript |
 | Navigation | Expo Router (file-based) |
 | Database | SQLite via `expo-sqlite` |
-| PDF (render, text, outline, cover, crop) | Own native module `modules/bardo-pdf` — Android `PdfRenderer` + PDFBox |
+| PDF (render, text, outline, cover, crop) | Own native module `modules/bardo-pdf` — Android `PdfRenderer` + native Pdfium for text |
+| Comics (CBZ, CBR, CB7, CBT), EPUB (zip + HTML→text), SAF scanning and file fingerprints | Own native module `modules/bardo-archive` — `java.util.zip` + native 7-Zip (RAR 4/5, 7z, tar) + own HTML converter (`HtmlText.kt`) |
 | Voice | Own native module `modules/voice-synthesizer` — Android `TextToSpeech.synthesizeToFile` |
 | Playback | `expo-audio` (background + lock screen) |
 | EPUB / DOCX parsing | `jszip` / `mammoth` |

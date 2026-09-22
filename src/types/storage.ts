@@ -41,23 +41,13 @@ export type Collection = {
   bookCount: number;
 };
 
-// === Nuevos tipos: jerarquía Saga → Libro → Capítulo ===
-
-export type Saga = {
-  id: string;
-  name: string;
-  description: string | null;
-  createdAt: string;
-};
-
 export type Book = {
   id: string;                // fingerprint de contenido (bk_...)
-  sagaId: string | null;     // null si es libro suelto
   name: string;              // nombre de archivo (fallback de display)
   title: string | null;      // título real extraído de la metadata
   author: string | null;     // autor extraído de la metadata
   coverUri: string | null;   // portada extraída, archivo local
-  orderIndex: number;
+  summary: string | null;    // de qué va: del archivo, del texto, o escrita por vos
   uri: string;
   type: string;
   importedAt: string;
@@ -85,6 +75,14 @@ export type ReadingProgress = {
   blockIndex: number;
   charIndex: number;
   percentage: number;
+  /** Página (PDF, cómic) en la que quedó la lectura; null en libros de texto. */
+  page: number | null;
+  /**
+   * Largo del texto sobre el que se midieron blockIndex/charIndex. Si no coincide
+   * con el del documento abierto (texto todavía en preparación, libro re-procesado
+   * por una versión nueva) esos offsets no valen y manda la página.
+   */
+  textLength: number | null;
   updatedAt: string;
 };
 
@@ -105,9 +103,38 @@ export type AppSettings = {
   cropPdfMargins: boolean;
   /** Atenuación extra sobre el lector (0-0.8): brillo por debajo del mínimo del sistema. */
   screenDim: number;
+  /** Tipografía del modo texto. */
+  fontFamily: ReaderFontFamily;
+  /** Interlineado como múltiplo del tamaño de letra (1.3–2.0). */
+  lineHeight: number;
+  justifyText: boolean;
+  /** Leer los PDF con texto como texto corrido (reflow) en vez de por páginas. */
+  pdfAsText: boolean;
+  /** Tocar los bordes de la pantalla pasa de página (el centro sigue siendo pantalla completa). */
+  tapEdgesTurnPage: boolean;
+  /** Margen lateral del modo texto, en puntos (8–56). */
+  textMargin: number;
+  /** Velocidad del auto-scroll en puntos por segundo; 0 = apagado. */
+  autoScrollSpeed: number;
+  /** Pasar de página de costado (una por vez) en vez de scrollear en vertical. */
+  horizontalPages: boolean;
+  /** Los botones de volumen pasan de página mientras hay un libro abierto. */
+  volumeKeysTurnPage: boolean;
+  /** Orden de la biblioteca. */
+  librarySort: LibrarySort;
 };
 
 export type ReadingTheme = 'auto' | 'day' | 'sepia' | 'night';
+export type ReaderFontFamily = 'sans' | 'serif';
+export type LibrarySort = 'recent' | 'title' | 'author';
+
+/** Margen lateral del modo texto: de casi pegado al borde a una columna angosta. */
+/** Auto-scroll: de un renglón cada par de segundos a lectura rápida. */
+export const AUTO_SCROLL_SPEEDS = [0, 10, 20, 35, 60, 100];
+
+export const MIN_TEXT_MARGIN = 8;
+export const MAX_TEXT_MARGIN = 56;
+export const TEXT_MARGIN_STEP = 8;
 
 export const DEFAULT_SETTINGS: AppSettings = {
   darkMode: false,
@@ -121,4 +148,14 @@ export const DEFAULT_SETTINGS: AppSettings = {
   readingTheme: 'auto',
   cropPdfMargins: true,
   screenDim: 0,
+  fontFamily: 'sans',
+  lineHeight: 1.68,
+  justifyText: false,
+  pdfAsText: false,
+  tapEdgesTurnPage: true,
+  textMargin: 16,
+  autoScrollSpeed: 0,
+  horizontalPages: false,
+  volumeKeysTurnPage: false,
+  librarySort: 'recent',
 };

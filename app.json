@@ -2,15 +2,17 @@
   "expo": {
     "name": "Bardo",
     "slug": "pdf-voice-reader",
-    "scheme": "intelli-reader",
-    "version": "1.0.0",
+    "scheme": "bardo",
+    "version": "2.0.0",
     "orientation": "default",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
+    "backgroundColor": "#F6F2EA",
+    "primaryColor": "#3A3785",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#E6F4FE"
+      "backgroundColor": "#231F5C"
     },
     "assetBundlePatterns": [
       "**/*"
@@ -22,7 +24,7 @@
     "android": {
       "package": "com.personal.pdfvoicereader",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#231F5C",
         "foregroundImage": "./assets/android-icon-foreground.png",
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
@@ -43,7 +45,16 @@
           "enableBackgroundRecording": false
         }
       ],
-      "expo-asset"
+      "expo-asset",
+      [
+        "expo-font",
+        {
+          "fonts": [
+            "./assets/fonts/Lora-Bold.ttf"
+          ]
+        }
+      ],
+      "expo-image"
     ],
     "experiments": {
       "typedRoutes": false

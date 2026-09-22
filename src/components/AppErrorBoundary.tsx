@@ -2,6 +2,7 @@ import { Component, PropsWithChildren } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { runtimeStateRepository } from '../storage/runtimeStateRepository';
+import { lightColors } from '../utils/theme';
 
 type State = {
   hasError: boolean;
@@ -64,29 +65,29 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 24,
-    backgroundColor: '#f7f4ee',
+    backgroundColor: lightColors.background,
     gap: 14,
   },
   title: {
     fontSize: 22,
     fontWeight: '700',
-    color: '#253038',
+    color: lightColors.text,
     textAlign: 'center',
   },
   subtitle: {
     fontSize: 15,
     lineHeight: 22,
-    color: '#5a6870',
+    color: lightColors.textMuted,
     textAlign: 'center',
   },
   button: {
-    backgroundColor: '#6b9f98',
+    backgroundColor: lightColors.primary,
     borderRadius: 16,
     paddingHorizontal: 20,
     paddingVertical: 12,
   },
   buttonLabel: {
-    color: '#ffffff',
+    color: lightColors.primaryText,
     fontSize: 15,
     fontWeight: '700',
   },

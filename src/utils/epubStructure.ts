@@ -102,15 +102,23 @@ export function parseNcx(ncx: string, ncxDir: string): EpubTocEntry[] {
   let depth = 0;
   // Se recorren aperturas y cierres de navPoint para saber el nivel de anidado.
   const tokens = /<navPoint\b[^>]*>|<\/navPoint>/gi;
+  // `y` (sticky) + lastIndex: busca desde una posición sin copiar el texto.
+  const NEXT_MARKER = /<navPoint\b|<\/navPoint>/gi;
   let match: RegExpExecArray | null;
   while ((match = tokens.exec(ncx))) {
     if (match[0].startsWith('</')) {
       depth = Math.max(0, depth - 1);
       continue;
     }
-    const rest = ncx.slice(match.index + match[0].length);
-    const nextPoint = rest.search(/<navPoint\b|<\/navPoint>/i);
-    const own = nextPoint >= 0 ? rest.slice(0, nextPoint) : rest;
+    // Solo el trozo que va desde este navPoint hasta el siguiente marcador.
+    // Antes se copiaba TODO el resto del archivo en cada vuelta y se volvía a
+    // barrer: con un índice de 3.000 entradas eso es cuadrático, y en Hermes
+    // (donde cortar un string copia de verdad) son cientos de MB movidos.
+    const from = match.index + match[0].length;
+    NEXT_MARKER.lastIndex = from;
+    const nextMarker = NEXT_MARKER.exec(ncx);
+    const to = nextMarker ? nextMarker.index : ncx.length;
+    const own = ncx.slice(from, to);
     const title = /<text[^>]*>([\s\S]*?)<\/text>/i.exec(own)?.[1];
     const contentTag = /<content\b[^>]*>/i.exec(own)?.[0];
     const src = contentTag ? parseAttributes(contentTag).src : undefined;
@@ -191,6 +199,31 @@ export function htmlToText(html: string): string {
       .replace(/<\/div>/gi, '\n')
       .replace(/<[^>]+>/g, ''),
   ).trim();
+}
+
+/**
+ * Todas las anclas (id / name) de un archivo con su posición en el HTML, en una
+ * sola pasada. Buscar cada ancla por separado recorría el archivo entero una vez
+ * por entrada del índice.
+ */
+export function indexAnchors(html: string): Map<string, number> {
+  const anchors = new Map<string, number>();
+  for (const tag of html.matchAll(/<[a-zA-Z][^>]*>/g)) {
+    if (!/\b(?:id|name)\s*=/.test(tag[0])) continue;
+    const attrs = parseAttributes(tag[0]);
+    for (const key of [attrs.id, attrs.name]) {
+      if (key && !anchors.has(key)) anchors.set(key, tag.index ?? 0);
+    }
+  }
+  return anchors;
+}
+
+/** Expresión para encontrar el comienzo de un título en el texto, tolerando espacios y saltos. */
+export function titleProbe(title: string): RegExp | null {
+  const words = title.split(/\s+/).filter(Boolean).slice(0, 4);
+  if (words.length === 0) return null;
+  const escaped = words.map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+  return new RegExp(escaped.join('\\s+'), 'i');
 }
 
 /** Posición, dentro del HTML, del elemento con ese id (o name); -1 si no está. */

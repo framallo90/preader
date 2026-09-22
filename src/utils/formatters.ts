@@ -62,5 +62,21 @@ export function getDocumentTypeLabel(type: string | null) {
     return 'PDF';
   }
 
+  if (type.includes('comic')) {
+    return 'CÓMIC';
+  }
+
+  if (type.includes('epub')) {
+    return 'EPUB';
+  }
+
+  if (type === 'text/plain') {
+    return 'TXT';
+  }
+
+  if (type.includes('wordprocessingml') || type.includes('msword')) {
+    return 'DOCX';
+  }
+
   return type.split('/').pop()?.toUpperCase() ?? 'Archivo';
 }

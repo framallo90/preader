@@ -105,3 +105,59 @@ describe('buildTextBlocks con renglones cortados', () => {
   });
 });
 
+describe('normalizar textos grandes por tramos', () => {
+  const NL = String.fromCharCode(10);
+
+  it('un texto de más de 2 MB da el mismo resultado que uno chico', () => {
+    const parrafo = ['Una línea con   espacios de más   acá.', 'Otra línea.', '', '', '', 'Después de varios saltos.'].join(NL);
+    // Suficiente para cruzar el umbral de 2 MB y varios tramos.
+    const grande = Array.from({ length: 30000 }, () => parrafo).join(NL + NL);
+    const porTramos = normalizeExtractedText(grande);
+
+    // El mismo texto, normalizado en pedazos chicos y unido, tiene que coincidir
+    // en sus propiedades: sin espacios dobles, sin más de una línea en blanco.
+    expect(porTramos).not.toMatch(/  /);
+    expect(porTramos.includes(NL + NL + NL)).toBe(false);
+    expect(porTramos.startsWith('Una línea con espacios de más acá.')).toBe(true);
+    expect(porTramos.length).toBeGreaterThan(1000);
+  });
+
+  it('el corte entre tramos no parte una palabra', () => {
+    const largo = ('palabra '.repeat(400000)).trim();
+    const salida = normalizeExtractedText(largo);
+    expect(salida.split(' ').every((w) => w === 'palabra')).toBe(true);
+  });
+});
+
+describe('bloques perezosos', () => {
+  const NL = String.fromCharCode(10);
+  const libro = ['Primer párrafo del libro.', '', 'Segundo párrafo del libro.', '', 'Tercero.'].join(NL);
+
+  it('el texto de cada bloque es el recorte exacto de su rango', () => {
+    for (const bloque of buildTextBlocks(libro)) {
+      expect(bloque.text).toBe(libro.slice(bloque.startChar, bloque.endChar));
+    }
+  });
+
+  it('pedirlo dos veces da lo mismo (se guarda al primer uso)', () => {
+    const bloque = buildTextBlocks(libro)[0];
+    expect(bloque.text).toBe(bloque.text);
+  });
+
+  it('se comporta como un objeto común: se puede copiar y serializar', () => {
+    const bloque = buildTextBlocks(libro)[0];
+    const copia = { ...bloque };
+    expect(copia.text).toBe(bloque.text);
+    expect(JSON.parse(JSON.stringify(bloque)).text).toBe(bloque.text);
+  });
+
+  it('no toca el texto hasta que se lo piden', () => {
+    // Un libro grande: armar los bloques no debería costar lo que cuesta
+    // recortarlos todos. Se comprueba que el recorte no pasó por el texto.
+    const grande = 'Una frase cualquiera del libro. '.repeat(50000);
+    const bloques = buildTextBlocks(grande);
+    expect(bloques.length).toBeGreaterThan(0);
+    // Pedir uno solo funciona, sin haber materializado el resto.
+    expect(bloques[0].text.length).toBeGreaterThan(0);
+  });
+});

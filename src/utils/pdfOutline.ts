@@ -17,7 +17,7 @@ const MAX_LEVEL = 1;
  */
 export function chaptersFromToc(
   bookId: string,
-  toc: Array<{ title: string; startChar: number; level: number }> | null | undefined,
+  toc: { title: string; startChar: number; level: number }[] | null | undefined,
   textLength: number,
 ): ChapterInfo[] {
   if (!toc || toc.length === 0) return [];

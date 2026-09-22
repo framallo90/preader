@@ -1,0 +1,29 @@
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'expo.modules.bardoarchive'
+version = '1.0.0'
+
+android {
+  namespace "expo.modules.bardoarchive"
+  defaultConfig {
+    versionCode 1
+    versionName "1.0.0"
+  }
+  lintOptions {
+    abortOnError false
+  }
+}
+
+repositories {
+  maven { url 'https://www.jitpack.io' }
+}
+
+dependencies {
+  // 7-Zip nativo: RAR (4 y 5), 7z, TAR y el resto de los contenedores de cómics.
+  // Los ZIP en archivo local se leen con java.util.zip, sin pasar por acá.
+  implementation 'com.github.omicronapps:7-Zip-JBinding-4Android:Release-16.02-2.03'
+  testImplementation 'junit:junit:4.13.2'
+}

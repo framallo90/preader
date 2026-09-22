@@ -20,6 +20,8 @@ export type PdfExtraction = {
   outline: PdfOutlineItem[];
   title: string | null;
   author: string | null;
+  /** "Subject" del PDF: es donde los editores ponen la sinopsis. */
+  subject: string | null;
 };
 
 export type PdfExtractProgress = { uri: string; done: number; total: number };
@@ -39,6 +41,19 @@ declare class BardoPdfNativeModule extends NativeModule<BardoPdfEvents> {
     outputPath: string,
   ): Promise<string>;
   detectContentBoxAsync(uri: string): Promise<number[]>;
+  /**
+   * Dónde cae un texto dentro de una página, en coordenadas 0..1 (izquierda,
+   * arriba, derecha, abajo). `hint` es una pista de 0 a 1 de por dónde está:
+   * una misma palabra puede repetirse en la página y se elige la más cercana.
+   * Devuelve un rectángulo por renglón, o vacío si no lo encuentra.
+   */
+  pageTextRectsAsync(uri: string, pageIndex: number, needle: string, hint: number): Promise<number[][]>;
+  textAtPointAsync(
+    uri: string,
+    pageIndex: number,
+    x: number,
+    y: number,
+  ): Promise<{ text: string; charInPage: number } | null>;
   extractPagesAsync(uri: string): Promise<PdfExtraction>;
   closeAsync(): Promise<void>;
 }

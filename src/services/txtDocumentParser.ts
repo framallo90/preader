@@ -1,8 +1,8 @@
 import * as FileSystem from 'expo-file-system/legacy';
 
-import { DocumentParser, ParsedDocument } from '../types/document';
+import { ChapterInfo, DocumentParser, ParsedDocument } from '../types/document';
+import { buildAutoSummary } from '../utils/bookSummary';
 import { buildTextBlocks, normalizeExtractedText } from '../utils/textBlocks';
-import { detectChapters } from '../utils/chapterDetector';
 import { DocumentParseError, assertFileSizeWithinLimit } from './documentParser';
 
 class TxtDocumentParser implements DocumentParser {
@@ -31,7 +31,7 @@ class TxtDocumentParser implements DocumentParser {
 
     const fileName = uri.split('/').pop() ?? 'documento.txt';
     const documentId = fileName;
-    const chapters = detectChapters(documentId, fullText);
+    const chapters: ChapterInfo[] = []; // los resuelve el lector (resolveChapters)
 
     return {
       id: documentId,
@@ -40,6 +40,14 @@ class TxtDocumentParser implements DocumentParser {
       fullText,
       blocks,
       chapters,
+      // Un .txt no trae metadata: el resumen sale de sus primeras líneas.
+      metadata: {
+        title: null,
+        author: null,
+        summary: buildAutoSummary(fullText),
+        coverBase64: null,
+        coverExtension: null,
+      },
     };
   }
 }

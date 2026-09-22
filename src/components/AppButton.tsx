@@ -1,6 +1,8 @@
+import { Ionicons } from '@expo/vector-icons';
+import { ComponentProps } from 'react';
 import { StyleProp, StyleSheet, Text, TextStyle, ViewStyle, Pressable } from 'react-native';
 
-import { ThemeColors } from '../utils/theme';
+import { ThemeColors, radius } from '../utils/theme';
 
 type AppButtonProps = {
   label: string;
@@ -10,6 +12,8 @@ type AppButtonProps = {
   disabled?: boolean;
   compact?: boolean;
   fullWidth?: boolean;
+  /** Ícono a la izquierda del texto. */
+  icon?: ComponentProps<typeof Ionicons>['name'];
   style?: StyleProp<ViewStyle>;
   labelStyle?: StyleProp<TextStyle>;
 };
@@ -22,6 +26,7 @@ export function AppButton({
   disabled = false,
   compact = false,
   fullWidth = false,
+  icon,
   style,
   labelStyle,
 }: AppButtonProps) {
@@ -29,43 +34,35 @@ export function AppButton({
     variant === 'primary'
       ? colors.primary
       : variant === 'secondary'
-        ? colors.surfaceMuted
+        ? colors.accent
         : variant === 'danger'
           ? colors.danger
           : 'transparent';
-
-  const borderColor =
-    variant === 'primary'
-      ? colors.primary
-      : variant === 'ghost'
-        ? 'transparent'
-      : variant === 'danger'
-        ? colors.danger
-        : colors.border;
 
   const textColor =
     variant === 'primary' || variant === 'danger'
       ? colors.primaryText
       : variant === 'secondary'
-        ? colors.text
-        : colors.textMuted;
+        ? colors.primary
+        : colors.primary;
 
   return (
     <Pressable
       onPress={onPress}
       disabled={disabled}
+      accessibilityRole="button"
       style={({ pressed }) => [
         styles.button,
         fullWidth ? styles.fullWidth : null,
         compact ? styles.compactButton : styles.defaultButton,
         {
           backgroundColor,
-          borderColor,
-          opacity: disabled ? 0.5 : pressed ? 0.85 : 1,
+          opacity: disabled ? 0.45 : pressed ? 0.8 : 1,
         },
         style,
       ]}
     >
+      {icon ? <Ionicons name={icon} size={compact ? 17 : 19} color={textColor} /> : null}
       <Text
         style={[
           styles.label,
@@ -75,6 +72,7 @@ export function AppButton({
           },
           labelStyle,
         ]}
+        numberOfLines={1}
       >
         {label}
       </Text>
@@ -84,16 +82,17 @@ export function AppButton({
 
 const styles = StyleSheet.create({
   button: {
-    borderRadius: 14,
-    borderWidth: 1,
+    borderRadius: radius.md,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 8,
   },
   fullWidth: {
     width: '100%',
   },
   defaultButton: {
-    minHeight: 52,
+    minHeight: 50,
     paddingHorizontal: 18,
     paddingVertical: 12,
   },

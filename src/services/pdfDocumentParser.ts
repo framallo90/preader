@@ -1,9 +1,10 @@
 import * as FileSystem from 'expo-file-system/legacy';
 
-import { DocumentParser, ParsedDocument } from '../types/document';
+import { DocumentParser, ParsedDocument, PdfPageInfo } from '../types/document';
+import { buildAutoSummary, cleanMetadataSummary } from '../utils/bookSummary';
 import { buildTextBlocks, normalizeExtractedText } from '../utils/textBlocks';
-import { cleanPdfProse, cleanPdfTabArtifacts, detectChapters } from '../utils/chapterDetector';
-import { buildPagePlaceholders, joinPdfPages } from '../utils/pdfPages';
+import { cleanPdfProse, cleanPdfTabArtifacts } from '../utils/chapterDetector';
+import { buildPagePlaceholders, joinPdfPagesAsync } from '../utils/pdfPages';
 import { DocumentParseError } from './documentParser';
 import { detectPdfCrop, extractPdfPages, getPdfInfo, isLocalPdfAvailable } from './pdfLocalService';
 
@@ -23,6 +24,11 @@ function cleanPageText(raw: string) {
   return normalizeExtractedText(cleanPdfProse(cleanPdfTabArtifacts(raw)));
 }
 
+/** Cede el hilo de JS: el libro ya está en pantalla mientras se prepara el texto. */
+function pause(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 function toDocumentParseError(error: unknown) {
   if (error instanceof DocumentParseError) return error;
 
@@ -37,76 +43,133 @@ function toDocumentParseError(error: unknown) {
   return new DocumentParseError('parse_failed', message);
 }
 
-export type PdfParseProgress = (done: number, total: number) => void;
+function fileNameOf(uri: string) {
+  return uri.split('/').pop() ?? 'documento.pdf';
+}
+
+/** Documento de una línea por página: alcanza para leer, guardar progreso y marcar páginas. */
+function placeholderDocument(uri: string, pdf: Omit<PdfPageInfo, 'pageOffsets'>): ParsedDocument {
+  const { fullText, pageOffsets } = buildPagePlaceholders(pdf.pageCount);
+  const fileName = fileNameOf(uri);
+  return {
+    id: fileName,
+    fileName,
+    sourceUri: uri,
+    fullText,
+    blocks: buildTextBlocks(fullText),
+    chapters: [],
+    pdf: { ...pdf, pageOffsets },
+  };
+}
+
+/**
+ * Apertura instantánea: solo cuenta las páginas. El libro se empieza a leer ya;
+ * el texto (voz, búsqueda, índice) lo prepara después preparePdfText, de fondo.
+ * Así abre ReadEra: por página y a demanda, sin procesar el libro antes.
+ */
+export async function openPdfQuick(uri: string): Promise<ParsedDocument> {
+  if (!isLocalPdfAvailable()) {
+    throw new DocumentParseError('extractor_unavailable', 'La build actual no incluye el módulo PDF nativo.');
+  }
+  try {
+    const info = await getPdfInfo(uri);
+    if (info.pageCount <= 0) throw new DocumentParseError('empty_document', 'El PDF no tiene páginas.');
+    return placeholderDocument(uri, {
+      pageCount: info.pageCount,
+      pageAspect: info.pageAspect,
+      crop: null,
+      outline: [],
+      hasText: false,
+      textPending: true,
+    });
+  } catch (error) {
+    throw toDocumentParseError(error);
+  }
+}
+
+/** Versión final de un PDF sin texto utilizable (escaneo, o no se pudo extraer). */
+export function withoutText(quick: ParsedDocument, crop: PdfPageInfo['crop'] = null): ParsedDocument {
+  if (!quick.pdf) return quick;
+  return { ...quick, pdf: { ...quick.pdf, crop, hasText: false, textPending: false } };
+}
+
+/** Documento completo: texto de todas las páginas, mapa texto↔página, índice y recorte. */
+export async function buildPdfDocument(
+  uri: string,
+  onProgress?: (done: number, total: number) => void,
+): Promise<ParsedDocument> {
+  try {
+    const extraction = await extractPdfPages(uri, onProgress);
+    const joined = await joinPdfPagesAsync(extraction.pages, cleanPageText, pause);
+
+    if (joined.fullText.length > MAX_DOCUMENT_CHAR_COUNT) {
+      throw new DocumentParseError('document_too_large', 'El libro es demasiado grande para procesarlo en el teléfono.');
+    }
+
+    // Un escaneo no tiene texto, pero sus páginas se pueden leer igual: se abre
+    // en modo visual, sin voz.
+    const hasText = countExtractableCharacters(joined.fullText) >= 20;
+    if (!hasText && extraction.pages.length === 0) {
+      throw new DocumentParseError('empty_document', 'El PDF no tiene páginas.');
+    }
+    const { fullText, pageOffsets } = hasText ? joined : buildPagePlaceholders(extraction.pages.length);
+
+    await pause();
+    const blocks = buildTextBlocks(fullText);
+    if (blocks.length === 0) {
+      throw new DocumentParseError('empty_document', 'No se pudieron construir bloques legibles.');
+    }
+
+    // Proporción de página y recorte de márgenes: si fallan, el lector igual
+    // funciona (asume A4 y página completa).
+    await pause();
+    const info = await getPdfInfo(uri).catch(() => null);
+    const crop = await detectPdfCrop(uri).catch(() => null);
+
+    const fileName = fileNameOf(uri);
+    return {
+      id: fileName,
+      fileName,
+      sourceUri: uri,
+      fullText,
+      blocks,
+      // Los capítulos los resuelve quien llama (índice real o detección en el texto).
+      chapters: [],
+      pdf: {
+        pageCount: info?.pageCount ?? extraction.pages.length,
+        pageAspect: info?.pageAspect ?? null,
+        pageOffsets,
+        crop,
+        outline: Array.isArray(extraction.outline) ? extraction.outline : [],
+        hasText,
+      },
+      metadata: {
+        title: extraction.title,
+        author: extraction.author,
+        // El PDF declara su sinopsis en "Subject"; si no la trae, más abajo se
+        // arma una con las primeras líneas del libro.
+        summary: cleanMetadataSummary(extraction.subject) ?? (hasText ? buildAutoSummary(fullText) : null),
+        coverBase64: null,
+        coverExtension: null,
+      },
+    };
+  } catch (error) {
+    throw toDocumentParseError(error);
+  }
+}
 
 class PdfDocumentParser implements DocumentParser {
-  async parse(uri: string, onProgress?: PdfParseProgress): Promise<ParsedDocument> {
+  async parse(uri: string, onProgress?: (done: number, total: number) => void): Promise<ParsedDocument> {
     if (!isLocalPdfAvailable()) {
       throw new DocumentParseError('extractor_unavailable', 'La build actual no incluye el módulo PDF nativo.');
     }
-
     if (!uri.startsWith('content://')) {
       const fileInfo = await FileSystem.getInfoAsync(uri);
       if (!fileInfo.exists) {
         throw new DocumentParseError('missing_file', 'El archivo ya no existe en el almacenamiento local.');
       }
     }
-
-    try {
-      // El documento se abre UNA vez y devuelve el texto de todas las páginas.
-      const extraction = await extractPdfPages(uri, onProgress);
-      const joined = joinPdfPages(extraction.pages, cleanPageText);
-
-      if (joined.fullText.length > MAX_DOCUMENT_CHAR_COUNT) {
-        throw new DocumentParseError('document_too_large', 'El libro es demasiado grande para procesarlo en el teléfono.');
-      }
-
-      // Un escaneo no tiene texto, pero sus páginas se pueden leer igual: se abre
-      // en modo visual, sin voz.
-      const hasText = countExtractableCharacters(joined.fullText) >= 20;
-      if (!hasText && extraction.pages.length === 0) {
-        throw new DocumentParseError('empty_document', 'El PDF no tiene páginas.');
-      }
-      const { fullText, pageOffsets } = hasText ? joined : buildPagePlaceholders(extraction.pages.length);
-
-      const blocks = buildTextBlocks(fullText);
-      if (blocks.length === 0) {
-        throw new DocumentParseError('empty_document', 'No se pudieron construir bloques legibles.');
-      }
-
-      // Proporción de página y recorte de márgenes: si fallan, el lector igual
-      // funciona (asume A4 y página completa).
-      const info = await getPdfInfo(uri).catch(() => null);
-      const crop = await detectPdfCrop(uri).catch(() => null);
-
-      const fileName = uri.split('/').pop() ?? 'documento.pdf';
-      const documentId = fileName;
-
-      return {
-        id: documentId,
-        fileName,
-        sourceUri: uri,
-        fullText,
-        blocks,
-        chapters: hasText ? detectChapters(documentId, fullText) : [],
-        pdf: {
-          pageCount: info?.pageCount ?? extraction.pages.length,
-          pageAspect: info?.pageAspect ?? null,
-          pageOffsets,
-          crop,
-          outline: Array.isArray(extraction.outline) ? extraction.outline : [],
-          hasText,
-        },
-        metadata: {
-          title: extraction.title,
-          author: extraction.author,
-          coverBase64: null,
-          coverExtension: null,
-        },
-      };
-    } catch (error) {
-      throw toDocumentParseError(error);
-    }
+    return buildPdfDocument(uri, onProgress);
   }
 }
 

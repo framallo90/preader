@@ -70,6 +70,21 @@ export const noteRepository = {
     ]);
   },
 
+  /**
+   * Re-ubica las anotaciones hechas sobre una PÁGINA (PDF, cómic) cuando cambia el
+   * texto del libro: su posición en el texto sale de la página, que es lo estable.
+   */
+  async relocatePagedNotes(bookId: string, charIndexForPage: (page: number) => number): Promise<void> {
+    const db = await getDatabase();
+    const rows = await db.getAllAsync<{ id: string; page: number }>(
+      'SELECT id, page FROM notes WHERE bookId = ? AND page IS NOT NULL',
+      [bookId],
+    );
+    for (const row of rows) {
+      await db.runAsync('UPDATE notes SET charIndex = ? WHERE id = ?', [charIndexForPage(row.page), row.id]);
+    }
+  },
+
   async removeNote(noteId: string): Promise<void> {
     const db = await getDatabase();
     await db.runAsync('DELETE FROM notes WHERE id = ?', [noteId]);

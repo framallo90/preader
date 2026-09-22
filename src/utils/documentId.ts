@@ -1,6 +1,8 @@
 import * as Crypto from 'expo-crypto';
 import * as FileSystem from 'expo-file-system/legacy';
 
+import { getBardoArchiveModule, isBardoArchiveAvailable } from '../../modules/bardo-archive';
+
 /** Cuántos bytes del inicio del archivo participan de la huella. */
 const FINGERPRINT_SAMPLE_BYTES = 256 * 1024;
 
@@ -25,11 +27,35 @@ export async function createBookFingerprint(
 ): Promise<string> {
   let sample = '';
 
+  // Sin tamaño, la huella caía en `nombre:0`: DOS archivos distintos con el
+  // mismo nombre ("libro.pdf") daban el mismo id, y al importar el segundo se
+  // pisaba la copia del primero (se perdía con su progreso). Varios proveedores
+  // SAF/nube no informan el tamaño en el listado, pero sí al preguntarles.
+  let knownSize = size;
+  if (knownSize == null) {
+    try {
+      const info = await FileSystem.getInfoAsync(uri);
+      if (info.exists && typeof info.size === 'number' && info.size > 0) knownSize = info.size;
+    } catch {
+      // Sigue sin tamaño: se usa el nombre, que es lo único que hay.
+    }
+  }
+
   // Solo leemos contenido de archivos razonablemente chicos. Si el archivo es
   // grande (o de tamaño desconocido), NO leemos nada y usamos huella por
   // nombre+tamaño: evita el OOM que cerraba la app al escanear carpetas con
   // libros enormes. La lectura parcial no es confiable en content:// de SAF.
-  const canReadContent = size != null && size > 0 && size <= MAX_FINGERPRINT_READ_BYTES;
+  const canReadContent = knownSize != null && knownSize > 0 && knownSize <= MAX_FINGERPRINT_READ_BYTES;
+
+  // Nativo: lee exactamente 256 KB y hashea ahí, sin pasar base64 por el puente.
+  // Misma fórmula que abajo, así el id de un libro no cambia.
+  if (canReadContent && isBardoArchiveAvailable()) {
+    try {
+      return await getBardoArchiveModule().fingerprintAsync(uri, knownSize as number);
+    } catch {
+      // se cae a la versión en JavaScript
+    }
+  }
 
   if (canReadContent) {
     try {
@@ -48,7 +74,7 @@ export async function createBookFingerprint(
     }
   }
 
-  const identity = sample ? `${sample}:${size ?? 0}` : `fallback:${fallbackKey ?? uri}:${size ?? 0}`;
+  const identity = sample ? `${sample}:${knownSize ?? 0}` : `fallback:${fallbackKey ?? uri}:${knownSize ?? 0}`;
 
   const digest = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, identity);
 

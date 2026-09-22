@@ -4,15 +4,24 @@
  * Todo el trabajo de PDF en el teléfono (módulo nativo bardo-pdf): páginas
  * renderizadas a demanda, texto por página, portada y recorte de márgenes.
  * Reemplaza al backend: abrir un libro ya no sube nada ni espera a la red.
+ *
+ * Los cómics (módulo bardo-archive) usan la misma cola y el mismo caché: para el
+ * lector, una página es una página, venga de un PDF o de un CBR.
  */
 import * as FileSystem from 'expo-file-system/legacy';
+import { Dimensions, PixelRatio } from 'react-native';
 
+import { ComicInfo, getBardoArchiveModule, isBardoArchiveAvailable } from '../../modules/bardo-archive';
 import { PdfColorMode, PdfCropBox, PdfExtraction, getBardoPdfModule, isBardoPdfAvailable } from '../../modules/bardo-pdf';
 
 export type { PdfColorMode, PdfCropBox };
 
+export type PageSourceKind = 'pdf' | 'comic';
+
 export type PdfPageRequest = {
   bookId: string;
+  /** De dónde sale la página; por defecto, un PDF. */
+  kind?: PageSourceKind;
   uri: string;
   pageIndex: number;
   widthPx: number;
@@ -26,9 +35,20 @@ const MAX_PAGE_CACHE_BYTES = 250 * 1024 * 1024;
 const COVER_WIDTH_PX = 600;
 
 let renderedSinceEviction = 0;
+// Hay páginas nuevas desde la última poda: se limpia al cerrar el libro.
+let prunePending = false;
 
 export function isLocalPdfAvailable(): boolean {
   return isBardoPdfAvailable();
+}
+
+export function isComicReaderAvailable(): boolean {
+  return isBardoArchiveAvailable();
+}
+
+/** Cantidad de páginas y proporción típica de un cómic (lee solo el índice del archivo). */
+export async function getComicInfo(uri: string): Promise<ComicInfo> {
+  return getBardoArchiveModule().comicInfoAsync(uri);
 }
 
 function getPagesRoot(): string {
@@ -48,6 +68,15 @@ async function ensureDirectory(dir: string): Promise<void> {
 
 function cropKey(crop: PdfCropBox | null): string {
   return crop ? crop.map((v) => Math.round(v * 1000)).join('_') : 'full';
+}
+
+/**
+ * Ancho en píxeles al que se dibujan las páginas: el de la pantalla, no el del
+ * contenedor. Así la página inicial se puede pedir ANTES de que el lector mida su
+ * layout, y el caché no depende de unos píxeles de margen.
+ */
+export function canonicalPageWidthPx(): number {
+  return Math.min(2048, Math.round(Dimensions.get('window').width * PixelRatio.get()));
 }
 
 /** Número de páginas y proporción de la primera (para calcular el alto al vuelo). */
@@ -98,28 +127,31 @@ function pumpRenderQueue() {
   const active = job;
   active.started = true;
   isRendering = true;
-  const { uri, pageIndex, widthPx, colorMode, crop, bookId } = active.request;
+  const { uri, pageIndex, widthPx, colorMode, crop, bookId, kind } = active.request;
 
   ensureDirectory(bookPagesDirectory(bookId))
     .then(() =>
-      getBardoPdfModule().renderPageAsync(
-        uri,
-        pageIndex,
-        Math.round(widthPx),
-        colorMode === 'day' ? null : colorMode,
-        crop,
-        active.filePath,
-      ),
+      kind === 'comic'
+        ? getBardoArchiveModule().renderComicPageAsync(uri, pageIndex, Math.round(widthPx), active.filePath)
+        : getBardoPdfModule().renderPageAsync(
+            uri,
+            pageIndex,
+            Math.round(widthPx),
+            colorMode === 'day' ? null : colorMode,
+            crop,
+            active.filePath,
+          ),
     )
     .then(active.resolve, active.reject)
     .finally(() => {
       jobs.delete(active.key);
       isRendering = false;
+      // La poda revisa TODOS los archivos del caché de páginas (más de mil en un
+      // tomo largo): correrla cada 40 páginas era un tirón justo mientras el
+      // usuario pasa páginas. Ahora queda pendiente y se hace al cerrar el
+      // libro, que es cuando no molesta.
       renderedSinceEviction += 1;
-      if (renderedSinceEviction >= 40) {
-        renderedSinceEviction = 0;
-        void enforcePageCacheLimit();
-      }
+      if (renderedSinceEviction >= 40) prunePending = true;
       pumpRenderQueue();
     });
 }
@@ -130,7 +162,9 @@ function pumpRenderQueue() {
  */
 export function requestPdfPage(request: PdfPageRequest): PdfPageTicket {
   const { bookId, pageIndex, widthPx, colorMode, crop } = request;
-  const fileName = `${pageIndex}-${Math.round(widthPx)}-${colorMode}-${cropKey(crop)}.jpg`;
+  // Un cómic se muestra con sus colores, sin recorte: una sola versión por ancho.
+  const variant = request.kind === 'comic' ? 'comic' : `${colorMode}-${cropKey(crop)}`;
+  const fileName = `${pageIndex}-${Math.round(widthPx)}-${variant}.jpg`;
   const key = `${bookId}/${fileName}`;
   const filePath = `${bookPagesDirectory(bookId)}/${fileName}`;
 
@@ -206,6 +240,60 @@ export async function detectPdfCrop(uri: string): Promise<PdfCropBox | null> {
   return [left, top, right, bottom];
 }
 
+/** Rectángulo dentro de la página, en 0..1: [izquierda, arriba, derecha, abajo]. */
+export type PageTextRect = [number, number, number, number];
+
+/**
+ * Dónde cae un texto dentro de una página del PDF, para resaltarlo.
+ *
+ * `hint` (0 a 1) dice por dónde está dentro de la página: el texto del libro
+ * viene unido y limpiado, así que una posición global no corresponde uno a uno
+ * con el índice de carácter crudo de la página. Buscar el texto cerca de la
+ * pista es robusto a esa diferencia, que es de unos pocos renglones.
+ */
+export async function getPageTextRects(
+  uri: string,
+  pageIndex: number,
+  needle: string,
+  hint: number,
+): Promise<PageTextRect[]> {
+  if (!isLocalPdfAvailable() || needle.trim().length < 2) return [];
+  try {
+    const rects = await getBardoPdfModule().pageTextRectsAsync(uri, pageIndex, needle, hint);
+    return rects.filter((r) => r.length === 4) as PageTextRect[];
+  } catch {
+    return []; // resaltar es un extra: si falla, se lee igual
+  }
+}
+
+/**
+ * Qué dice el PDF en el punto que tocaste, para citarlo exacto.
+ *
+ * `x` e `y` van de 0 a 1 sobre la página ENTERA: quien llama tiene que deshacer
+ * antes el recorte de márgenes, porque lo que se ve en pantalla puede ser sólo
+ * la caja de contenido. Devuelve la oración completa que hay ahí (no la letra
+ * suelta) y dónde empieza dentro del texto crudo de la página.
+ *
+ * El texto viene con los renglones cortados donde los cortó la maquetación del
+ * PDF; una cita con esos cortes adentro queda ilegible, así que se unen.
+ */
+export async function getTextAtPoint(
+  uri: string,
+  pageIndex: number,
+  x: number,
+  y: number,
+): Promise<{ text: string; charInPage: number } | null> {
+  if (!isLocalPdfAvailable()) return null;
+  try {
+    const hit = await getBardoPdfModule().textAtPointAsync(uri, pageIndex, x, y);
+    if (!hit) return null;
+    const text = hit.text.replace(/\s+/g, ' ').trim();
+    return text.length > 0 ? { text, charInPage: hit.charInPage } : null;
+  } catch {
+    return null; // citar es un extra: si falla, queda la nota de la página entera
+  }
+}
+
 /** Dibuja la tapa (primera página) en covers/{bookId}.jpg y devuelve su ruta. */
 export async function renderPdfCover(bookId: string, uri: string): Promise<string | null> {
   if (!FileSystem.documentDirectory) return null;
@@ -220,10 +308,27 @@ export async function renderPdfCover(bookId: string, uri: string): Promise<strin
   }
 }
 
-/** Libera el PDF abierto en el módulo nativo (al salir del lector). */
+/** Tapa de un cómic: su primera página. */
+export async function renderComicCover(bookId: string, uri: string): Promise<string | null> {
+  if (!FileSystem.documentDirectory) return null;
+  try {
+    const dir = `${FileSystem.documentDirectory}covers`;
+    await ensureDirectory(dir);
+    const filePath = `${dir}/${bookId}.jpg`;
+    await getBardoArchiveModule().renderComicPageAsync(uri, 0, COVER_WIDTH_PX, filePath);
+    return filePath;
+  } catch {
+    return null;
+  }
+}
+
+/** Libera el PDF o el cómic abierto en los módulos nativos (al salir del lector). */
 export async function closePdf(): Promise<void> {
-  if (!isBardoPdfAvailable()) return;
-  await getBardoPdfModule().closeAsync().catch(() => {});
+  if (isBardoPdfAvailable()) await getBardoPdfModule().closeAsync().catch(() => {});
+  if (isBardoArchiveAvailable()) await getBardoArchiveModule().closeAsync().catch(() => {});
+  // Momento justo para limpiar el caché de páginas: el libro ya se cerró y no
+  // hay nada que el usuario esté esperando en pantalla.
+  void prunePageCacheIfNeeded().catch(() => {});
 }
 
 export async function clearBookPages(bookId: string): Promise<void> {
@@ -235,6 +340,13 @@ export async function clearAllPdfPages(): Promise<void> {
 }
 
 /** Al pasar el tope borra los libros menos usados (carpeta entera, por mtime). */
+export async function prunePageCacheIfNeeded(): Promise<void> {
+  if (!prunePending) return;
+  prunePending = false;
+  renderedSinceEviction = 0;
+  await enforcePageCacheLimit();
+}
+
 async function enforcePageCacheLimit(): Promise<void> {
   try {
     const root = getPagesRoot();
