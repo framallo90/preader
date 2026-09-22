@@ -27,7 +27,8 @@
 | **IA** | LLM + voz neural | **Ninguna** | Ninguna |
 | **Llamadas `fetch` en el código** | Varias | **Cero** | — |
 | Render de PDF | Servidor (PyMuPDF) → PNG por red | **Local, `PdfRenderer`, por página** | Local, MuPDF, por página |
-| Extracción de texto | Server, o local recargando el PDF por cada página | **Local, abre el PDF una vez** | Local, por página |
+| **Abrir un libro** | Procesaba el libro ENTERO antes de mostrar la página 1 | **Instantáneo: muestra páginas ya; el texto se prepara de fondo** | Instantáneo, por página |
+| Extracción de texto | Server, o local recargando el PDF por cada página | **Local, Pdfium nativo, de fondo** | Local, por página |
 | Libros enormes | Solo con servidor | **Memoria en archivo temporal** | Proceso aparte |
 | PDF escaneado (sin texto) | ❌ Error | **✅ Se lee en modo visual** | ✅ |
 | Voz | Kokoro neural (nube) | **TTS del sistema, offline** | TTS del sistema, offline |
@@ -52,10 +53,11 @@
 | Carpetas excluidas del escaneo | ❌ | **✅** | ✅ |
 | Biblioteca completa | Últimos 20 | **Todos + filtros** | Todos + filtros |
 | Identidad por contenido | ✅ | ✅ | ✅ (`doc_sha`) |
-| Formatos | 4 | 4 | 14 + ZIP/RAR |
+| Formatos | 4 | **8: PDF, EPUB, TXT, DOCX + cómics CBZ, CBR (RAR 4 y 5), CB7, CBT** (y zip/rar/7z con imágenes) | 14 + ZIP/RAR |
+| Cómics | ❌ | **✅ mismo progreso, marcadores, notas, estados y colecciones que un libro** | ✅ |
 | Pasar página con volumen | ❌ | ❌ | ✅ |
 | Columna única (escaneo doble) | ❌ | ❌ | ✅ |
-| Reflow de PDF | ❌ | ❌ | ✅ |
+| Reflow de PDF | ❌ | **✅ "Texto corrido", conserva la posición al cambiar de modo** | ✅ |
 | Vocabulario personal | ❌ | ❌ | ✅ |
 | Modo infantil / pantalla dividida / sync Drive | ❌ | ❌ | ✅ |
 
@@ -182,3 +184,156 @@ probar).
 
 ---
 
+---
+
+## 6. Apertura instantánea y cómics (2026-09-21)
+
+Probando el release en el teléfono, un libro tardó **más de 10 minutos** en abrir; ReadEra lo abre al instante. Dos causas, las dos mías:
+
+1. **Arquitectura.** Bardo procesaba el libro entero (texto de todas las páginas, limpieza, bloques, recorte) *antes* de mostrar la página 1. Nada de eso hace falta para leer: ReadEra trabaja por página y a demanda.
+2. **Un bug cuadrático.** Al unir las páginas se hacía `regex.test(fullText)` y `fullText += …` en cada página: costo lineal en lo acumulado, cuadrático en el libro. En Node (V8) no se notaba; en Hermes —el motor del teléfono— sí. Había otros dos del mismo tipo (oración gigante sin puntos, índice de EPUB).
+
+### Qué cambió
+
+- **PDF: abrir = contar páginas.** Se abre con un documento provisorio (una línea por página) y las páginas se dibujan a demanda. El texto lo prepara `pdfTextPreparationService` de fondo, cediendo el hilo para no trabar el scroll, y sigue aunque salgas del libro. Mientras tanto el lector avisa "Preparando voz y búsqueda… N%".
+- **Texto con Pdfium nativo** (`io.legere:pdfiumandroid`) en vez de PDFBox (Java puro). PDFBox se fue del proyecto.
+- **Las tres operaciones cuadráticas pasaron a ser lineales.**
+- **EPUB:** el zip se lee nativo (`bardo-archive`); antes el archivo entero viajaba en base64 a JavaScript y se descomprimía ahí. JSZip queda solo de respaldo.
+- **Caché compacto:** los bloques se guardan como offsets, no como texto duplicado (menos disco y, sobre todo, menos JSON para parsear en cada apertura).
+- **Sin copia previa:** un libro de la biblioteca escaneada (content://) se abre donde está. Antes se copiaba entero a la app antes de abrir.
+- **Progreso a prueba de todo:** además de bloque y carácter se guardan la **página** y el **largo del texto** sobre el que se midió. Si el texto cambia (provisorio → definitivo, caché borrado, versión nueva del extractor) se retoma por página. De paso se arregló un problema viejo: en páginas sin texto (láminas) la posición saltaba a la última página "vacía".
+- **Cómics:** módulo nuevo `bardo-archive`. El contenedor se detecta por contenido (un `.cbr` que en realidad es zip abre igual). Zip local → `java.util.zip`; RAR 4/5, 7z, tar → 7-Zip nativo. Cada página se saca al mostrarse; un archivo *sólido* se descomprime una vez, en orden, y las páginas aparecen a medida que salen. Orden natural ("pagina 2" antes que "pagina 10"), se ignoran `__MACOSX` y ocultos. Para el resto de la app un cómic es un libro por páginas sin texto.
+
+### Medido en el emulador (mismo PDF de 1.500 páginas, 2,6 M de caracteres)
+
+| | Antes | Ahora |
+|---|---|---|
+| Hasta ver la primera página | ~51 s (extraer 20,7 + unir 29,5 + resto) | **0,11 s** |
+| Texto listo para voz/búsqueda | los mismos ~51 s, bloqueando | **~7 s, de fondo** (extraer 4,5 · unir 0,8) |
+| Reabrir (con caché) | — | 0,23 s |
+| EPUB Quijote (2,1 M caracteres, 142 entradas de índice), primera vez | — | 1,6 s · reabrir 0,3 s |
+| Cómic de 24 páginas (cualquier contenedor), importar + abrir | no abría | 0,2–0,4 s · reabrir 0,07 s |
+
+En el teléfono los números absolutos van a ser más altos (CPU más lenta), pero la apertura ya no depende del tamaño del libro.
+
+### Probado
+
+CBZ, CBT, CBR RAR4, CBR RAR5, CBR RAR5 sólido, CB7 (7z sólido) y un zip renombrado a `.cbr`: todos abren, dibujan, generan tapa y retoman en la página donde quedaron. PDF: scroll durante la preparación del texto → al llegar el texto queda en la misma página y la voz arranca desde ahí. Progreso de la versión anterior: se retoma por aproximación de página la primera vez.
+
+### Límites conocidos
+
+- Las páginas de un cómic usan una proporción común (mediana): una doble página se ve entera pero más chica. Sin zoom con los dedos todavía.
+- Archivos con contraseña: no se abren (se informa).
+- Un webtoon (tira vertical muy larga) se ve reducido.
+
+---
+
+## 7. Segunda ronda de velocidad: acciones innecesarias (2026-09-21, tarde)
+
+Pedido: "la mayor velocidad posible, busquemos las acciones innecesarias". Auditoría de todos los flujos (arranque, Inicio, apertura, páginas, voz, importación) y lo que se encontró:
+
+| Dónde | Qué sobraba | Qué se hizo |
+|---|---|---|
+| Inicio, cada vez que volvías de un libro | Se re-escaneaban las carpetas por SAF **antes** de mostrar la lista (spinner cada vez), con 2-3 llamadas por archivo, y una consulta de progreso **por libro** | La lista se muestra ya; el escaneo corre de fondo (como mucho cada 2 min) y solo refresca si encontró libros. El listado de carpetas lo hace el módulo nativo en **una consulta por carpeta**. Progreso de todos los libros en una consulta. |
+| Abrir un libro cacheado | Se re-detectaban capítulos sobre todo el texto y se reescribían en la base **en cada apertura** | Los capítulos se guardan con el caché. Abrir = leer el caché y mostrar. |
+| Abrir (todos) | `touchBook`, portada, guardado del caché y metadata **antes** de mostrar | Todo eso va después del primer dibujo (portada del PDF, 2,5 s después). |
+| Abrir PDF/cómic | La página inicial se pedía recién cuando el visor medía su layout | Se pide **antes**, al abrir, al ancho canónico de pantalla: cuando el visor se monta, ya está dibujada. |
+| Recorte de márgenes | Corría en el mismo hilo que dibuja las páginas que estás mirando | Hilo y `PdfRenderer` propios. |
+| Voz, al apretar play | Primer tramo de ~500 caracteres (~35 s de audio) antes de sonar; en el teléfono, varios segundos | **Grilla anclada donde arrancás**: primer tramo ≤160 caracteres, después 320, después 500. El audio cacheado se reutiliza por rango de texto, no por número de tramo. Las oraciones del libro se calculan una vez; re-anclar cuesta milisegundos. |
+| Voz, cada tramo | Se listaban **todos** los archivos del caché de audio (una llamada por archivo) después de cada tramo sintetizado; las voces se re-consultaban al motor cada minuto | Poda cada 25 tramos; voces recordadas 15 min. |
+| Visor de texto | Un closure nuevo por párrafo en cada render: el `memo` de la tarjeta no servía y cada tick de la voz re-renderizaba todos los párrafos montados | Callbacks estables por índice; lote inicial de 8 párrafos. |
+| EPUB, primera apertura | 17 pasadas de regex en JavaScript por archivo (HTML → texto + normalización) y una segunda conversión completa para ubicar el índice | Conversión **nativa en una pasada** (`HtmlText.kt`) que además devuelve la posición de cada ancla en el texto ya normalizado. Paridad exacta con la versión JS verificada con un test sobre los 33 capítulos del Quijote. |
+| Huella de archivo (identidad del libro) | 256 KB en base64 cruzando el puente a JavaScript y SHA-256 en JS | Nativa, **misma fórmula** (los ids no cambian: progreso, notas y colecciones se conservan). |
+| Base de datos | `synchronous=FULL` con WAL | `synchronous=NORMAL`: escrituras de progreso más baratas. |
+| Detección de capítulos | Solo reconocía encabezados de un libro concreto ("BRAN (1)", herencia de la etapa con IA) y corría dos veces por libro | Genérica ("Capítulo 8", "PARTE II", "Chapter 3", PRÓLOGO…), una sola vez y solo si el libro no trae índice. |
+
+Restos de IA: no queda ninguno en el código. Solo sigue en disco `src/config/apiKeys.ts` (ignorado por git, nadie lo importa): borralo cuando quieras y revocá esas claves.
+
+### Medido en el emulador (después de esta ronda)
+
+| | Antes de hoy | Ronda 1 | **Ronda 2** |
+|---|---|---|---|
+| PDF 1.500 páginas: primera página | ~51 s | 0,11 s | 0,11 s |
+| PDF cacheado: reabrir | — | 0,23 s | 0,2 s |
+| EPUB Quijote, primera vez | — | 1,6 s | **0,49 s** (leer+convertir nativo 0,31 · bloques 0,12 · índice 0,02) |
+| EPUB Quijote, reabrir | — | 0,3 s | **0,16 s** |
+| Cómic: importar + abrir | no abría | 0,2–0,4 s | 0,2–0,4 s |
+| Voz: primer sonido | ~1 s por 500 caracteres (teléfono: varios segundos) | igual | **1,5 s por 103 caracteres**; en el teléfono la mejora es proporcional (3-5×) |
+| Volver al Inicio con carpetas escaneadas | espera el escaneo entero | igual | inmediato |
+
+Probado además en el emulador: carpeta escaneada por SAF con subcarpeta (3 libros nuevos detectados, copia idéntica deducida por contenido), apertura en el lugar (content://) de PDF con texto, PDF escaneado y cómic 7z sin copiar nada, y la voz con tramos anclados (transiciones cada ~10 s sin cortes ni errores).
+
+---
+
+## 8. Interfaz ordenada e identidad (2026-09-21, noche)
+
+Pedido: "todo ordenado, claro y cómodo; colores llamativos; cambiar el ícono y el nombre del APK". El estudio de uso frente a ReadEra y la estructura final están en **`bardo-ux-vs-readera.md`**. Resumen de lo que cambió:
+
+- **Nombre del APK:** el proyecto Android local todavía decía `pdf-voice-reader` (venía de un `prebuild` anterior al renombre). Se regeneró desde `app.json` (`npx expo prebuild --clean`): el launcher dice **Bardo**, versión **2.0.0**, esquema `bardo://`.
+- **Paleta:** índigo `#4F46E5` para lo accionable, ámbar `#F59E0B` para progreso e importancia; fondos `#F5F6FB` / `#0F1117`. La página de lectura sigue calma (blanco / sepia / negro). `src/utils/theme.ts` tiene además `radius` y `space` compartidos.
+- **Kit de interfaz** (`src/components/ui.tsx`): `Icon`/`IconButton` (Ionicons; se fueron los emojis), `Chip`, `Section`+`Row`+`RowValue`, `Stepper`, `Sheet`. Botones con ícono.
+- **Inicio:** marca + ⚙; tarjeta "Seguir leyendo" con tapa, autor, progreso y [Continuar] [Escuchar]; banda "Reproduciendo ahora"; chips con ícono; carpetas plegables; portadas con etiqueta de formato, tilde de leído y corazón; **+** flotante.
+- **Lector:** cabecera con marcador e info; **barra inferior fija** Índice · Buscar · Aspecto · Voz · Pantalla; hojas de Índice (capítulo actual marcado, página o %), Aspecto (tema en chips, letra, atenuar, márgenes) y Voz (velocidad, temporizador, voz, capítulo ±); transporte de audio como píldora clara; play flotante. Desapareció el menú plano de 9 filas.
+- **Ajustes:** Lectura → Voz → Biblioteca → Almacenamiento → Acerca de (versión, formatos, "sin conexión").
+- **Sobre este libro:** mismo lenguaje (secciones, filas, estrellas ámbar).
+- **Arreglos encontrados en el camino:** franja vacía de ~60 px entre la cabecera y el contenido en lector, ajustes y ficha (el SafeAreaView sumaba el inset del sistema encima de la cabecera del navegador); el transporte de audio tapaba el número de página; "0 %" en libros recién empezados.
+- **Ícono:** pendiente de Cowork (pedido con especificaciones en el buzón del hub). Sigue el de "PDF reader" hasta que lleguen los archivos.
+
+---
+
+## 9. Mejoras y un bug serio (2026-09-22, madrugada)
+
+**Mejoras:** voz precalentada al abrir (play suena en ~0,8 s en el emulador, antes 1,5 s; en el teléfono la diferencia es mayor); buscar y ordenar la biblioteca; tipografía del modo texto (interlineado, Sans/Serif, justificado); **leer un PDF como texto corrido** conservando la posición al cambiar de modo; el progreso de un PDF en modo texto se muestra en páginas, igual que en la biblioteca.
+
+**Bug encontrado y arreglado — bucle de re-renderizado en el modo texto.** Con el lector abierto en un EPUB (o un PDF como texto), la app consumía **150-180 % de CPU en reposo** y la lista no respondía al dedo. Causa: la lista de párrafos se posiciona en el bloque guardado con `initialScrollIndex`, y sin `getItemLayout` React Native avisa "no pude ir al índice" antes de medir las celdas; el manejador remontaba la lista para reintentar, que volvía a fallar, infinitamente. Venía de antes de hoy: el release que está en el teléfono lo tiene. Arreglo en dos partes: (1) el reintento ya no remonta; (2) `src/utils/blockLayout.ts`: alto estimado por bloque (largo del texto, letra, ancho) corregido con el alto medido al dibujarse, con sumas acumuladas perezosas → `getItemLayout` determinista. Verificado: CPU 0 % en reposo, scroll fluido, salto por índice exacto (60 % → "La tormenta"), posición conservada al cambiar páginas ↔ texto y al reabrir.
+
+**Lección para el emulador:** medir `top -p <pid>` en reposo después de abrir un libro; un bucle así no aparece en typecheck, tests ni capturas.
+
+---
+
+## 10. Ronda de caza de bugs (2026-09-22)
+
+Pasada completa: revisión estática dirigida (servicios/almacenamiento por un lado, pantallas/hooks por el otro) más recorrido de flujos en el emulador con el APK de release. Todo lo de abajo se arregló y se volvió a probar. Al final: tipos estrictos limpios, lint sin problemas, 151 tests, CPU 0 % en reposo dentro del lector y logcat sin errores.
+
+### Lo que rompía de verdad
+
+1. **El salto pedido se perdía en los libros ya cacheados.** Abrir un capítulo, una cita o un marcador desde "Sobre este libro" te dejaba donde habías quedado, no en lo que tocaste. `withPendingJump` se llamaba dos veces y `readerJumpStore.consume` **descarta** el salto en la primera: la segunda leía `null`. Ahora se calcula una sola vez. (Los otros dos caminos ya lo hacían bien; era exclusivo de la rama del caché.)
+2. **Cambiar la tipografía te devolvía atrás y guardaba el retroceso.** La lista de texto se remonta cuando cambian letra, interlineado, tipografía, justificado o el ancho de pantalla (rotar), y lo hacía en el bloque de **apertura**, porque el ancla solo se movía en saltos explícitos, nunca con el scroll. Encima, al asentarse, ese retroceso se persistía como progreso. Ahora el punto de montaje sigue al scroll del usuario y, mientras la lista se acomoda, no se guarda nada.
+3. **Activar "Reabrir el último libro al iniciar" abría el lector ahí mismo**, encima de Ajustes: el efecto miraba el valor del ajuste, que vive en un contexto compartido con el Inicio (que queda montado debajo). Ahora la decisión se toma una sola vez, cuando los ajustes terminan de leerse.
+4. **"Escuchar" desde "Sobre este libro" (abierto desde el lector) apilaba un segundo lector** del mismo libro: dos instancias escribiendo progreso en paralelo y, al cerrar la de arriba, cerraba el PDF que la de abajo seguía usando. Ahora vuelve al lector que ya está abierto y arranca la voz ahí.
+5. **Un fallo al guardar tiraba el texto ya extraído de un PDF.** El `catch` que cubre "PDF protegido o dañado" abarcaba también las tres escrituras posteriores: si fallaba cualquiera (disco lleno, el libro borrado mientras se preparaba de fondo), el PDF quedaba marcado "sin texto para la voz" —sin voz, sin búsqueda, sin índice— hasta reabrir la app. Extraer y guardar ahora son cosas distintas.
+6. **Pausar durante el hueco entre tramos no se notaba y la voz arrancaba sola.** `pause()` no podía cancelar un avance en vuelo; se alcanza desde la notificación o la pantalla bloqueada, que no pasan por la app. Hay un contador de pausa que el avance mira justo antes de sonar. Del mismo hueco salía otro: **el temporizador de sueño no paraba nada** si el segundo cumplido caía ahí (y no volvía a dispararse nunca).
+7. **Un párrafo largo sin puntuación cortaba la voz para siempre.** El motor de Android rechaza texto de más de 4000 caracteres; el troceo corta en fin de oración y, si no hay, en pausas (`, ; :`), pero un texto de OCR sin ninguna de las dos (índices onomásticos, tablas aplanadas) salía entero. Cada reintento armaba el mismo tramo y fallaba igual. Ahora hay un último recurso que parte en el último espacio antes del tope, con tests.
+8. **Retomar un libro escuchado hasta el final no sonaba:** el play caía exacto en el final del tramo y dejaba al reproductor en el limbo "terminado sin evento". Se deja un margen, como ya hacía el salto de ±15 s.
+9. **La portada se borraba antes de tener la nueva.** Si la extracción de la tapa fallaba (Android purga el archivo temporal), la fila conservaba la ruta vieja y el archivo ya no existía: portada rota. Ahora se escribe al lado y recién al final se reemplaza.
+10. **Dos archivos distintos con el mismo nombre podían compartir id** cuando el proveedor no informaba el tamaño: al importar el segundo se pisaba la copia del primero, que desaparecía con su progreso. Si falta el tamaño, ahora se le pregunta al sistema antes de recurrir al nombre.
+11. **Agregar una carpeta mientras corría un escaneo la dejaba afuera**: el escaneo en vuelo se compartía sin mirar los argumentos y devolvía el resultado viejo. Ahora se comparte solo si el pedido es el mismo; si no, se encola.
+12. **Un libro movido de carpeta no abría más**: el escaneo lo reconocía por huella y cortaba antes de actualizar su ruta. Ahora la corrige.
+13. **Dos borrados casi simultáneos se pisaban** en la lista de ocultos y el libro reaparecía solo. Las escrituras se encadenan.
+14. **Caché de disco:** los bloques se guardan con el largo del texto con el que se midieron. Si la pareja queda rota (corte entre las dos escrituras), se re-parsea en vez de abrir el libro con todos los párrafos corridos en silencio.
+15. **Rechazos sin `catch`** en promesas lanzadas con `void` (guardado de progreso cada 250 ms, resolución de voz, detener el audio, la síntesis que pierde la carrera contra el timeout): en Hermes salen como error rojo. Atrapados.
+16. **`ensureChunkLoaded`** no actualizaba el número de tramo en una de sus ramas: tras re-anclar la grilla, el avance podía saltar al tramo equivocado.
+
+### Detalles de interfaz corregidos
+
+- La etiqueta de formato mostraba el **mime completo** en vez de "DOCX" (`VND.OPENXMLFORMATS-OFFICEDOCUMENT.WORDPROCESSINGML.DOCUMENT`) y "PLAIN" en vez de "TXT".
+- A los **cómics** se les ofrecía "Escuchar" en tres lugares (tarjeta de Inicio, menú de mantener apretado y ficha del libro), y llevaba a un lector con la voz deshabilitada.
+- El temporizador de sueño mostraba la frase duplicada: "La voz se apaga en **Dormir en** 8:43". El formateador devolvía la frase entera y quien lo mostraba le agregaba otra.
+- Tildes que faltaban: "Se borrará…", "Temporizador de sueño", "…después de diez minutos", "versión del caché".
+- `/book` sin id se quedaba con el spinner girando para siempre.
+
+### Lo que se probó en el emulador
+
+Importar TXT y DOCX; abrir PDF con texto, PDF escaneado, EPUB, DOCX, TXT y cómic; índice y salto a capítulo (desde el lector y desde la ficha, con caché y sin); marcador; buscar dentro del libro; leer un PDF como texto corrido; voz (reproducir, seguir el texto resaltado, retroceder cruzando tramos, detener); temporizador y selector de voz; probar la voz y salir enseguida; colecciones (crear y asignar); borrar un libro y restaurar ocultos; buscar y ordenar la biblioteca; modo oscuro; pantalla completa; reabrir el último libro al iniciar. En un PDF escaneado, "Índice" y "Voz" quedan deshabilitados y "Buscar" explica por qué: es a propósito.
+
+### Segunda pasada: regresiones que introdujeron los propios arreglos
+
+Revisar el diff con ojo adversario encontró cinco cosas que los arreglos de arriba habían roto o dejado a medias. Todas corregidas y vueltas a probar:
+
+1. **Agregar una carpeta no mostraba un solo libro hasta dos minutos después.** El Inicio limita el escaneo automático a uno cada dos minutos, y el corte no miraba *qué* carpetas eran: si acababas de agregar una en Ajustes, el escaneo se saltaba igual. Ahora, si la lista de carpetas cambió, escanea ya. (Verificado en el emulador: agregar la carpeta y volver al Inicio pasa de 15 a 16 libros al instante.)
+2. **El número de tramo podía sobrevivir a la grilla que indexa.** Al cambiar de libro, o al re-extraerse el texto de uno, se rehacía la lista de tramos pero el índice quedaba apuntando a la vieja. Con eso, el retroceso entre tramos desreferenciaba algo que ya no existía, y —peor— lo que el servicio publicaba (rango 0-0) hacía que el lector **guardara el principio del libro encima del progreso real**, o que un final de audio marcara el libro como leído. El índice ahora se resetea junto con la grilla, el retroceso tiene guarda y el lector ignora los rangos vacíos.
+3. **Ping-pong de ruta con el mismo archivo en dos carpetas escaneadas.** La relocalización recién agregada reescribía la fila en cada escaneo, alternando entre las dos copias (y cambiando el título mostrado). Ahora solo corrige la ruta si el archivo anterior **ya no está**: eso es una movida; si sigue estando, es una segunda copia y no se toca.
+4. **"Restaurar ocultos" había quedado fuera de la cadena de escritura**, así que un borrado en vuelo escribía después del restore y ese libro quedaba oculto igual.
+5. **La portada todavía podía perderse.** El borrado de la anterior seguía ocurriendo antes del movimiento final. Ahora la que había se guarda aparte y, si el reemplazo falla a mitad, se la devuelve a su lugar.
+
+Además, un caso latente: el camino de carga del lector consumía el pedido pendiente con la función vieja y **descartaba el pedido de "escuchar"**. Hoy no se notaba porque ese camino no lo usaba, pero quedaba armado para fallar en silencio.
