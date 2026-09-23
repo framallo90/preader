@@ -1,6 +1,6 @@
 # Sacar Bardo del servidor
 
-**Fecha:** 2026-09-22 · **Estado:** pendiente de ejecutar
+**Fecha:** 2026-09-22 · **Estado: ✅ HECHO.** Ver "Lo que pasó de verdad" al final.
 
 Bardo ya no tiene backend: la app no hace **ninguna** llamada de red (verificado: cero `fetch`,
 cero `axios`, cero URLs en `src/`, `app/` y los módulos). Todo lo que hacía el server lo hace hoy
@@ -127,8 +127,45 @@ Esto es del lado tuyo, no del servidor:
   con IA. **Borralo y rotá lo que siga siendo válido en otro lado.**
 - El `BARDO_TOKEN` muere con el server, pero si lo reusaste en algún lado, cambialo.
 
-## Por qué no lo hice yo
+---
 
-Intenté conectarme a hacer el inventario y el entorno me bloqueó el acceso a producción
-("Production Reads"). No lo esquivé. Si querés que lo haga yo, hay que habilitar el permiso;
-si no, los pasos de arriba se pegan tal cual.
+## Lo que pasó de verdad (2026-09-22)
+
+El inventario salió **más limpio de lo previsto**: Bardo no tenía vhost de nginx, ni certificado,
+ni cron, ni servicio systemd. Estaba todo en dos lugares.
+
+| Qué había | Dónde |
+|---|---|
+| Proceso pm2 `bardo-api` | `node /var/www/bardo/server.js`, **15 días online**, escuchando en `*:3010` |
+| La app entera | `/var/www/bardo` — 193 MB (104 MB de `storage/books` con 7 libros, 3,9 MB de `uploads`, el resto `node_modules` y el `venv`) |
+| Logs | `~/.pm2/logs/bardo-api-{out,error}.log` |
+
+**Un detalle que no era menor:** ese servicio llevaba 15 días escuchando en todas las interfaces
+con un endpoint de subida de archivos (`POST /books`, multer) protegido sólo por un bearer token,
+sin que ninguna app lo usara. Era superficie de ataque a cambio de nada.
+
+### Pasos, en orden
+
+1. **Respaldo** → `~/bardo-server-backup-2026-09-22.tar.gz` (112 MB, 2411 archivos). Sigue ahí:
+   borralo cuando estés tranquilo.
+2. Comprobado que **nadie más referenciaba** `/var/www/bardo`: ni nginx, ni systemd, ni el dump de
+   pm2, ni booklo, ni geeky-bot. Sin symlinks apuntando ahí.
+3. `pm2 delete bardo-api` + `pm2 save` (el `save` es lo que impide que reviva en un `resurrect`).
+4. Verificado el puerto **3010 libre**.
+5. `rm -rf /var/www/bardo`.
+6. Borrados los dos logs de pm2 (revisados antes: no tenían el token).
+
+### Verificación final
+
+- Sin procesos, sin puerto, sin carpetas, sin logs, y **cero menciones** a bardo en `dump.pm2`.
+- `booklo.com.ar`, `investy.com.ar` y `facuramallo.com.ar` → **200** antes y después.
+- Los otros seis procesos de pm2 (`booklo-api`, `geeky-bot`, `geeky-treasures`,
+  `investy-backend`, `investy-cocos-proxy`, `pm2-logrotate`) siguen **online**, con sus mismos
+  uptimes: no se reinició nada.
+- **nginx no se tocó** en ningún momento, porque no había nada de Bardo ahí.
+
+### Lo único que queda
+
+`src/config/apiKeys.ts`, en tu disco. Gitignoreado y sin que lo importe nadie, pero con
+`BARDO_SERVER_URL` y `BARDO_TOKEN` del server que ya no existe. El token murió con el servicio;
+borrá el archivo y rotá lo que hayas reusado en otro lado.
