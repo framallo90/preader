@@ -13,6 +13,29 @@ import { getSafFolderPath } from './safPaths';
  * guardados se reagrupan solos.
  */
 
+/**
+ * ¿Este libro está adentro de esta carpeta? Se compara por RUTA.
+ *
+ * Antes se comparaba el "tree id" de la URI, que es por dónde se descubrió el
+ * archivo. Eso preguntaba en realidad "¿este libro se encontró escaneando ESTA
+ * carpeta?", y daba que no en un caso muy común: los libros que ya estaban en la
+ * biblioteca desde antes (importados a mano, o encontrados escaneando la carpeta
+ * de arriba) tienen la URI de aquella otra raíz. Al agregar la carpeta nueva,
+ * aparecía con **0 libros** y sus libros caían en "Otros libros".
+ *
+ * La ruta no depende de por dónde entró el archivo, así que esto los reconoce.
+ * Devuelve el largo de la ruta de la carpeta cuando hay coincidencia, para poder
+ * quedarse con la MÁS específica si tenés agregadas una carpeta y una subcarpeta
+ * suya; -1 si el libro no está adentro.
+ */
+export function folderMatchDepth(bookUri: string, rootFolderUri: string): number {
+  const root = getSafFolderPath(rootFolderUri);
+  const full = getSafFolderPath(bookUri);
+  if (root === '' || full === '') return -1;
+  // La barra final evita que "Libros" se quede con lo de "Libros2".
+  return full.startsWith(`${root}/`) ? root.length : -1;
+}
+
 /** Ruta de la subcarpeta relativa a la raíz, o '' si el libro está suelto en la raíz. */
 export function getSubfolderPath(bookUri: string, rootFolderUri: string): string {
   const root = getSafFolderPath(rootFolderUri);

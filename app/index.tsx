@@ -16,7 +16,7 @@ import {
 import { removeBookCover } from '../src/services/bookMetadataService';
 import { addIgnoredBook, clearIgnoredBook, getDisplayNameFromSafUri, getIgnoredBooksCount, requestLibraryFolder, restoreIgnoredBooks, scanLibraryFolders } from '../src/services/libraryScanService';
 import { compareBooksNaturally, getDisplayTitle } from '../src/utils/bookDisplay';
-import { compareSubfolders, formatSubfolderLabel, getSubfolderPath } from '../src/utils/libraryFolders';
+import { compareSubfolders, folderMatchDepth, formatSubfolderLabel, getSubfolderPath } from '../src/utils/libraryFolders';
 import { foldText } from '../src/utils/textSearch';
 import { getDocumentTypeLabel } from '../src/utils/formatters';
 import { radius } from '../src/utils/theme';
@@ -273,21 +273,48 @@ export default function HomeScreen() {
     return books;
   }, [libraryFilter, recentDocuments, progressMap, collectionBookIds, searchQuery]);
 
-  // Agrupa los libros por carpeta. El nombre de los escaneados trae el prefijo
-  // de la carpeta ("Game of saga/…"), que es el criterio confiable; el match
-  // por URI queda de refuerzo. Orden natural (2 antes que 10) dentro de cada grupo.
+  // Agrupa los libros por carpeta, comparando la RUTA de cada uno con la de la
+  // carpeta. Antes se comparaba el "tree id" de la URI, que dice por dónde se
+  // descubrió el archivo: una carpeta recién agregada aparecía con 0 libros si
+  // los suyos ya estaban en la biblioteca desde otra raíz (importados a mano o
+  // encontrados escaneando la carpeta de arriba), y caían en "Otros libros".
+  // Orden natural (2 antes que 10) dentro de cada grupo.
   const librarySections = useMemo(() => {
-    const sections = settings.libraryFolders.map((folderUri) => {
-      const treeId = folderUri.split('/tree/')[1] ?? '';
-      const folderName = getDisplayNameFromSafUri(folderUri);
-      const books = sortBooks(
-        filteredDocuments.filter(
-          (book) =>
-            book.name.startsWith(`${folderName}/`) ||
-            (treeId !== '' && book.uri.includes(`/tree/${treeId}/`)),
-        ),
-        settings.librarySort,
-      );
+    const folders = settings.libraryFolders.map((folderUri) => ({
+      folderUri,
+      name: getDisplayNameFromSafUri(folderUri),
+    }));
+
+    // Cada libro cae en UNA sola carpeta: la más específica que lo contenga. Si
+    // tenés agregadas "Comics" y "Comics/Absolute Batman", el cómic va a la
+    // segunda, no a las dos.
+    const porCarpeta = new Map<string, Book[]>();
+    const sueltos: Book[] = [];
+    for (const book of filteredDocuments) {
+      let elegida: string | null = null;
+      let mejor = -1;
+      for (const folder of folders) {
+        // Por ruta (lo confiable) o, para libros viejos cuyo nombre guardaba el
+        // prefijo de la carpeta, por ese prefijo.
+        const porRuta = folderMatchDepth(book.uri, folder.folderUri);
+        const porNombre = book.name.startsWith(`${folder.name}/`) ? folder.name.length : -1;
+        const puntaje = Math.max(porRuta, porNombre);
+        if (puntaje > mejor) {
+          mejor = puntaje;
+          elegida = folder.folderUri;
+        }
+      }
+      if (elegida === null || mejor < 0) {
+        sueltos.push(book);
+        continue;
+      }
+      const actual = porCarpeta.get(elegida);
+      if (actual) actual.push(book);
+      else porCarpeta.set(elegida, [book]);
+    }
+
+    const sections = folders.map(({ folderUri, name }) => {
+      const books = sortBooks(porCarpeta.get(folderUri) ?? [], settings.librarySort);
       // Los libros del escaneo guardan solo el nombre del archivo, pero su URI
       // de SAF sí trae la ruta: de ahí sale en qué subcarpeta está cada uno.
       const porSubcarpeta = new Map<string, Book[]>();
@@ -300,13 +327,9 @@ export default function HomeScreen() {
       const groups = [...porSubcarpeta.entries()]
         .sort((a, b) => compareSubfolders(a[0], b[0]))
         .map(([path, libros]) => ({ path, books: libros }));
-      return { folderUri, name: folderName, books, groups };
+      return { folderUri, name, books, groups };
     });
-    const grouped = new Set(sections.flatMap((section) => section.books.map((b) => b.id)));
-    const ungrouped = sortBooks(
-      filteredDocuments.filter((book) => !grouped.has(book.id)),
-      settings.librarySort,
-    );
+    const ungrouped = sortBooks(sueltos, settings.librarySort);
     // Con un filtro o una búsqueda activos, las carpetas sin resultados no se muestran.
     const isFiltering = libraryFilter !== 'all' || searchQuery.trim().length > 0;
     return { sections: sections.filter((section) => !isFiltering || section.books.length > 0), ungrouped };

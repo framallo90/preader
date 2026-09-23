@@ -1,6 +1,47 @@
 import { describe, expect, it } from 'vitest';
 
-import { compareSubfolders, formatSubfolderLabel, getSubfolderPath } from './libraryFolders';
+import { compareSubfolders, folderMatchDepth, formatSubfolderLabel, getSubfolderPath } from './libraryFolders';
+
+const tree = (ruta: string) => `content://com.android.externalstorage.documents/tree/${encodeURIComponent(`primary:${ruta}`)}`;
+const docEn = (raiz: string, ruta: string) =>
+  `${tree(raiz)}/document/${encodeURIComponent(`primary:${raiz}/${ruta}`)}`;
+
+describe('folderMatchDepth', () => {
+  it('reconoce un libro descubierto en esa misma carpeta', () => {
+    expect(folderMatchDepth(docEn('Comics/Absolute Batman', 'n01.cbr'), tree('Comics/Absolute Batman'))).toBeGreaterThan(0);
+  });
+
+  it('reconoce un libro que entró por la carpeta de ARRIBA (el bug de las 0 carpetas)', () => {
+    // El archivo se encontró escaneando "Comics", pero está dentro de
+    // "Comics/Absolute Batman": tiene que contar para esa carpeta igual.
+    const desdeArriba = docEn('Comics', 'Absolute Batman/n01.cbr');
+    expect(folderMatchDepth(desdeArriba, tree('Comics/Absolute Batman'))).toBeGreaterThan(0);
+  });
+
+  it('un libro de otra carpeta no cuenta', () => {
+    expect(folderMatchDepth(docEn('Libros', 'x.pdf'), tree('Comics'))).toBe(-1);
+  });
+
+  it('no confunde una carpeta que es prefijo de otra', () => {
+    expect(folderMatchDepth(docEn('Libros2', 'x.pdf'), tree('Libros'))).toBe(-1);
+  });
+
+  it('la carpeta más específica gana por ser más larga', () => {
+    const libro = docEn('Comics', 'Absolute Batman/n01.cbr');
+    const general = folderMatchDepth(libro, tree('Comics'));
+    const especifica = folderMatchDepth(libro, tree('Comics/Absolute Batman'));
+    expect(especifica).toBeGreaterThan(general);
+  });
+
+  it('un archivo suelto en la raíz de la carpeta cuenta', () => {
+    expect(folderMatchDepth(docEn('Comics', 'suelto.cbr'), tree('Comics'))).toBeGreaterThan(0);
+  });
+
+  it('no se cae con datos raros', () => {
+    expect(folderMatchDepth('', tree('Comics'))).toBe(-1);
+    expect(folderMatchDepth(docEn('Comics', 'x.cbr'), '')).toBe(-1);
+  });
+});
 
 const RAIZ = 'content://com.android.externalstorage.documents/tree/primary%3ADownload%2FLibros';
 const doc = (ruta: string) => `${RAIZ}/document/${encodeURIComponent(`primary:Download/Libros/${ruta}`)}`;
