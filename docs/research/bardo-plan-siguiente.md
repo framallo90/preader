@@ -696,3 +696,23 @@ v7→v9 corren sobre sus datos reales.
 - Bloquear el permiso `INTERNET` en release.
 - Borrar `Claude outputs/` y `_to_delete/` (ahora están en `.gitignore`: no pueden entrar a git).
 - Borrar `src/config/apiKeys.ts` y rotar lo que haya adentro si se reusó.
+
+---
+
+## Play Store — EN PAUSA (2026-09-23)
+
+Facu lo dejó para después de terminar el desarrollo. Cuando se retome:
+
+- **Permisos que sobran:** `INTERNET` (no hay ninguna llamada de red), `RECORD_AUDIO` (lo mete la
+  librería `expo-audio` aunque `recordAudioAndroid` esté en `false`) y `SYSTEM_ALERT_WINDOW` (sobra
+  de la plantilla). Se sacan con `tools:node="remove"` en el manifiesto. Sin ellos, la seguridad de
+  datos se reduce a "no recopila nada".
+- **Firma:** hoy la versión final se firma con la clave de depuración, que Play rechaza. Hace falta
+  una clave propia, con respaldo: si se pierde, no se puede actualizar nunca más.
+- **Formato:** AAB (`bundleRelease`), no APK. `versionCode` es 1 y sube en cada subida.
+- **Decidir antes de la primera subida:** el identificador `com.personal.pdfvoicereader` no se
+  cambia nunca después de publicar. Cambiarlo ahora obliga a pasar los datos con exportar/importar.
+- **De Facu:** cuenta de desarrollador (pago único de 25 dólares), prueba cerrada con 12 personas
+  durante 14 días (cuentas personales nuevas), política de privacidad publicada (no en los sitios
+  del server), formularios de la ficha y declaración del servicio de voz en segundo plano.
+- **Ya está:** Android objetivo 36, `icon_512.png` y `feature_graphic.png`.
