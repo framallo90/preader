@@ -8,6 +8,7 @@ type BookRow = {
   title: string | null;
   author: string | null;
   coverUri: string | null;
+  coverColor: string | null;
   summary: string | null;
   uri: string;
   type: string;
@@ -27,7 +28,7 @@ type BookRow = {
 // que nunca se terminó de construir. `orderIndex` era de lo mismo y ahora sí se
 // usa: guarda tu orden a mano dentro de la carpeta.
 const BOOK_COLUMNS =
-  'id, name, title, author, coverUri, summary, uri, type, importedAt, lastOpenedAt, status, favorite, rating, review, orderIndex, rate, voiceId';
+  'id, name, title, author, coverUri, coverColor, summary, uri, type, importedAt, lastOpenedAt, status, favorite, rating, review, orderIndex, rate, voiceId';
 
 function toBookStatus(value: string | null): BookStatus {
   return value === 'to_read' || value === 'read' ? value : 'none';
@@ -40,6 +41,7 @@ function mapBookRow(row: BookRow): Book {
     title: row.title,
     author: row.author,
     coverUri: row.coverUri,
+    coverColor: row.coverColor,
     summary: row.summary,
     uri: row.uri,
     type: row.type,
@@ -70,6 +72,7 @@ export const bookRepository = {
          title = COALESCE(excluded.title, title),
          author = COALESCE(excluded.author, author),
          coverUri = COALESCE(excluded.coverUri, coverUri),
+         coverColor = CASE WHEN excluded.coverUri IS NULL THEN coverColor ELSE NULL END,
          summary = COALESCE(excluded.summary, summary),
          uri = excluded.uri,
          type = excluded.type,
@@ -100,10 +103,18 @@ export const bookRepository = {
          title = COALESCE(?, title),
          author = COALESCE(?, author),
          coverUri = COALESCE(?, coverUri),
+         coverColor = CASE WHEN ? IS NULL THEN coverColor ELSE NULL END,
          summary = COALESCE(?, summary)
        WHERE id = ?`,
-      [metadata.title, metadata.author, metadata.coverUri, metadata.summary ?? null, bookId],
+      // Una tapa nueva (aunque sea el mismo archivo reescrito) invalida su color.
+      [metadata.title, metadata.author, metadata.coverUri, metadata.coverUri, metadata.summary ?? null, bookId],
     );
+  },
+
+  /** Guarda el color de la tapa, ya calculado. */
+  async setCoverColor(bookId: string, coverColor: string): Promise<void> {
+    const db = await getDatabase();
+    await db.runAsync('UPDATE books SET coverColor = ? WHERE id = ?', [coverColor, bookId]);
   },
 
   /** Resumen escrito (o borrado) por el usuario desde la ficha. */

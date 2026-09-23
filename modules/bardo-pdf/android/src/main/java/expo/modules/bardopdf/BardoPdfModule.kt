@@ -2,6 +2,7 @@ package expo.modules.bardopdf
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.ColorMatrix
@@ -84,7 +85,7 @@ class BardoPdfModule : Module() {
     }
 
     // crop: [left, top, right, bottom] como fraccion de la pagina (0..1), o null.
-    // colorMode: "day" | "night" | "sepia".
+    // colorMode: "day" | "night" | "sepia" | "warm".
     AsyncFunction("renderPageAsync") { uri: String, pageIndex: Int, widthPx: Int, colorMode: String?, crop: List<Double>?, outputPath: String, promise: Promise ->
       renderExecutor.execute {
         try {
@@ -318,6 +319,21 @@ class BardoPdfModule : Module() {
       }
     }
 
+    // El color que representa una tapa (para teñir "Seguir leyendo"). Se llama
+    // una vez por tapa y el resultado se guarda: no hace falta que sea rapido,
+    // pero es chico igual (la imagen se decodifica a ~48 px).
+    AsyncFunction("coverColorAsync") { path: String, promise: Promise ->
+      extractExecutor.execute {
+        try {
+          promise.resolve(coverColor(path))
+        } catch (error: Exception) {
+          promise.resolve(null)
+        } catch (error: OutOfMemoryError) {
+          promise.resolve(null)
+        }
+      }
+    }
+
     AsyncFunction("closeAsync") { promise: Promise ->
       // La pagina de texto abierta para los resaltados vive en el otro hilo.
       extractExecutor.execute { closeTextDocument() }
@@ -382,6 +398,15 @@ class BardoPdfModule : Module() {
           -0.776f, 0f, 0f, 0f, 216f,
           0f, -0.776f, 0f, 0f, 216f,
           0f, 0f, -0.776f, 0f, 216f,
+          0f, 0f, 0f, 1f, 0f
+        )
+      )
+      // Noche calida: blanco -> #1B1511, negro -> #DCBE96 (ambar, sin azul).
+      "warm" -> ColorMatrix(
+        floatArrayOf(
+          -0.7569f, 0f, 0f, 0f, 220f,
+          0f, -0.6627f, 0f, 0f, 190f,
+          0f, 0f, -0.5216f, 0f, 150f,
           0f, 0f, 0f, 1f, 0f
         )
       )
@@ -790,6 +815,59 @@ class BardoPdfModule : Module() {
       // indice ilegible: se usa lo que se haya podido leer
     }
     return entries
+  }
+
+  // ── Color de la tapa ──────────────────────────────────────────────────────
+
+  // El tono que MANDA en la tapa, no el promedio: el promedio de una tapa
+  // blanca con un dibujo rojo es un rosa gris que no se parece a nada. Se
+  // reparten los pixeles en 12 tonos pesados por saturacion (el blanco, el
+  // negro y los grises no votan) y se promedia el tono ganador. Si la tapa es
+  // casi gris del todo, null: mejor sin tinte que con uno inventado.
+  private fun coverColor(path: String): String? {
+    val file = resolveFile(path)
+    if (!file.exists()) return null
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(file.absolutePath, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    var sample = 1
+    while (bounds.outWidth / (sample * 2) >= 48) sample *= 2
+    val bitmap = BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
+    try {
+      val w = bitmap.width
+      val h = bitmap.height
+      val pixels = IntArray(w * h)
+      bitmap.getPixels(pixels, 0, w, 0, 0, w, h)
+      val peso = DoubleArray(12)
+      val r = DoubleArray(12)
+      val g = DoubleArray(12)
+      val b = DoubleArray(12)
+      val hsv = FloatArray(3)
+      var total = 0.0
+      for (p in pixels) {
+        Color.colorToHSV(p, hsv)
+        val s = hsv[1]
+        val v = hsv[2]
+        if (v < 0.12f || s < 0.18f) continue
+        val bin = ((hsv[0] / 30f).toInt()).coerceIn(0, 11)
+        val wgt = (s * v).toDouble()
+        peso[bin] += wgt
+        r[bin] += Color.red(p) * wgt
+        g[bin] += Color.green(p) * wgt
+        b[bin] += Color.blue(p) * wgt
+        total += wgt
+      }
+      // Menos de un 4 % de la tapa con color de verdad: es una tapa gris.
+      if (total < pixels.size * 0.04) return null
+      var mejor = 0
+      for (i in 1 until 12) if (peso[i] > peso[mejor]) mejor = i
+      val cr = (r[mejor] / peso[mejor]).roundToInt().coerceIn(0, 255)
+      val cg = (g[mejor] / peso[mejor]).roundToInt().coerceIn(0, 255)
+      val cb = (b[mejor] / peso[mejor]).roundToInt().coerceIn(0, 255)
+      return String.format("#%02X%02X%02X", cr, cg, cb)
+    } finally {
+      bitmap.recycle()
+    }
   }
 
   // ── Util ──────────────────────────────────────────────────────────────────

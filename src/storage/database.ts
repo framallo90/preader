@@ -3,7 +3,7 @@ import { SQLiteDatabase, openDatabaseAsync } from 'expo-sqlite';
 // Nombre heredado de cuando la app se llamaba así: cambiarlo dejaría la biblioteca
 // del teléfono en un archivo huérfano.
 const DATABASE_NAME = 'pdf-voice-reader.db';
-const CURRENT_DB_VERSION = 8;
+const CURRENT_DB_VERSION = 9;
 let databasePromise: Promise<SQLiteDatabase> | null = null;
 
 export async function getDatabase() {
@@ -244,6 +244,12 @@ async function runMigrations(db: SQLiteDatabase) {
       );
       CREATE INDEX IF NOT EXISTS idx_reading_stats_day ON reading_stats (day);
     `);
+  }
+
+  if (version < 9) {
+    // v9: el color de la tapa, para teñir "Seguir leyendo". Se calcula una vez
+    // por tapa: NULL = todavía no, 'none' = tapa gris (sin tinte).
+    await addColumnIfMissing(db, 'books', 'coverColor', 'TEXT');
   }
 
   if (version < CURRENT_DB_VERSION) {

@@ -55,11 +55,11 @@ import { resolveChapters } from '../src/utils/resolveChapters';
 import { BlockLayoutCache } from '../src/utils/blockLayout';
 import { MAX_RATE, MIN_RATE, decreaseRate, formatRate, increaseRate } from '../src/utils/playbackRate';
 import { SearchMatch, foldText, searchText } from '../src/utils/textSearch';
-import { ThemeColors, getReaderColors, radius, resolveReadingMode } from '../src/utils/theme';
+import { ThemeColors, getReaderColors, radius, resolveReadingMode, warmNightColors } from '../src/utils/theme';
 
 const KEEP_AWAKE_TAG = 'reader-screen';
-const READING_THEMES: ReadingTheme[] = ['auto', 'day', 'sepia', 'night'];
-const READING_THEME_LABELS: Record<ReadingTheme, string> = { auto: 'Auto', day: 'Día', sepia: 'Sepia', night: 'Noche' };
+const READING_THEMES: ReadingTheme[] = ['auto', 'day', 'sepia', 'night', 'warm'];
+const READING_THEME_LABELS: Record<ReadingTheme, string> = { auto: 'Auto', day: 'Día', sepia: 'Sepia', night: 'Noche', warm: 'Cálida' };
 const MAX_QUOTE_CHARS = 1200;
 /** Cada cuánto se suma tiempo leído. */
 const READ_TICK_MS = 5000;
@@ -123,9 +123,14 @@ function getStatusColors(colors: ThemeColors, tone: StatusTone) {
 
 export default function ReaderScreen() {
   const { documentId, mode } = useLocalSearchParams<{ documentId?: string; mode?: string }>();
-  const { colors, settings, updateSettings } = useAppSettings();
+  const { colors: appColors, settings, updateSettings } = useAppSettings();
   // El tema de lectura afecta solo al lector (página y texto), no a toda la app.
   const readingMode = resolveReadingMode(settings.readingTheme, settings.darkMode);
+  // Salvo la noche cálida: su gracia es que NO haya luz azul en pantalla, así
+  // que también los botones y barras del lector pasan a ámbar.
+  const colors = readingMode === 'warm' ? warmNightColors : appColors;
+  // Los carteles flotantes van en blanco sobre fondo oscuro; en la noche cálida, en ámbar.
+  const warmOverlayText = readingMode === 'warm' ? { color: warmNightColors.text } : null;
   const readerColors = useMemo(() => getReaderColors(readingMode), [readingMode]);
   const [notes, setNotes] = useState<BookNote[]>([]);
   // Las notas al día sin meterlas como dependencia del recordatorio de vuelta.
@@ -298,6 +303,16 @@ export default function ReaderScreen() {
               pdf: { ...cachedPdf, pageOffsets: placeholders.pageOffsets, textPending: true },
             };
             const startAt = withPendingJump(quickDocument, progress);
+            // La página de arranque se fija YA, no en el próximo render: si el
+            // texto definitivo llega antes de ese render (con el caché caliente
+            // pasa), su aviso pregunta "¿en qué página estás?" y la respuesta
+            // era la 1. Así se perdía la posición y se guardaba la página 1.
+            currentPdfPageRef.current = pageForProgress(
+              getAbsoluteCharIndex(quickDocument, startAt?.blockIndex ?? 0, startAt?.charIndex ?? 0),
+              startAt?.page ?? null,
+              placeholders.pageOffsets,
+              placeholders.fullText.length,
+            );
             prewarmInitialPageRef.current(book, quickDocument, startAt);
             setDocumentRecord(book);
             setSavedProgress(startAt);
@@ -1557,6 +1572,9 @@ export default function ReaderScreen() {
         options={{
           title: documentRecord ? getDisplayTitle(documentRecord) : 'Lector',
           headerShown: !isImmersive,
+          headerStyle: { backgroundColor: colors.background },
+          headerTintColor: colors.primary,
+          headerTitleStyle: { fontSize: 17, fontWeight: '700', color: colors.text },
           headerRight: () => (
             <View style={styles.headerActions}>
               <IconButton
@@ -1670,7 +1688,7 @@ export default function ReaderScreen() {
         ) : null}
         {(isImmersive || !pageInfo) ? (
           <View pointerEvents="none" style={styles.readOverlay}>
-            <Text style={styles.readOverlayText} numberOfLines={1}>
+            <Text style={[styles.readOverlayText, warmOverlayText]} numberOfLines={1}>
               {pageInfo && pageInfo.pageCount > 0
                 ? `${Math.round(((pdfPageForUi + 1) / pageInfo.pageCount) * 100)} % · pág. ${pdfPageForUi + 1}/${pageInfo.pageCount}`
                 : pagedInfo && pagedInfo.pageCount > 0
@@ -1710,7 +1728,7 @@ export default function ReaderScreen() {
 
         {!canNarrate && !isImmersive && !isComicBook ? (
           <View pointerEvents="none" style={styles.scanNotice}>
-            <Text style={styles.scanNoticeText}>
+            <Text style={[styles.scanNoticeText, warmOverlayText]}>
               {isTextPending
                 ? `Preparando voz y búsqueda…${textPrepPercent ? ` ${textPrepPercent} %` : ''}`
                 : 'PDF escaneado: sin texto para la voz'}
@@ -1825,7 +1843,7 @@ export default function ReaderScreen() {
             <Chip
               key={theme}
               label={READING_THEME_LABELS[theme]}
-              icon={theme === 'auto' ? 'contrast-outline' : theme === 'day' ? 'sunny-outline' : theme === 'sepia' ? 'cafe-outline' : 'moon-outline'}
+              icon={theme === 'auto' ? 'contrast-outline' : theme === 'day' ? 'sunny-outline' : theme === 'sepia' ? 'cafe-outline' : theme === 'warm' ? 'flame-outline' : 'moon-outline'}
               active={settings.readingTheme === theme}
               onPress={() => { void updateSettings({ readingTheme: theme }); }}
               colors={colors}
@@ -2312,7 +2330,7 @@ export default function ReaderScreen() {
 
       {flashMessage ? (
         <View pointerEvents="none" style={styles.flash}>
-          <Text style={styles.flashText}>{flashMessage}</Text>
+          <Text style={[styles.flashText, warmOverlayText]}>{flashMessage}</Text>
         </View>
       ) : null}
 

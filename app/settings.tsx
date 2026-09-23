@@ -36,6 +36,7 @@ const READING_THEME_OPTIONS: { value: ReadingTheme; label: string; description: 
   { value: 'day', label: 'Día', description: 'Página blanca.' },
   { value: 'sepia', label: 'Sepia', description: 'Papel cálido, descansa la vista.' },
   { value: 'night', label: 'Noche', description: 'Página oscura con texto claro.' },
+  { value: 'warm', label: 'Noche cálida', description: 'Oscura y con letra ámbar, sin luz azul: para leer en la cama.' },
 ];
 const SAMPLE_TEXTS: Record<string, string> = {
   es: 'Esta es la voz que va a leer tus libros.',

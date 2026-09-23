@@ -607,3 +607,45 @@ descartaba en silencio y volvía a `'recent'`. Arreglado de raíz: la lista (`LI
 la fuente de verdad y **el tipo sale de ella**, así no se pueden volver a desincronizar.
 
 13 tests nuevos en `bookDisplay` (que además era uno de los huecos de E5).
+
+---
+
+## Las cinco tandas, hechas (2026-09-23)
+
+Todo probado en el emulador (AVD `bardo_test`, build release x86_64). Un commit por tanda en
+`local-como-readera`.
+
+| Tanda | Commit | Qué entró |
+|---|---|---|
+| 1 | `706e4a6` | Las siete baratas (buscar en notas, exportar notas, temporizador de capítulo…) |
+| 2 | `2c8fbaa` | Exportar/importar mis datos, sagas, biblioteca en lista |
+| 3 | `83dccfc` | Diccionario de pronunciación, pantalla "Reproduciendo" |
+| 4 | `1762710` | Mapa del libro, estadísticas (DB v8), personajes sin spoilers |
+| 5 | (este) | Cita como imagen, noche cálida, "Seguir leyendo" con el color de la tapa (DB v9) |
+
+**Lo que se aprendió probando, y no estaba en el plan:**
+
+- **Mapa en PDF: por páginas, no por texto.** Un PDF con texto al principio y láminas al final
+  ponía "la mitad" en la página 10 de 40. El mapa usa la misma escala que el porcentaje, y un toque
+  lejos de toda marca va a la *página* tocada (las láminas no tienen posición de texto).
+- **Personajes: medido en Hermes, no estimado.** Medio Quijote (1 millón de letras) tarda ~0,3 s.
+  Se calcula al abrir la hoja, sólo sobre lo ya leído, recorriendo el texto con índices sin copiarlo.
+  "Finalmente" pasaba por nombre: ahora un nombre necesita ≥25 % de apariciones en medio de oración.
+- **Estadísticas en el respaldo**, con `MAX` al importar: importar dos veces no duplica tiempo.
+- **Noche cálida es también el chrome del lector** (botones, barra, carteles, número de página):
+  un botón lila en pantalla arruina la idea de "sin luz azul". El número de página sobre el color de
+  acento usaba blanco fijo: ilegible sobre lila y sobre ámbar; ahora usa `primaryText`.
+- **Color de la tapa**: el tono que *manda* (12 tonos pesados por saturación), no el promedio.
+  Tapa gris → `'none'`, sin tinte. Una tapa nueva invalida el color. La mezcla baja sola si el texto
+  quedara por debajo de 4,5:1 (test con tapas extremas en los tres fondos).
+- **Cita como imagen**: `react-native-view-shot` + `expo-sharing` (dependencias nuevas, nativas).
+  Hay que pasar ancho *y* alto o sale a la densidad de pantalla (~800 px); esquinas rectas en la
+  imagen porque las transparentes se ven negras o blancas según la app.
+
+**Bug viejo encontrado de rebote (grave):** al reabrir un PDF, a veces volvía a la página 1 y la
+**guardaba**, perdiendo dónde ibas. Carrera: con el caché caliente, el texto definitivo llegaba antes
+del primer render del documento provisorio y preguntaba "¿en qué página estás?" cuando la respuesta
+todavía era la 1. Pasaba 2 de cada 4 veces tras instalar una versión nueva; con el arreglo, 6 de 6
+bien. La página de arranque se fija al crear el documento provisorio, no en el render siguiente.
+
+**Otro de paso:** un libro marcado "Leído" a mano sin progreso decía "Leído · Sin empezar".

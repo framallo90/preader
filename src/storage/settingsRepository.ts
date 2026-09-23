@@ -62,7 +62,7 @@ export const settingsRepository = {
 
       if (row.key === 'readingTheme') {
         const parsed = parseValue('readingTheme', row.value);
-        nextSettings.readingTheme = ['auto', 'day', 'sepia', 'night'].includes(parsed) ? parsed : 'auto';
+        nextSettings.readingTheme = ['auto', 'day', 'sepia', 'night', 'warm'].includes(parsed) ? parsed : 'auto';
       }
 
       if (row.key === 'cropPdfMargins') {

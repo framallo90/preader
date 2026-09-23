@@ -52,6 +52,8 @@ export type Book = {
   title: string | null;      // título real extraído de la metadata
   author: string | null;     // autor extraído de la metadata
   coverUri: string | null;   // portada extraída, archivo local
+  /** Color que manda en la tapa ("#RRGGBB"); 'none' si es gris; null/ausente si no se calculó. */
+  coverColor?: string | null;
   summary: string | null;    // de qué va: del archivo, del texto, o escrita por vos
   uri: string;
   type: string;
@@ -148,7 +150,7 @@ export type AppSettings = {
   libraryLayout: LibraryLayout;
 };
 
-export type ReadingTheme = 'auto' | 'day' | 'sepia' | 'night';
+export type ReadingTheme = 'auto' | 'day' | 'sepia' | 'night' | 'warm';
 export type ReaderFontFamily = 'sans' | 'serif';
 /**
  * Los órdenes de la biblioteca. La LISTA es la fuente de verdad y el tipo sale

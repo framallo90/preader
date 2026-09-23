@@ -4,7 +4,8 @@ import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, TextIn
 
 import { AppButton } from '../src/components/AppButton';
 import { Screen } from '../src/components/Screen';
-import { Icon, IconName } from '../src/components/ui';
+import { QuoteShareSheet, ShareableQuote } from '../src/components/QuoteShareSheet';
+import { Icon, IconButton, IconName } from '../src/components/ui';
 import { useAppSettings } from '../src/hooks/useAppSettings';
 import { safeFileName, saveTextFile } from '../src/services/exportService';
 import { readerJumpStore } from '../src/services/readerJumpStore';
@@ -35,6 +36,7 @@ export default function NotesScreen() {
   const [notes, setNotes] = useState<NoteWithBook[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isExporting, setIsExporting] = useState(false);
+  const [sharing, setSharing] = useState<ShareableQuote | null>(null);
 
   const load = useCallback(async (texto: string) => {
     try {
@@ -137,6 +139,16 @@ export default function NotesScreen() {
                 {NOTE_LABELS[item.type]}
                 {item.page !== null ? ` · pág. ${item.page + 1}` : ''}
               </Text>
+              {item.body ? (
+                <IconButton
+                  name="share-social-outline"
+                  label="Compartir como imagen"
+                  onPress={() => setSharing({ body: item.body ?? '', bookTitle: titleOf(item), author: item.bookAuthor })}
+                  colors={colors}
+                  size={18}
+                  style={styles.shareButton}
+                />
+              ) : null}
             </View>
             <Text style={[styles.cardBook, { color: colors.textMuted }]} numberOfLines={1}>
               {titleOf(item)}
@@ -166,6 +178,7 @@ export default function NotesScreen() {
           />
         </View>
       ) : null}
+      <QuoteShareSheet quote={sharing} onClose={() => setSharing(null)} colors={colors} />
     </Screen>
   );
 }
@@ -188,7 +201,8 @@ const styles = StyleSheet.create({
   empty: { fontSize: 14, lineHeight: 20, marginTop: 24, textAlign: 'center' },
   card: { borderRadius: radius.md, borderWidth: StyleSheet.hairlineWidth, padding: 12, gap: 4 },
   cardHead: { flexDirection: 'row', alignItems: 'center', gap: 6 },
-  cardKind: { fontSize: 11.5, fontWeight: '800', letterSpacing: 0.3 },
+  cardKind: { flex: 1, fontSize: 11.5, fontWeight: '800', letterSpacing: 0.3 },
+  shareButton: { minWidth: 32, minHeight: 28, marginVertical: -6 },
   cardBook: { fontSize: 12.5, fontWeight: '600' },
   cardBody: { fontSize: 14.5, lineHeight: 20 },
   cardComment: { fontSize: 13, lineHeight: 18, fontStyle: 'italic' },

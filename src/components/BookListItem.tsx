@@ -73,8 +73,8 @@ function BookListItemComponent({ book, colors, progress, remaining, onOpen, onLo
             </View>
           ) : null}
           <Text style={[styles.metaText, { color: colors.textMuted }]} numberOfLines={1}>
-            {hasProgress ? `${Math.max(1, Math.round(progress))} %` : 'Sin empezar'}
-            {remaining ? ` · ${remaining}` : ''}
+            {hasProgress ? `${Math.max(1, Math.round(progress))} %` : badge === 'read' ? '' : 'Sin empezar'}
+            {remaining && badge !== 'read' ? ` · ${remaining}` : ''}
           </Text>
         </View>
         {hasProgress ? (

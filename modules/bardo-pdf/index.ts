@@ -6,7 +6,7 @@ export type PdfInfo = {
   pageAspect: number | null;
 };
 
-export type PdfColorMode = 'day' | 'night' | 'sepia';
+export type PdfColorMode = 'day' | 'night' | 'sepia' | 'warm';
 
 /** [left, top, right, bottom] como fracción de la página (0..1). */
 export type PdfCropBox = [number, number, number, number];
@@ -55,6 +55,8 @@ declare class BardoPdfNativeModule extends NativeModule<BardoPdfEvents> {
     y: number,
   ): Promise<{ text: string; charInPage: number } | null>;
   extractPagesAsync(uri: string): Promise<PdfExtraction>;
+  /** El color que manda en una imagen de tapa ("#RRGGBB"), o null si es casi gris. */
+  coverColorAsync(path: string): Promise<string | null>;
   closeAsync(): Promise<void>;
 }
 

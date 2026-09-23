@@ -22,6 +22,8 @@ import { compareSubfolders, folderMatchDepth, formatSubfolderLabel, getSubfolder
 import { foldText } from '../src/utils/textSearch';
 import { getDocumentTypeLabel } from '../src/utils/formatters';
 import { radius } from '../src/utils/theme';
+import { NO_COVER_COLOR, coverTint } from '../src/utils/coverTint';
+import { getBardoPdfModule, isBardoPdfAvailable } from '../modules/bardo-pdf';
 import { filePickerService } from '../src/services/filePickerService';
 import { isComicFile } from '../src/services/bookTypes';
 import { backfillCovers } from '../src/services/coverBackfillService';
@@ -363,7 +365,7 @@ export default function HomeScreen() {
               previous.map((book) => (book.id === bookId ? { ...book, coverUri } : book)),
             );
             setLastOpenedDocument((previous) =>
-              previous && previous.id === bookId ? { ...previous, coverUri } : previous,
+              previous && previous.id === bookId ? { ...previous, coverUri, coverColor: null } : previous,
             );
           },
         });
@@ -555,6 +557,34 @@ export default function HomeScreen() {
     if (playback.isPlaying) return 'Reproduciendo ahora';
     return 'Listo para seguir';
   }, [playback.isPlaying, playback.isPreparing]);
+
+  // El color de la tapa de "Seguir leyendo": se calcula UNA vez por tapa (en
+  // nativo, sobre una miniatura) y queda guardado; después es leer un campo.
+  const coverColorPendingId = lastOpenedDocument && lastOpenedDocument.coverUri && lastOpenedDocument.coverColor == null
+    ? lastOpenedDocument.id
+    : null;
+  useEffect(() => {
+    if (!coverColorPendingId || !lastOpenedDocument?.coverUri || !isBardoPdfAvailable()) return;
+    let vivo = true;
+    const coverUri = lastOpenedDocument.coverUri;
+    void getBardoPdfModule()
+      .coverColorAsync(coverUri)
+      .then(async (color) => {
+        const valor = color ?? NO_COVER_COLOR;
+        await bookRepository.setCoverColor(coverColorPendingId, valor);
+        if (!vivo) return;
+        setLastOpenedDocument((previous) =>
+          previous && previous.id === coverColorPendingId && previous.coverUri === coverUri ? { ...previous, coverColor: valor } : previous,
+        );
+      })
+      .catch(() => {});
+    return () => { vivo = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coverColorPendingId, lastOpenedDocument?.coverUri]);
+  const continueTint = useMemo(
+    () => coverTint(lastOpenedDocument?.coverColor, colors, settings.darkMode),
+    [lastOpenedDocument?.coverColor, colors, settings.darkMode],
+  );
 
   const continueProgress = lastOpenedDocument ? (progressMap.get(lastOpenedDocument.id) ?? 0) : 0;
   // Cuánto falta del libro de la tarjeta. Se pide el tamaño de ESE libro nada
@@ -825,7 +855,7 @@ export default function HomeScreen() {
             ) : null}
 
             {lastOpenedDocument ? (
-              <View style={[styles.continueCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+              <View style={[styles.continueCard, { backgroundColor: continueTint?.background ?? colors.surface, borderColor: continueTint?.border ?? colors.border }]}>
                 <Pressable onPress={() => openReader(lastOpenedDocument.id)} style={styles.continueBody} accessibilityRole="button">
                   {lastOpenedDocument.coverUri ? (
                     <Image source={{ uri: lastOpenedDocument.coverUri }} style={styles.continueCover} contentFit="cover" />

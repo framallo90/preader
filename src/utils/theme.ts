@@ -81,7 +81,29 @@ export const sepiaColors: ThemeColors = {
   highlightText: '#4A2410',
 };
 
-export type ReadingMode = 'day' | 'sepia' | 'night';
+/**
+ * Noche cálida: para leer en la cama. Papel casi negro tirando a marrón y
+ * letra ámbar, sin blancos ni lilas: nada de luz azul. El acento (tinta) pasa
+ * a ámbar por lo mismo. Contraste: texto 11:1, secundario 6,5:1, acento 8:1.
+ */
+export const warmNightColors: ThemeColors = {
+  ...darkColors,
+  background: '#17120E',
+  surface: '#221A15',
+  surfaceMuted: '#2C231C',
+  readerSurface: '#1B1511',
+  readerAccent: '#3A2A1E',
+  text: '#E6CBA6',
+  textMuted: '#B09A7E',
+  border: '#3D3128',
+  primary: '#E3A56B',
+  primaryText: '#2A1A0C',
+  accent: '#4A3322',
+  highlight: '#5C3A1C',
+  highlightText: '#FFE6CC',
+};
+
+export type ReadingMode = 'day' | 'sepia' | 'night' | 'warm';
 
 /** 'auto' sigue al modo oscuro de la app; el resto fuerza el tema del lector. */
 export function resolveReadingMode(theme: 'auto' | ReadingMode, darkMode: boolean): ReadingMode {
@@ -92,6 +114,7 @@ export function resolveReadingMode(theme: 'auto' | ReadingMode, darkMode: boolea
 /** Colores del LECTOR (no de toda la app) para un modo de lectura. */
 export function getReaderColors(mode: ReadingMode): ThemeColors {
   if (mode === 'night') return darkColors;
+  if (mode === 'warm') return warmNightColors;
   if (mode === 'sepia') return sepiaColors;
   return lightColors;
 }

@@ -5,6 +5,7 @@ import { ActivityIndicator, Alert, Pressable, StyleSheet, Text, TextInput, View 
 
 import { AppButton } from '../src/components/AppButton';
 import { Screen } from '../src/components/Screen';
+import { QuoteShareSheet, ShareableQuote } from '../src/components/QuoteShareSheet';
 import { Chip, Icon, IconName, Row, Section } from '../src/components/ui';
 import { useAppSettings } from '../src/hooks/useAppSettings';
 import { readerJumpStore } from '../src/services/readerJumpStore';
@@ -33,6 +34,7 @@ export default function BookScreen() {
   const { bookId, from } = useLocalSearchParams<{ bookId?: string; from?: string }>();
   const { colors } = useAppSettings();
   const [book, setBook] = useState<Book | null>(null);
+  const [sharing, setSharing] = useState<ShareableQuote | null>(null);
   const [progress, setProgress] = useState(0);
   // Tamaño del libro: con esto y el avance se dice cuánto falta.
   const [readingSize, setReadingSize] = useState<{ textLength: number | null; pageCount: number | null }>({
@@ -437,7 +439,7 @@ export default function BookScreen() {
                 </View>
               </View>
             ) : (
-              <View style={styles.row}>
+              <View style={styles.noteActions}>
                 <AppButton
                   label={note.comment ? 'Editar nota' : 'Agregar nota'}
                   icon="create-outline"
@@ -446,12 +448,23 @@ export default function BookScreen() {
                   colors={colors}
                   compact
                 />
+                {note.body && book ? (
+                  <AppButton
+                    label="Compartir"
+                    icon="share-social-outline"
+                    onPress={() => setSharing({ body: note.body ?? '', bookTitle: getDisplayTitle(book), author: book.author })}
+                    variant="ghost"
+                    colors={colors}
+                    compact
+                  />
+                ) : null}
                 <AppButton label="Borrar" icon="trash-outline" onPress={() => handleDeleteNote(note)} variant="ghost" colors={colors} compact labelStyle={{ color: colors.danger }} />
               </View>
             )}
           </View>
         ))}
       </Section>
+      <QuoteShareSheet quote={sharing} onClose={() => setSharing(null)} colors={colors} />
     </Screen>
   );
 }
@@ -469,6 +482,7 @@ const styles = StyleSheet.create({
   progressTrack: { height: 6, borderRadius: 999, overflow: 'hidden' },
   progressFill: { height: '100%', borderRadius: 999 },
   row: { flexDirection: 'row', alignItems: 'center', gap: 8 },
+  noteActions: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', columnGap: 4 },
   flex: { flex: 1 },
   summary: { fontSize: 15, lineHeight: 22 },
   padded: { padding: 14, gap: 10 },

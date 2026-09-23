@@ -16,7 +16,7 @@ type NoteRow = {
 const NOTE_COLUMNS = 'id, bookId, type, charIndex, page, body, comment, createdAt, updatedAt';
 
 /** Una nota con lo justo del libro para mostrarla fuera de su ficha. */
-export type NoteWithBook = BookNote & { bookTitle: string | null; bookName: string };
+export type NoteWithBook = BookNote & { bookTitle: string | null; bookName: string; bookAuthor: string | null };
 const NOTE_TYPES: NoteType[] = ['bookmark', 'quote', 'note'];
 
 function mapNoteRow(row: NoteRow): BookNote {
@@ -128,12 +128,12 @@ export const noteRepository = {
     const db = await getDatabase();
     const limpio = query.trim();
     const base = `SELECT n.id, n.bookId, n.type, n.charIndex, n.page, n.body, n.comment,
-                         n.createdAt, n.updatedAt, b.title AS bookTitle, b.name AS bookName
+                         n.createdAt, n.updatedAt, b.title AS bookTitle, b.name AS bookName, b.author AS bookAuthor
                   FROM notes n JOIN books b ON b.id = n.bookId`;
     const rows = limpio.length === 0
-      ? await db.getAllAsync<NoteRow & { bookTitle: string | null; bookName: string }>(
+      ? await db.getAllAsync<NoteRow & { bookTitle: string | null; bookName: string; bookAuthor: string | null }>(
           `${base} ORDER BY n.updatedAt DESC LIMIT ?`, [limit])
-      : await db.getAllAsync<NoteRow & { bookTitle: string | null; bookName: string }>(
+      : await db.getAllAsync<NoteRow & { bookTitle: string | null; bookName: string; bookAuthor: string | null }>(
           `${base}
            WHERE n.body LIKE ? OR n.comment LIKE ? OR b.title LIKE ? OR b.name LIKE ?
            ORDER BY n.updatedAt DESC LIMIT ?`,
@@ -142,6 +142,7 @@ export const noteRepository = {
       ...mapNoteRow(row),
       bookTitle: row.bookTitle,
       bookName: row.bookName,
+      bookAuthor: row.bookAuthor,
     }));
   },
 

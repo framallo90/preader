@@ -63,6 +63,7 @@ const PAGE_BACKGROUND: Record<PdfColorMode, string> = {
   day: '#ffffff',
   sepia: '#f4ecd8',
   night: '#121212',
+  warm: '#1b1511',
 };
 
 type PdfPageImageProps = {
@@ -536,8 +537,10 @@ const PdfPageListInner = forwardRef(function PdfPageList(
             : null}
           </Animated.View>
           <View style={[styles.pageNumber, speakingPage === pageIndex ? { backgroundColor: colors.primary } : null]}>
-            {speakingPage === pageIndex ? <Icon name="volume-high" size={12} color="#ffffff" /> : null}
-            <Text style={styles.pageNumberText}>{pageIndex + 1}</Text>
+            {speakingPage === pageIndex ? <Icon name="volume-high" size={12} color={colors.primaryText} /> : null}
+            {/* Sobre el color de acento va su propio color de texto (el blanco no
+                se lee sobre lila ni sobre ámbar); en la noche cálida, nada de blanco. */}
+            <Text style={[styles.pageNumberText, { color: speakingPage === pageIndex ? colors.primaryText : colorMode === 'warm' ? '#E6CBA6' : '#ffffff' }]}>{pageIndex + 1}</Text>
           </View>
           {zoomedPage === pageIndex ? (
             <Pressable
