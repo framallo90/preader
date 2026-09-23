@@ -14,6 +14,9 @@ type NoteRow = {
 };
 
 const NOTE_COLUMNS = 'id, bookId, type, charIndex, page, body, comment, createdAt, updatedAt';
+
+/** Una nota con lo justo del libro para mostrarla fuera de su ficha. */
+export type NoteWithBook = BookNote & { bookTitle: string | null; bookName: string };
 const NOTE_TYPES: NoteType[] = ['bookmark', 'quote', 'note'];
 
 function mapNoteRow(row: NoteRow): BookNote {
@@ -110,6 +113,36 @@ export const noteRepository = {
       [bookId, charIndex - tolerance, charIndex + tolerance, charIndex],
     );
     return row ? mapNoteRow(row) : null;
+  },
+
+  /**
+   * Todas tus notas de todos los libros, con el título del libro al lado.
+   *
+   * Es para la pantalla "Mis notas": muchas veces te acordás de la cita pero no
+   * de en qué libro estaba. Sin `query` devuelve las últimas.
+   *
+   * Se filtra en SQL y no en memoria: las notas crecen con los años y traerlas
+   * todas para filtrar acá sería traer el archivo entero en cada tecla.
+   */
+  async searchAll(query: string, limit = 200): Promise<NoteWithBook[]> {
+    const db = await getDatabase();
+    const limpio = query.trim();
+    const base = `SELECT n.id, n.bookId, n.type, n.charIndex, n.page, n.body, n.comment,
+                         n.createdAt, n.updatedAt, b.title AS bookTitle, b.name AS bookName
+                  FROM notes n JOIN books b ON b.id = n.bookId`;
+    const rows = limpio.length === 0
+      ? await db.getAllAsync<NoteRow & { bookTitle: string | null; bookName: string }>(
+          `${base} ORDER BY n.updatedAt DESC LIMIT ?`, [limit])
+      : await db.getAllAsync<NoteRow & { bookTitle: string | null; bookName: string }>(
+          `${base}
+           WHERE n.body LIKE ? OR n.comment LIKE ? OR b.title LIKE ? OR b.name LIKE ?
+           ORDER BY n.updatedAt DESC LIMIT ?`,
+          [`%${limpio}%`, `%${limpio}%`, `%${limpio}%`, `%${limpio}%`, limit]);
+    return rows.map((row) => ({
+      ...mapNoteRow(row),
+      bookTitle: row.bookTitle,
+      bookName: row.bookName,
+    }));
   },
 
   async countForBook(bookId: string): Promise<number> {

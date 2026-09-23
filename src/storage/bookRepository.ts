@@ -18,6 +18,8 @@ type BookRow = {
   rating: number | null;
   review: string | null;
   orderIndex: number | null;
+  rate: number | null;
+  voiceId: string | null;
 };
 
 // `sagaId` sigue EXISTIENDO en la tabla (sacarla obliga a reconstruirla y no
@@ -25,7 +27,7 @@ type BookRow = {
 // que nunca se terminó de construir. `orderIndex` era de lo mismo y ahora sí se
 // usa: guarda tu orden a mano dentro de la carpeta.
 const BOOK_COLUMNS =
-  'id, name, title, author, coverUri, summary, uri, type, importedAt, lastOpenedAt, status, favorite, rating, review, orderIndex';
+  'id, name, title, author, coverUri, summary, uri, type, importedAt, lastOpenedAt, status, favorite, rating, review, orderIndex, rate, voiceId';
 
 function toBookStatus(value: string | null): BookStatus {
   return value === 'to_read' || value === 'read' ? value : 'none';
@@ -48,6 +50,8 @@ function mapBookRow(row: BookRow): Book {
     rating: typeof row.rating === 'number' && row.rating >= 1 && row.rating <= 5 ? row.rating : null,
     review: row.review,
     orderIndex: typeof row.orderIndex === 'number' ? row.orderIndex : 0,
+    rate: typeof row.rate === 'number' && row.rate > 0 ? row.rate : null,
+    voiceId: row.voiceId,
   };
 }
 
@@ -143,6 +147,22 @@ export const bookRepository = {
         await db.runAsync('UPDATE books SET orderIndex = ? WHERE id = ?', [entry.orderIndex, entry.id]);
       }
     });
+  },
+
+  /**
+   * Velocidad y voz propias de este libro.
+   *
+   * `null` en cualquiera de las dos significa "usá la general de Ajustes", que
+   * es lo que pasa hasta que tocás algo desde el lector de ESE libro.
+   */
+  async setPlaybackPrefs(bookId: string, prefs: { rate?: number | null; voiceId?: string | null }): Promise<void> {
+    const db = await getDatabase();
+    if (prefs.rate !== undefined) {
+      await db.runAsync('UPDATE books SET rate = ? WHERE id = ?', [prefs.rate, bookId]);
+    }
+    if (prefs.voiceId !== undefined) {
+      await db.runAsync('UPDATE books SET voiceId = ? WHERE id = ?', [prefs.voiceId, bookId]);
+    }
   },
 
   async setFavorite(bookId: string, favorite: boolean): Promise<void> {

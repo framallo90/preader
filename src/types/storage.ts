@@ -20,6 +20,8 @@ export const NEW_BOOK_DEFAULTS = {
   // 0 = sin ordenar a mano. Va al final de su carpeta, así un libro que aparece
   // en un escaneo nuevo no se mete arriba del orden que vos armaste.
   orderIndex: 0,
+  rate: null,
+  voiceId: null,
 };
 
 export type NoteType = 'bookmark' | 'quote' | 'note';
@@ -66,6 +68,10 @@ export type Book = {
    * un puñado de filas y no la carpeta entera.
    */
   orderIndex: number;
+  /** Velocidad propia de este libro; null = la general de Ajustes. */
+  rate: number | null;
+  /** Voz propia de este libro; null = la general de Ajustes. */
+  voiceId: string | null;
 };
 
 export type Chapter = {
@@ -130,6 +136,8 @@ export type AppSettings = {
   horizontalPages: boolean;
   /** Los botones de volumen pasan de página mientras hay un libro abierto. */
   volumeKeysTurnPage: boolean;
+  /** Decir "Capítulo 3. El cuaderno" antes de empezar a leer un capítulo. */
+  announceChapters: boolean;
   /** Orden de la biblioteca. */
   librarySort: LibrarySort;
 };
@@ -174,5 +182,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   autoScrollSpeed: 0,
   horizontalPages: false,
   volumeKeysTurnPage: false,
+  announceChapters: true,
   librarySort: 'recent',
 };

@@ -1,0 +1,34 @@
+import * as FileSystem from 'expo-file-system/legacy';
+
+const { StorageAccessFramework } = FileSystem;
+
+/**
+ * Guardar un archivo donde vos quieras, con el selector del sistema.
+ *
+ * Se usa SAF y no una carpeta propia de la app porque lo exportado tiene que
+ * sobrevivir a desinstalar Bardo, y porque en el selector de Android aparecen
+ * también Drive y los demás destinos que tengas: eso da "mandarlo a la nube"
+ * sin que la app hable con ninguna nube ni pida permisos de red.
+ */
+export async function saveTextFile(
+  suggestedName: string,
+  mimeType: string,
+  content: string,
+): Promise<'saved' | 'cancelled'> {
+  const permission = await StorageAccessFramework.requestDirectoryPermissionsAsync();
+  if (!permission.granted) return 'cancelled';
+  const uri = await StorageAccessFramework.createFileAsync(permission.directoryUri, suggestedName, mimeType);
+  await FileSystem.writeAsStringAsync(uri, content, { encoding: FileSystem.EncodingType.UTF8 });
+  return 'saved';
+}
+
+/** Nombre de archivo sin caracteres que rompan en Android ni en Windows. */
+export function safeFileName(base: string, extension: string): string {
+  const limpio = base
+    .replace(/[\\/:*?"<>|]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 60);
+  const fecha = new Date().toISOString().slice(0, 10);
+  return `${limpio.length > 0 ? limpio : 'bardo'} ${fecha}.${extension}`;
+}

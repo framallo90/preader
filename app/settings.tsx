@@ -1,5 +1,5 @@
 import { createAudioPlayer } from 'expo-audio';
-import { Stack } from 'expo-router';
+import { Stack, router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Constants from 'expo-constants';
 import { Alert, Linking, StyleSheet, Switch, View } from 'react-native';
@@ -357,7 +357,7 @@ export default function SettingsScreen() {
         <Row
           icon="speedometer-outline"
           title="Velocidad"
-          subtitle="Se puede cambiar también desde el lector"
+          subtitle="La de arranque. Si la cambiás desde un libro, queda sólo para ese libro"
           colors={colors}
           right={
             <Stepper
@@ -369,6 +369,13 @@ export default function SettingsScreen() {
               colors={colors}
             />
           }
+        />
+        <Row
+          icon="git-branch-outline"
+          title="Anunciar los capítulos"
+          subtitle="Dice el capítulo al empezar uno; si retomás en el medio, no dice nada"
+          colors={colors}
+          right={<Switch value={settings.announceChapters} onValueChange={(value) => { void updateSettings({ announceChapters: value }); }} {...switchColors} />}
         />
         <Row
           icon="volume-high-outline"
@@ -423,6 +430,13 @@ export default function SettingsScreen() {
             right={<IconButton name="close-circle-outline" label="Quitar exclusión" onPress={() => { void handleRemoveExcludedFolder(path); }} colors={colors} />}
           />
         ))}
+        <Row
+          icon="chatbox-ellipses-outline"
+          title="Mis notas y citas"
+          subtitle="Todo lo que guardaste, de todos los libros, buscable"
+          colors={colors}
+          onPress={() => router.push('/notes')}
+        />
         <Row
           icon="refresh-outline"
           title="Libros ocultos"

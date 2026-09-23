@@ -82,3 +82,49 @@ export function paragraphSpans(text: string): Span[] {
   if (rest) parts.push(rest);
   return parts;
 }
+
+/** Cierres de oración: punto, exclamación, pregunta y puntos suspensivos. */
+function isSentenceEnd(code: number): boolean {
+  return code === 46 || code === 33 || code === 63 || code === 0x2026;
+}
+
+/** Más largo que esto ya no es una cita: se recorta al párrafo. */
+const MAX_SENTENCE = 600;
+
+/**
+ * La oración que contiene a `at`, para citar lo que la voz está diciendo.
+ *
+ * Corta en `. ! ? …` y en renglón en blanco. Si sale larguísima (un texto sin
+ * puntuación, una tabla) se recorta, porque media página no es una cita.
+ *
+ * Trabaja con índices sobre el texto original, sin copiarlo: esto corre sobre
+ * libros enteros y cada copia cuesta caro en Hermes.
+ */
+export function sentenceSpanAround(text: string, at: number): Span {
+  const n = text.length;
+  if (n === 0) return { start: 0, end: 0 };
+  const pos = Math.min(Math.max(at, 0), n - 1);
+
+  let start = 0;
+  for (let i = pos - 1; i > 0; i--) {
+    const code = text.charCodeAt(i);
+    if (isSentenceEnd(code) || (code === 10 && text.charCodeAt(i - 1) === 10)) {
+      start = i + 1;
+      break;
+    }
+  }
+
+  let end = n;
+  for (let j = pos; j < n; j++) {
+    const code = text.charCodeAt(j);
+    if (isSentenceEnd(code)) { end = j + 1; break; }
+    if (code === 10 && j + 1 < n && text.charCodeAt(j + 1) === 10) { end = j; break; }
+  }
+
+  if (end - start > MAX_SENTENCE) {
+    // Demasiado largo: se recorta alrededor del punto, sin cortar una palabra.
+    start = Math.max(start, pos - MAX_SENTENCE / 2);
+    end = Math.min(end, start + MAX_SENTENCE);
+  }
+  return trimSpan(text, start, end) ?? { start, end };
+}

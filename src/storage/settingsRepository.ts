@@ -111,6 +111,10 @@ export const settingsRepository = {
         nextSettings.volumeKeysTurnPage = parseValue('volumeKeysTurnPage', row.value) === true;
       }
 
+      if (row.key === 'announceChapters') {
+        nextSettings.announceChapters = parseValue('announceChapters', row.value) !== false;
+      }
+
       if (row.key === 'textMargin') {
         const parsed = parseValue('textMargin', row.value);
         if (typeof parsed === 'number' && Number.isFinite(parsed)) {

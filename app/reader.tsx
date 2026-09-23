@@ -25,6 +25,10 @@ import { readerJumpStore } from '../src/services/readerJumpStore';
 import { PdfPageList, PdfPageListHandle } from '../src/components/PdfPageList';
 import { getAbsoluteCharIndex, getPositionFromAbsoluteChar } from '../src/utils/documentProgress';
 import { charForPage, pageForChar, pageForProgress } from '../src/utils/pageMap';
+import { sentenceSpanAround } from '../src/utils/textSpans';
+import { chapterToAnnounce } from '../src/utils/chapterAnnouncement';
+import { speakAnnouncement } from '../src/services/chapterAnnouncer';
+import { detectLanguage } from '../src/utils/languageDetect';
 import { findQuoteIndex } from '../src/utils/pageQuote';
 import { getDisplayTitle } from '../src/utils/bookDisplay';
 import { getParserForDocument, isComicFile, isPdfFile } from '../src/services/parserRegistry';
@@ -50,6 +54,8 @@ const KEEP_AWAKE_TAG = 'reader-screen';
 const READING_THEMES: ReadingTheme[] = ['auto', 'day', 'sepia', 'night'];
 const READING_THEME_LABELS: Record<ReadingTheme, string> = { auto: 'Auto', day: 'Día', sepia: 'Sepia', night: 'Noche' };
 const MAX_QUOTE_CHARS = 1200;
+/** Después de esto, volver al libro merece un recordatorio de dónde ibas. */
+const RESUME_HINT_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
 const DIM_STEP = 0.1;
 const MAX_DIM = 0.8;
 
@@ -109,6 +115,9 @@ export default function ReaderScreen() {
   const readingMode = resolveReadingMode(settings.readingTheme, settings.darkMode);
   const readerColors = useMemo(() => getReaderColors(readingMode), [readingMode]);
   const [notes, setNotes] = useState<BookNote[]>([]);
+  // Las notas al día sin meterlas como dependencia del recordatorio de vuelta.
+  const notesRef = useRef<BookNote[]>([]);
+  notesRef.current = notes;
   const [annotationTarget, setAnnotationTarget] = useState<AnnotationTarget | null>(null);
   const [noteDraft, setNoteDraft] = useState('');
   const [isSearchVisible, setIsSearchVisible] = useState(false);
@@ -122,6 +131,14 @@ export default function ReaderScreen() {
   documentRecordRef.current = documentRecord;
   const [parsedDocument, setParsedDocument] = useState<ParsedDocument | null>(null);
   const [savedProgress, setSavedProgress] = useState<ReadingProgress | null>(null);
+  /**
+   * "Dónde quedaste": el recordatorio que aparece al volver a un libro después
+   * de varios días. Null = no hay nada que mostrar (o ya lo cerraste).
+   */
+  const [resumeHint, setResumeHint] = useState<{ excerpt: string; notes: BookNote[] } | null>(null);
+  const resumeShownRef = useRef(false);
+  /** Fecha del último progreso guardado ANTES de esta apertura. */
+  const leftOffAtRef = useRef<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [loadingStatus, setLoadingStatus] = useState('Abriendo el libro…');
   // Vista única: SIEMPRE se ve el libro (páginas del PDF o texto) y el audio se
@@ -141,6 +158,14 @@ export default function ReaderScreen() {
   // Hay audio cargado para este libro (aunque esté en pausa): muestra el transporte.
   const [isAudioLoaded, setIsAudioLoaded] = useState(false);
   const [sleepTimerMinutes, setSleepTimerMinutes] = useState<number | null>(null);
+  /**
+   * Parar cuando termine el capítulo que estás escuchando.
+   *
+   * Se guarda el CARÁCTER donde termina, no el número de capítulo: es la misma
+   * unidad con la que avanza la voz, así que alcanza con mirar si ya lo pasó.
+   * `null` = apagado.
+   */
+  const [stopAtChar, setStopAtChar] = useState<number | null>(null);
   const [sleepDeadlineAt, setSleepDeadlineAt] = useState<number | null>(null);
   const [clockNow, setClockNow] = useState(Date.now());
   // Texto del PDF preparándose de fondo (el libro ya se está leyendo): % de avance.
@@ -195,6 +220,10 @@ export default function ReaderScreen() {
           ]),
         );
         if (!book) throw new DocumentParseError('missing_file', 'Este libro ya no está en la biblioteca.');
+        // CUÁNDO dejaste de leer, capturado ANTES de que abrir el libro vuelva a
+        // guardar progreso: si se leyera después, siempre diría "recién", y el
+        // recordatorio de "dónde quedaste" no aparecería nunca.
+        leftOffAtRef.current = progress?.updatedAt ?? null;
         void bookRepository.touchBook(book.id);
         // Título disponible ya durante la carga (para el header y para saber qué se abre).
         if (isMounted) setDocumentRecord(book);
@@ -427,12 +456,18 @@ export default function ReaderScreen() {
     [documentId],
   );
 
+  // Velocidad y voz EFECTIVAS: las propias de este libro si las ajustaste desde
+  // acá; si no, las generales de Ajustes. Un ensayo se escucha a otra velocidad
+  // que una novela, y reajustar en cada cambio de libro era molesto.
+  const effectiveRate = documentRecord?.rate ?? settings.defaultRate;
+  const effectiveVoiceId = documentRecord?.voiceId ?? settings.defaultVoiceId;
+
   const reader = useReaderController({
     document: parsedDocument,
     initialBlockIndex: savedProgress?.blockIndex ?? 0,
     initialCharIndex: savedProgress?.charIndex ?? 0,
-    rate: settings.defaultRate,
-    voiceId: settings.defaultVoiceId,
+    rate: effectiveRate,
+    voiceId: effectiveVoiceId,
     onError: setSpeechError,
     onProgressChange: persistProgress,
   });
@@ -844,6 +879,29 @@ export default function ReaderScreen() {
     return { charIndex: block.startChar, page: null, excerpt: block.text.slice(0, 160).trim() };
   }, [parsedDocument, pageInfo]);
 
+  /**
+   * Guarda como cita la ORACIÓN que la voz está diciendo.
+   *
+   * Escuchando no se puede buscar el párrafo en pantalla: para cuando lo
+   * encontrás, la voz ya siguió. Esto lo agarra de la posición del audio.
+   */
+  const handleMarkSpoken = useCallback(async () => {
+    if (!documentId || !parsedDocument) return;
+    const span = sentenceSpanAround(parsedDocument.fullText, currentAbsoluteChar);
+    const cita = parsedDocument.fullText.slice(span.start, span.end).replace(/\s+/g, ' ').trim();
+    if (cita.length === 0) return;
+    await noteRepository.addNote({
+      bookId: documentId,
+      type: 'quote',
+      charIndex: span.start,
+      page: pageInfo ? currentPdfPageRef.current : null,
+      body: cita.slice(0, MAX_QUOTE_CHARS),
+      comment: null,
+    });
+    await loadNotes();
+    showFlash('Cita guardada');
+  }, [documentId, parsedDocument, currentAbsoluteChar, pageInfo, loadNotes, showFlash]);
+
   const handleToggleBookmark = useCallback(async () => {
     if (!documentId) return;
     if (bookmarkHere) {
@@ -968,6 +1026,39 @@ export default function ReaderScreen() {
   }, [pageInfo, parsedDocument, currentAbsoluteChar]);
 
 
+  // ── "Dónde quedaste" ──────────────────────────────────────────────────────
+  //
+  // Volver a un libro después de dos semanas es volver a mitad de una escena
+  // que ya no te acordás. Esto muestra, una sola vez al abrir, el párrafo donde
+  // cortaste y lo último que habías anotado.
+  //
+  // Se mira cuándo se guardó el PROGRESO (no cuándo abriste el libro): es la
+  // fecha en que realmente dejaste de leer.
+  useEffect(() => {
+    if (resumeShownRef.current) return;
+    if (!parsedDocument || !savedProgress || isLoading) return;
+    // Un PDF abre con un documento PROVISORIO ("Página 1", "Página 2"…) y el
+    // texto de verdad llega después. Citar eso mostraría "Página 1" en vez del
+    // párrafo. No se marca como mostrado: se reintenta cuando llega el texto.
+    if (parsedDocument.pdf?.textPending) return;
+    if (!leftOffAtRef.current) return;
+    const dejadoEl = Date.parse(leftOffAtRef.current);
+    if (!Number.isFinite(dejadoEl)) return;
+    if (Date.now() - dejadoEl < RESUME_HINT_AFTER_MS) return;
+    if ((savedProgress.percentage ?? 0) <= 0) return;
+
+    resumeShownRef.current = true;
+    const at = getAbsoluteCharIndex(parsedDocument, savedProgress.blockIndex, savedProgress.charIndex);
+    const span = sentenceSpanAround(parsedDocument.fullText, at);
+    const excerpt = parsedDocument.fullText.slice(span.start, span.end).replace(/\s+/g, ' ').trim();
+    if (excerpt.length === 0) return;
+    // Las notas más cercanas a donde cortaste, que es lo que estabas pensando.
+    const cercanas = [...notesRef.current]
+      .sort((a, b) => Math.abs(a.charIndex - at) - Math.abs(b.charIndex - at))
+      .slice(0, 3);
+    setResumeHint({ excerpt, notes: cercanas });
+  }, [parsedDocument, savedProgress, isLoading]);
+
   // ── Resaltar en la PÁGINA lo que la voz está leyendo ──────────────────────
   //
   // En modo texto la palabra se resalta sola (el bloque sabe su rango). Sobre
@@ -1091,6 +1182,16 @@ export default function ReaderScreen() {
     return () => clearInterval(interval);
   }, [sleepDeadlineAt]);
 
+  // Frenar al llegar al final del capítulo marcado. Va aparte del temporizador
+  // de minutos porque no depende del reloj sino de la posición de la voz.
+  useEffect(() => {
+    if (stopAtChar === null) return;
+    if (currentAbsoluteChar < stopAtChar) return;
+    setStopAtChar(null);
+    const r = readerRef.current;
+    if (r.isPlaying || r.isPreparing) void r.stop();
+  }, [stopAtChar, currentAbsoluteChar]);
+
   const findBlockForChar = useCallback(
     (targetChar: number) => {
       if (!parsedDocument?.blocks?.length) return 0;
@@ -1103,26 +1204,59 @@ export default function ReaderScreen() {
     [parsedDocument],
   );
 
+  /**
+   * Anuncia el capítulo ANTES de que arranque el audio, si corresponde.
+   *
+   * Nunca interrumpe algo que ya está sonando: por eso se llama siempre justo
+   * antes de un `play` o de un salto, y nunca desde el bucle de la voz.
+   */
+  const announceChapterBefore = useCallback(async (atChar: number, forced: boolean) => {
+    if (!settings.announceChapters || !parsedDocument) return;
+    const chapter = chapterToAnnounce(parsedDocument.chapters, atChar, forced);
+    if (!chapter) return;
+    await speakAnnouncement(chapter, effectiveVoiceId, detectLanguage(parsedDocument.fullText), effectiveRate);
+  }, [settings.announceChapters, parsedDocument, effectiveVoiceId, effectiveRate]);
+
+  // Saltar de capítulo: si estabas escuchando, primero se anuncia a dónde fuiste.
+  const jumpToChapter = useCallback(
+    async (startChar: number) => {
+      const sonando = readerRef.current.isPlaying;
+      if (sonando) {
+        await readerRef.current.stop();
+        await announceChapterBefore(startChar, true);
+      }
+      await readerRef.current.seekToBlock(findBlockForChar(startChar), sonando);
+    },
+    [findBlockForChar, announceChapterBefore],
+  );
+
   const handleNextChapter = useCallback(() => {
     if (!parsedDocument?.chapters?.length || !currentChapter) return;
     const next = parsedDocument.chapters.find((ch) => ch.orderIndex === currentChapter.orderIndex + 1);
     if (!next) return;
-    void reader.seekToBlock(findBlockForChar(next.startChar), reader.isPlaying);
-  }, [parsedDocument, currentChapter, findBlockForChar, reader]);
+    void jumpToChapter(next.startChar);
+  }, [parsedDocument, currentChapter, jumpToChapter]);
 
   const handlePreviousChapter = useCallback(() => {
     if (!parsedDocument?.chapters?.length || !currentChapter) return;
     const prev = parsedDocument.chapters.find((ch) => ch.orderIndex === currentChapter.orderIndex - 1);
     if (!prev) return;
-    void reader.seekToBlock(findBlockForChar(prev.startChar), reader.isPlaying);
-  }, [parsedDocument, currentChapter, findBlockForChar, reader]);
+    void jumpToChapter(prev.startChar);
+  }, [parsedDocument, currentChapter, jumpToChapter]);
 
   const sleepTimerOptions = useMemo(() => [
     { value: 'off', label: 'Sin temporizador', description: 'La lectura sigue hasta que la detengas.' },
+    ...(currentChapter
+      ? [{
+          value: 'chapter',
+          label: 'Al terminar el capítulo',
+          description: `Se detiene al final de "${currentChapter.title}", así retomás en un corte natural.`,
+        }]
+      : []),
     { value: '10', label: '10 minutos', description: 'Se detiene sola después de diez minutos.' },
     { value: '20', label: '20 minutos', description: 'Se detiene sola después de veinte minutos.' },
     { value: '30', label: '30 minutos', description: 'Se detiene sola después de treinta minutos.' },
-  ], []);
+  ], [currentChapter]);
 
   const sleepTimerLabel = useMemo(() => formatRemainingTime(sleepDeadlineAt, clockNow), [clockNow, sleepDeadlineAt]);
 
@@ -1136,28 +1270,51 @@ export default function ReaderScreen() {
 
   const statusColors = getStatusColors(colors, readerStatus.tone);
 
+  /**
+   * Cambiar la velocidad desde el lector la guarda en ESTE libro, no en el
+   * ajuste general: es el lugar donde uno dice "este texto lo quiero más
+   * lento", no "todos los libros".
+   */
   const handleRateChange = useCallback(
     async (direction: 1 | -1) => {
-      const nextRate = direction > 0 ? increaseRate(settings.defaultRate) : decreaseRate(settings.defaultRate);
-      await updateSettings({ defaultRate: nextRate });
+      const nextRate = direction > 0 ? increaseRate(effectiveRate) : decreaseRate(effectiveRate);
+      if (!documentId) return;
+      setDocumentRecord((prev) => (prev ? { ...prev, rate: nextRate } : prev));
+      await bookRepository.setPlaybackPrefs(documentId, { rate: nextRate });
     },
-    [settings.defaultRate, updateSettings],
+    [effectiveRate, documentId],
   );
+
+  /** Vuelve a la velocidad general de Ajustes para este libro. */
+  const handleResetRate = useCallback(async () => {
+    if (!documentId) return;
+    setDocumentRecord((prev) => (prev ? { ...prev, rate: null } : prev));
+    await bookRepository.setPlaybackPrefs(documentId, { rate: null });
+  }, [documentId]);
 
   const handleSleepTimerChange = useCallback((optionValue: string) => {
     setIsSleepTimerPickerVisible(false);
+    // Los dos modos se excluyen: elegir uno apaga el otro.
+    if (optionValue === 'chapter') {
+      setSleepTimerMinutes(null);
+      setSleepDeadlineAt(null);
+      setStopAtChar(currentChapter ? currentChapter.endChar : null);
+      return;
+    }
+    setStopAtChar(null);
     if (optionValue === 'off') { setSleepTimerMinutes(null); setSleepDeadlineAt(null); return; }
     const minutes = Number(optionValue);
     if (!Number.isFinite(minutes) || minutes <= 0) { setSleepTimerMinutes(null); setSleepDeadlineAt(null); return; }
     setSleepTimerMinutes(minutes);
     setSleepDeadlineAt(Date.now() + minutes * 60 * 1000);
-  }, []);
+  }, [currentChapter]);
 
   const handleTogglePlayback = useCallback(async () => {
     if (reader.isPreparing) return;
     if (reader.isPlaying) { await reader.stop(); return; }
+    await announceChapterBefore(absoluteCharRef.current, false);
     await reader.play();
-  }, [reader]);
+  }, [reader, announceChapterBefore]);
 
   // Estable entre renders (lee el controlador por ref): con un closure nuevo por
   // párrafo, cada tick de la voz re-renderizaba todos los párrafos montados.
@@ -1363,7 +1520,7 @@ export default function ReaderScreen() {
             <View style={[styles.audioBarRow, { backgroundColor: colors.surface, borderColor: colors.border }]}>
               <IconButton name="stop" label="Detener" onPress={() => { void handleStop().catch(() => {}); }} colors={colors} />
               <IconButton name="play-back" label="15 segundos atrás" onPress={() => { void documentAudioPlaybackService.seekBy(-15); }} colors={colors} />
-              <Text style={[styles.audioRate, { color: colors.textMuted }]}>{formatRate(settings.defaultRate)}</Text>
+              <Text style={[styles.audioRate, { color: colors.textMuted }]}>{formatRate(effectiveRate)}</Text>
               <IconButton name="play-forward" label="15 segundos adelante" onPress={() => { void documentAudioPlaybackService.seekBy(15); }} colors={colors} />
             </View>
           </View>
@@ -1617,23 +1774,38 @@ export default function ReaderScreen() {
           <Row
             icon="speedometer-outline"
             title="Velocidad"
+            subtitle={documentRecord?.rate != null ? 'Propia de este libro · tocá para volver a la general' : 'La general de Ajustes'}
             colors={colors}
+            onPress={documentRecord?.rate != null ? () => { void handleResetRate(); } : undefined}
             right={
               <Stepper
-                value={formatRate(settings.defaultRate)}
+                value={formatRate(effectiveRate)}
                 onDecrease={() => { void handleRateChange(-1); }}
                 onIncrease={() => { void handleRateChange(1); }}
-                canDecrease={settings.defaultRate > MIN_RATE + 0.001}
-                canIncrease={settings.defaultRate < MAX_RATE - 0.001}
+                canDecrease={effectiveRate > MIN_RATE + 0.001}
+                canIncrease={effectiveRate < MAX_RATE - 0.001}
                 disabled={reader.isPreparing}
                 colors={colors}
               />
             }
           />
           <Row
+            icon="chatbox-ellipses-outline"
+            title="Marcar lo que está sonando"
+            subtitle="Guarda como cita la oración que la voz dice ahora"
+            colors={colors}
+            onPress={() => { void handleMarkSpoken(); }}
+          />
+          <Row
             icon="alarm-outline"
             title="Temporizador de sueño"
-            subtitle={sleepTimerLabel ? `La voz se apaga en ${sleepTimerLabel}` : 'Apagado'}
+            subtitle={
+              stopAtChar !== null
+                ? 'Se apaga al terminar el capítulo'
+                : sleepTimerLabel
+                  ? `La voz se apaga en ${sleepTimerLabel}`
+                  : 'Apagado'
+            }
             colors={colors}
             onPress={() => { setActiveSheet('none'); setIsSleepTimerPickerVisible(true); }}
           />
@@ -1664,6 +1836,25 @@ export default function ReaderScreen() {
         {isAudioLoaded || reader.isPlaying ? (
           <AppButton label="Detener y descargar el audio" icon="stop-circle-outline" onPress={() => { setActiveSheet('none'); void handleStop().catch(() => {}); }} variant="secondary" colors={colors} />
         ) : null}
+      </Sheet>
+
+      {/* "Dónde quedaste": aparece una sola vez al volver después de días. */}
+      <Sheet visible={resumeHint !== null} onClose={() => setResumeHint(null)} colors={colors} top>
+        <Text style={[styles.sheetLabel, { color: colors.textMuted }]}>DONDE QUEDASTE</Text>
+        <Text style={[styles.annotationExcerpt, { color: colors.text }]} numberOfLines={6}>
+          {resumeHint?.excerpt}
+        </Text>
+        {resumeHint && resumeHint.notes.length > 0 ? (
+          <>
+            <Text style={[styles.sheetLabel, { color: colors.textMuted }]}>LO QUE HABÍAS ANOTADO</Text>
+            {resumeHint.notes.map((note) => (
+              <Text key={note.id} style={[styles.resumeNote, { color: colors.textMuted }]} numberOfLines={3}>
+                · {note.comment?.trim() || note.body?.trim() || 'Marcador'}
+              </Text>
+            ))}
+          </>
+        ) : null}
+        <AppButton label="Seguir leyendo" icon="book-outline" onPress={() => setResumeHint(null)} colors={colors} />
       </Sheet>
 
       {/* Anotar un párrafo o una página: marcador, cita o nota. */}
@@ -1842,6 +2033,7 @@ const styles = StyleSheet.create({
   headerMenuButton: { borderWidth: 1, borderRadius: 999, paddingHorizontal: 14, paddingVertical: 6, marginRight: 4 },
   headerMenuLabel: { fontSize: 14, fontWeight: '700' },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  resumeNote: { fontSize: 13.5, lineHeight: 19 },
   annotationExcerpt: { fontSize: 13, lineHeight: 19, fontStyle: 'italic' },
   annotationInput: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, fontSize: 14, minHeight: 64, textAlignVertical: 'top' },
   topBackdrop: { justifyContent: 'flex-start', paddingTop: 56, paddingHorizontal: 12 },

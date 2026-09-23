@@ -3,7 +3,7 @@ import { SQLiteDatabase, openDatabaseAsync } from 'expo-sqlite';
 // Nombre heredado de cuando la app se llamaba así: cambiarlo dejaría la biblioteca
 // del teléfono en un archivo huérfano.
 const DATABASE_NAME = 'pdf-voice-reader.db';
-const CURRENT_DB_VERSION = 6;
+const CURRENT_DB_VERSION = 7;
 let databasePromise: Promise<SQLiteDatabase> | null = null;
 
 export async function getDatabase() {
@@ -220,6 +220,14 @@ async function runMigrations(db: SQLiteDatabase) {
     // v6: resumen del libro (la sinopsis que trae el archivo, las primeras
     // líneas de la prosa, o lo que escribas vos).
     await addColumnIfMissing(db, 'books', 'summary', 'TEXT');
+  }
+
+  if (version < 7) {
+    // v7: velocidad y voz propias de cada libro. Un ensayo se escucha a 1,2x y
+    // una novela a 1,6x; tener un solo valor global obligaba a reajustar cada
+    // vez que cambiabas de libro. NULL = usar el ajuste general.
+    await addColumnIfMissing(db, 'books', 'rate', 'REAL');
+    await addColumnIfMissing(db, 'books', 'voiceId', 'TEXT');
   }
 
   if (version < CURRENT_DB_VERSION) {

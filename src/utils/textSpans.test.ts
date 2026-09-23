@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isWhitespaceCode, paragraphSpans, spanLength, splitSpan, trimSpan } from './textSpans';
+import { isWhitespaceCode, paragraphSpans, sentenceSpanAround, spanLength, splitSpan, trimSpan } from './textSpans';
 
 const NL = String.fromCharCode(10);
 const TAB = String.fromCharCode(9);
@@ -144,5 +144,44 @@ describe('spanLength', () => {
   it('es la distancia entre las puntas', () => {
     expect(spanLength({ start: 3, end: 10 })).toBe(7);
     expect(spanLength({ start: 5, end: 5 })).toBe(0);
+  });
+});
+
+describe('sentenceSpanAround', () => {
+  const texto = 'Primera oración. El viajero llegó al pueblo cuando caía la tarde. Última acá.';
+
+  it('devuelve la oración que contiene al índice', () => {
+    const at = texto.indexOf('caía');
+    const span = sentenceSpanAround(texto, at);
+    expect(texto.slice(span.start, span.end)).toBe('El viajero llegó al pueblo cuando caía la tarde.');
+  });
+
+  it('en la primera oración arranca en cero', () => {
+    const span = sentenceSpanAround(texto, 2);
+    expect(texto.slice(span.start, span.end)).toBe('Primera oración.');
+  });
+
+  it('en la última llega hasta el final', () => {
+    const span = sentenceSpanAround(texto, texto.length - 3);
+    expect(texto.slice(span.start, span.end)).toBe('Última acá.');
+  });
+
+  it('corta en renglón en blanco aunque no haya punto', () => {
+    const suelto = 'UN TITULO SIN PUNTO\n\nY el párrafo que sigue.';
+    const span = sentenceSpanAround(suelto, 3);
+    expect(suelto.slice(span.start, span.end)).toBe('UN TITULO SIN PUNTO');
+  });
+
+  it('recorta una "oración" larguísima en vez de devolver media página', () => {
+    const largo = `${'palabra '.repeat(400)}fin.`;
+    const span = sentenceSpanAround(largo, 2000);
+    expect(span.end - span.start).toBeLessThanOrEqual(600);
+    expect(span.end).toBeGreaterThan(span.start);
+  });
+
+  it('no se cae con texto vacío ni con índices fuera de rango', () => {
+    expect(sentenceSpanAround('', 5)).toEqual({ start: 0, end: 0 });
+    expect(sentenceSpanAround(texto, -10).end).toBeGreaterThan(0);
+    expect(sentenceSpanAround(texto, 99999).end).toBe(texto.length);
   });
 });
