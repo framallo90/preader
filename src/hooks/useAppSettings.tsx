@@ -10,6 +10,7 @@ import {
   useState,
 } from 'react';
 
+import { documentAudioPlaybackService } from '../services/documentAudioPlaybackService';
 import { settingsRepository } from '../storage/settingsRepository';
 import { AppSettings, DEFAULT_SETTINGS } from '../types/storage';
 import { ThemeColors, getThemeColors } from '../utils/theme';
@@ -65,6 +66,12 @@ export function AppSettingsProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     void SystemUI.setBackgroundColorAsync(colors.background);
   }, [colors.background]);
+
+  // El diccionario de pronunciación vive en los ajustes pero lo usa el servicio
+  // de voz, que no lee ajustes: se le pasa acá, así vale en cualquier pantalla.
+  useEffect(() => {
+    documentAudioPlaybackService.setPronunciations(settings.pronunciations);
+  }, [settings.pronunciations]);
 
   const value = useMemo(
     () => ({

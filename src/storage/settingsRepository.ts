@@ -111,6 +111,16 @@ export const settingsRepository = {
         nextSettings.volumeKeysTurnPage = parseValue('volumeKeysTurnPage', row.value) === true;
       }
 
+      if (row.key === 'pronunciations') {
+        const parsed = parseValue('pronunciations', row.value);
+        nextSettings.pronunciations = Array.isArray(parsed)
+          ? parsed.filter(
+              (item): item is { from: string; to: string } =>
+                typeof item === 'object' && item !== null && typeof item.from === 'string' && typeof item.to === 'string',
+            )
+          : [];
+      }
+
       if (row.key === 'announceChapters') {
         nextSettings.announceChapters = parseValue('announceChapters', row.value) !== false;
       }

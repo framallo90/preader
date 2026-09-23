@@ -12,6 +12,7 @@ import { pagePercentage, progressFootprint } from '../utils/progressRemap';
 import { detectLanguage } from '../utils/languageDetect';
 import { clamp } from '../utils/math';
 import { prepareSpeechText } from '../utils/speechText';
+import { Pronunciation, applyPronunciations, cleanPronunciations, textSignature } from '../utils/pronunciation';
 import { SynthesisChunk, buildAnchoredChunks, buildSentenceSpans, chunkIndexForChar } from '../utils/synthesisSegments';
 import { Span } from '../utils/textSpans';
 import { resolveVoice } from '../utils/voices';
@@ -74,6 +75,35 @@ function buildChunkId(documentId: string, chunk: SynthesisChunk, voiceId: string
 }
 
 class DocumentAudioPlaybackService {
+  /** Diccionario de pronunciación vigente (Ajustes → Voz). */
+  private pronunciations: Pronunciation[] = [];
+
+  setPronunciations(entries: Pronunciation[]) {
+    this.pronunciations = cleanPronunciations(entries);
+  }
+
+  /** Lo que el motor de voz va a decir para este tramo. */
+  private spokenTextFor(document: ParsedDocument, chunk: SynthesisChunk): string {
+    // prepareSpeechText une los renglones cortados del PDF (que el motor leería
+    // como pausas) sin cambiar el largo del tramo; después se aplica el
+    // diccionario de pronunciación, que sí puede cambiarlo (ver pronunciation.ts).
+    const raw = prepareSpeechText(document.fullText.slice(chunk.startChar, chunk.endChar));
+    return applyPronunciations(raw, this.pronunciations);
+  }
+
+  /**
+   * Clave del audio de un tramo. Si el diccionario cambió lo que se dice, la
+   * clave lleva la firma del texto hablado: si no, al cambiar una pronunciación
+   * se seguiría reproduciendo el audio viejo, con el nombre mal dicho.
+   */
+  private chunkIdFor(document: ParsedDocument, chunk: SynthesisChunk, voiceId: string | null): string {
+    const base = buildChunkId(document.id, chunk, voiceId);
+    if (this.pronunciations.length === 0) return base;
+    const raw = prepareSpeechText(document.fullText.slice(chunk.startChar, chunk.endChar));
+    const spoken = applyPronunciations(raw, this.pronunciations);
+    return spoken === raw ? base : `${base}--p${textSignature(spoken)}`;
+  }
+
   private player: AudioPlayer | null = null;
   private playerSubscription: { remove: () => void } | null = null;
   private listeners = new Set<PlaybackListener>();
@@ -297,7 +327,7 @@ class DocumentAudioPlaybackService {
     sessionId: number,
     silent = false,
   ): Promise<string | null> {
-    const chunkId = buildChunkId(document.id, chunk, voiceId);
+    const chunkId = this.chunkIdFor(document, chunk, voiceId);
     const existing = this.chunkPreparationPromises.get(chunkId);
     if (existing) return existing;
 
@@ -310,9 +340,7 @@ class DocumentAudioPlaybackService {
     // hacía que fal pausara entre cada oración (y a mitad de oraciones largas
     // partidas) → sonaba cortado "como si hubiera un punto". El texto ya viene
     // limpio y normalizado del parser.
-    // prepareSpeechText une los renglones cortados del PDF (que el motor leería
-    // como pausas) sin cambiar el largo del tramo.
-    const rawText = prepareSpeechText(document.fullText.slice(chunk.startChar, chunk.endChar));
+    const rawText = this.spokenTextFor(document, chunk);
     const promise = synthesizeSpeech(chunkId, rawText, voiceId, this.activeLanguage)
       .then((mp3Uri) => {
         // SIEMPRE devolvemos el uri: esta promesa puede estar cacheada y ser
@@ -388,7 +416,7 @@ class DocumentAudioPlaybackService {
     // cola del motor para que el tramo pedido no espere detrás de prefetch viejos.
     // (En el avance natural NO: ahí lo que está en vuelo es justo lo que sigue.)
     if (targetIndexOverride === undefined && this.chunkPreparationPromises.size > 0) {
-      const targetId = buildChunkId(document.id, targetChunk, voiceId);
+      const targetId = this.chunkIdFor(document, targetChunk, voiceId);
       if (!this.chunkPreparationPromises.has(targetId)) {
         this.chunkPreparationPromises.clear();
         await cancelPendingSynthesis();
@@ -402,7 +430,7 @@ class DocumentAudioPlaybackService {
 
     // Por rango, no por número de tramo: tras re-anclar la grilla, el tramo 3 puede
     // ser otro texto y el player tiene que cargar el archivo nuevo.
-    const sourceKey = buildChunkId(document.id, targetChunk, voiceId);
+    const sourceKey = this.chunkIdFor(document, targetChunk, voiceId);
 
     if (this.activeSourceKey !== sourceKey) {
       this.lastPersistedAt = 0;

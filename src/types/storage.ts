@@ -138,6 +138,8 @@ export type AppSettings = {
   volumeKeysTurnPage: boolean;
   /** Decir "Capítulo 3. El cuaderno" antes de empezar a leer un capítulo. */
   announceChapters: boolean;
+  /** Cómo tiene que decir la voz ciertas palabras: [{ from: 'Qhorin', to: 'Corin' }]. */
+  pronunciations: { from: string; to: string }[];
   /** Orden de la biblioteca. */
   librarySort: LibrarySort;
   /** Cómo se ve la biblioteca: grilla de tapas o lista con autor y avance. */
@@ -188,6 +190,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   horizontalPages: false,
   volumeKeysTurnPage: false,
   announceChapters: true,
+  pronunciations: [],
   librarySort: 'recent',
   libraryLayout: 'grid',
 };

@@ -3,7 +3,8 @@ import { activateKeepAwakeAsync, deactivateKeepAwake } from 'expo-keep-awake';
 import { Stack, router, useFocusEffect, useLocalSearchParams } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, FlatList, Pressable, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, AppState, FlatList, Modal, Pressable, StyleSheet, Text, TextInput, TouchableOpacity, View, useWindowDimensions } from 'react-native';
+import { Image } from 'expo-image';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { addVolumeKeyListener, setCaptureVolumeKeys } from '../modules/bardo-keys';
@@ -158,6 +159,8 @@ export default function ReaderScreen() {
   const [activeSheet, setActiveSheet] = useState<ReaderSheet>('none');
   // Hay audio cargado para este libro (aunque esté en pausa): muestra el transporte.
   const [isAudioLoaded, setIsAudioLoaded] = useState(false);
+  /** Pantalla "Reproduciendo": el libro como audiolibro, con controles grandes. */
+  const [isPlayingScreenVisible, setIsPlayingScreenVisible] = useState(false);
   const [sleepTimerMinutes, setSleepTimerMinutes] = useState<number | null>(null);
   /**
    * Parar cuando termine el capítulo que estás escuchando.
@@ -1088,6 +1091,17 @@ export default function ReaderScreen() {
     setResumeHint({ excerpt, notes: cercanas });
   }, [parsedDocument, savedProgress, isLoading]);
 
+  // Porcentaje de la pantalla "Reproduciendo", medido IGUAL que en el resto de
+  // la app: en un PDF, por páginas (es lo que se guarda y lo que muestran la
+  // biblioteca y "Seguir leyendo"); en un libro de texto, por caracteres. Medir
+  // un PDF por caracteres daba otro número, porque el texto no se reparte
+  // parejo entre las páginas.
+  const playingPercent = !parsedDocument || parsedDocument.fullText.length === 0
+    ? 0
+    : pagedInfo && pagedInfo.pageCount > 0
+      ? pagePercentage(pageForChar(currentAbsoluteChar, pagedInfo.pageOffsets), pagedInfo.pageCount)
+      : Math.min(Math.max((currentAbsoluteChar / parsedDocument.fullText.length) * 100, 0), 100);
+
   // ── Seguir con el siguiente de la saga ───────────────────────────────────
   //
   // Al llegar al final, se ofrece el libro que sigue en la MISMA carpeta. Una
@@ -1581,6 +1595,7 @@ export default function ReaderScreen() {
               <IconButton name="play-back" label="15 segundos atrás" onPress={() => { void documentAudioPlaybackService.seekBy(-15); }} colors={colors} />
               <Text style={[styles.audioRate, { color: colors.textMuted }]}>{formatRate(effectiveRate)}</Text>
               <IconButton name="play-forward" label="15 segundos adelante" onPress={() => { void documentAudioPlaybackService.seekBy(15); }} colors={colors} />
+              <IconButton name="expand-outline" label="Pantalla de escucha" onPress={() => setIsPlayingScreenVisible(true)} colors={colors} />
             </View>
           </View>
         ) : null}
@@ -1910,6 +1925,102 @@ export default function ReaderScreen() {
         ) : null}
       </Sheet>
 
+      {/* "Reproduciendo": el libro como audiolibro. Usa los MISMOS controles
+          que el resto del lector: no abre ningún camino nuevo de audio. */}
+      <Modal
+        visible={isPlayingScreenVisible}
+        animationType="slide"
+        onRequestClose={() => setIsPlayingScreenVisible(false)}
+      >
+        <View style={[styles.playingScreen, { backgroundColor: colors.background }]}>
+          <View style={styles.playingTop}>
+            <IconButton name="chevron-down" label="Cerrar" onPress={() => setIsPlayingScreenVisible(false)} colors={colors} />
+            <Text style={[styles.sheetLabel, { color: colors.textMuted }]}>REPRODUCIENDO</Text>
+            <View style={styles.playingTopSpacer} />
+          </View>
+
+          <View style={styles.playingCoverWrap}>
+            {documentRecord?.coverUri ? (
+              <Image source={{ uri: documentRecord.coverUri }} style={styles.playingCover} contentFit="cover" />
+            ) : (
+              <View style={[styles.playingCover, styles.playingCoverEmpty, { backgroundColor: colors.accent }]}>
+                <Icon name="headset-outline" size={64} color={colors.primary} />
+              </View>
+            )}
+          </View>
+
+          <Text style={[styles.playingTitle, { color: colors.text }]} numberOfLines={2}>
+            {documentRecord ? getDisplayTitle(documentRecord) : ''}
+          </Text>
+          {documentRecord?.author ? (
+            <Text style={[styles.playingAuthor, { color: colors.textMuted }]} numberOfLines={1}>{documentRecord.author}</Text>
+          ) : null}
+          {currentChapter ? (
+            <Text style={[styles.playingChapter, { color: colors.primary }]} numberOfLines={1}>{currentChapter.title}</Text>
+          ) : null}
+
+          <View style={styles.playingProgress}>
+            <View style={[styles.playingTrack, { backgroundColor: colors.surfaceMuted }]}>
+              <View style={[styles.playingFill, { backgroundColor: colors.warm, width: `${playingPercent}%` }]} />
+            </View>
+            <Text style={[styles.playingPercent, { color: colors.textMuted }]}>{playingPercent.toFixed(0)} %</Text>
+          </View>
+
+          <View style={styles.playingControls}>
+            <IconButton name="play-skip-back-outline" label="Capítulo anterior" onPress={handlePreviousChapter} colors={colors} disabled={!hasPreviousChapter || reader.isPreparing} size={28} />
+            <IconButton name="play-back" label="15 segundos atrás" onPress={() => { void documentAudioPlaybackService.seekBy(-15); }} colors={colors} size={30} />
+            <TouchableOpacity
+              style={[styles.playingMain, { backgroundColor: colors.primary }]}
+              onPress={() => { void handleTogglePlayback(); }}
+              disabled={reader.isPreparing}
+              accessibilityRole="button"
+              accessibilityLabel={reader.isPlaying ? 'Pausar narración' : 'Escuchar en voz alta'}
+            >
+              {reader.isPreparing ? (
+                <ActivityIndicator color={colors.primaryText} />
+              ) : (
+                <Icon name={reader.isPlaying ? 'pause' : 'play'} size={40} color={colors.primaryText} />
+              )}
+            </TouchableOpacity>
+            <IconButton name="play-forward" label="15 segundos adelante" onPress={() => { void documentAudioPlaybackService.seekBy(15); }} colors={colors} size={30} />
+            <IconButton name="play-skip-forward-outline" label="Capítulo siguiente" onPress={handleNextChapter} colors={colors} disabled={!hasNextChapter || reader.isPreparing} size={28} />
+          </View>
+
+          <View style={[styles.sheetCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <Row
+              icon="speedometer-outline"
+              title="Velocidad"
+              colors={colors}
+              right={
+                <Stepper
+                  value={formatRate(effectiveRate)}
+                  onDecrease={() => { void handleRateChange(-1); }}
+                  onIncrease={() => { void handleRateChange(1); }}
+                  canDecrease={effectiveRate > MIN_RATE + 0.001}
+                  canIncrease={effectiveRate < MAX_RATE - 0.001}
+                  disabled={reader.isPreparing}
+                  colors={colors}
+                />
+              }
+            />
+            <Row
+              icon="alarm-outline"
+              title="Temporizador"
+              subtitle={stopAtChar !== null ? 'Al terminar el capítulo' : sleepTimerLabel ? `Se apaga en ${sleepTimerLabel}` : 'Apagado'}
+              colors={colors}
+              onPress={() => { setIsPlayingScreenVisible(false); setIsSleepTimerPickerVisible(true); }}
+            />
+            <Row
+              icon="chatbox-ellipses-outline"
+              title="Marcar lo que está sonando"
+              colors={colors}
+              onPress={() => { void handleMarkSpoken(); }}
+              last
+            />
+          </View>
+        </View>
+      </Modal>
+
       {/* "Dónde quedaste": aparece una sola vez al volver después de días. */}
       <Sheet visible={resumeHint !== null} onClose={() => setResumeHint(null)} colors={colors} top>
         <Text style={[styles.sheetLabel, { color: colors.textMuted }]}>DONDE QUEDASTE</Text>
@@ -2106,6 +2217,21 @@ const styles = StyleSheet.create({
   headerMenuLabel: { fontSize: 14, fontWeight: '700' },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   resumeNote: { fontSize: 13.5, lineHeight: 19 },
+  playingScreen: { flex: 1, paddingTop: 40, paddingHorizontal: 20, paddingBottom: 24, gap: 10 },
+  playingTop: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  playingTopSpacer: { width: 44 },
+  playingCoverWrap: { alignItems: 'center', marginTop: 8, marginBottom: 8 },
+  playingCover: { width: 210, height: 300, borderRadius: radius.lg },
+  playingCoverEmpty: { alignItems: 'center', justifyContent: 'center' },
+  playingTitle: { fontSize: 22, fontWeight: '800', textAlign: 'center' },
+  playingAuthor: { fontSize: 15, textAlign: 'center' },
+  playingChapter: { fontSize: 14, fontWeight: '700', textAlign: 'center' },
+  playingProgress: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 6 },
+  playingTrack: { flex: 1, height: 5, borderRadius: 999, overflow: 'hidden' },
+  playingFill: { height: '100%', borderRadius: 999 },
+  playingPercent: { fontSize: 12.5, fontWeight: '700', minWidth: 38, textAlign: 'right' },
+  playingControls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginVertical: 8 },
+  playingMain: { width: 76, height: 76, borderRadius: 38, alignItems: 'center', justifyContent: 'center' },
   nextCard: {
     position: 'absolute',
     left: 12,

@@ -432,6 +432,17 @@ export default function SettingsScreen() {
           }
         />
         <Row
+          icon="text-outline"
+          title="Pronunciación"
+          subtitle={
+            settings.pronunciations.length > 0
+              ? `${countLabel(settings.pronunciations.length, 'palabra corregida', 'palabras corregidas')}`
+              : 'Para los nombres que la voz dice mal'
+          }
+          colors={colors}
+          onPress={() => router.push('/pronunciation')}
+        />
+        <Row
           icon="git-branch-outline"
           title="Anunciar los capítulos"
           subtitle="Dice el capítulo al empezar uno; si retomás en el medio, no dice nada"
