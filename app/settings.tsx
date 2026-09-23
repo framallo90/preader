@@ -204,7 +204,7 @@ export default function SettingsScreen() {
     <Screen colors={colors} scroll underHeader contentContainerStyle={styles.screenContent}>
       <Stack.Screen options={{ title: 'Ajustes' }} />
 
-      <Section title="Lectura" colors={colors}>
+      <Section title="Texto" colors={colors} hint="Cómo se ve el texto en EPUB, TXT, DOCX y en los PDF leídos como texto corrido.">
         <Row
           icon="color-palette-outline"
           title="Tema de lectura"
@@ -277,7 +277,11 @@ export default function SettingsScreen() {
           title="Justificar el texto"
           colors={colors}
           right={<Switch value={settings.justifyText} onValueChange={(value) => { void updateSettings({ justifyText: value }); }} {...switchColors} />}
+          last
         />
+      </Section>
+
+      <Section title="Páginas y gestos" colors={colors} hint="Para los PDF y los cómics, que se leen por página.">
         <Row
           icon="reorder-four-outline"
           title="Leer los PDF como texto corrido"
@@ -312,7 +316,11 @@ export default function SettingsScreen() {
           subtitle="Sólo con un libro abierto; arriba vuelve, abajo avanza"
           colors={colors}
           right={<Switch value={settings.volumeKeysTurnPage} onValueChange={(value) => { void updateSettings({ volumeKeysTurnPage: value }); }} {...switchColors} />}
+          last
         />
+      </Section>
+
+      <Section title="Pantalla y arranque" colors={colors}>
         <Row
           icon="sunny-outline"
           title="Pantalla encendida al leer"

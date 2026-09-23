@@ -1,7 +1,7 @@
 import { Stack, router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Image } from 'expo-image';
-import { ActivityIndicator, Alert, FlatList, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { AppButton } from '../src/components/AppButton';
 import { BookGridItem } from '../src/components/BookGridItem';
@@ -14,8 +14,9 @@ import {
   DocumentPlaybackSnapshot,
 } from '../src/services/documentAudioPlaybackService';
 import { removeBookCover } from '../src/services/bookMetadataService';
-import { addIgnoredBook, clearIgnoredBook, getDisplayNameFromSafUri, getIgnoredBooksCount, restoreIgnoredBooks, scanLibraryFolders } from '../src/services/libraryScanService';
+import { addIgnoredBook, clearIgnoredBook, getDisplayNameFromSafUri, getIgnoredBooksCount, requestLibraryFolder, restoreIgnoredBooks, scanLibraryFolders } from '../src/services/libraryScanService';
 import { compareBooksNaturally, getDisplayTitle } from '../src/utils/bookDisplay';
+import { compareSubfolders, formatSubfolderLabel, getSubfolderPath } from '../src/utils/libraryFolders';
 import { foldText } from '../src/utils/textSearch';
 import { getDocumentTypeLabel } from '../src/utils/formatters';
 import { radius } from '../src/utils/theme';
@@ -30,7 +31,7 @@ import { bookRepository } from '../src/storage/bookRepository';
 import { withDatabaseRetry } from '../src/storage/database';
 import { collectionRepository } from '../src/storage/collectionRepository';
 import { parsedDocumentRepository } from '../src/storage/parsedDocumentRepository';
-import { Book, Collection, LibrarySort } from '../src/types/storage';
+import { Book, BookStatus, Collection, LibrarySort } from '../src/types/storage';
 
 // Un escaneo automático como mucho cada tanto; "Restaurar ocultos" fuerza uno.
 const SCAN_MIN_INTERVAL_MS = 2 * 60 * 1000;
@@ -69,10 +70,13 @@ const LIBRARY_COLUMNS = 3;
 /** Encabezado para los libros a los que no se les pudo sacar el autor. */
 const SIN_AUTOR = 'Sin autor';
 
-type LibrarySection = { folderUri: string; name: string; books: Book[] };
+/** Un tramo de la biblioteca: una subcarpeta, o la raíz cuando `path` es ''. */
+type SubfolderGroup = { path: string; books: Book[] };
+type LibrarySection = { folderUri: string; name: string; books: Book[]; groups: SubfolderGroup[] };
 
 type LibraryRow =
   | { kind: 'folder'; key: string; section: LibrarySection }
+  | { kind: 'subfolder'; key: string; folderUri: string; path: string; count: number }
   | { kind: 'books'; key: string; books: Book[] }
   | { kind: 'subtitle'; key: string; text: string };
 /** Lo único que el Inicio necesita saber del reproductor. */
@@ -115,6 +119,10 @@ export default function HomeScreen() {
   const [searchQuery, setSearchQuery] = useState('');
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [isSortPickerVisible, setIsSortPickerVisible] = useState(false);
+  // El "+" pregunta qué querés agregar: un archivo suelto o una carpeta entera.
+  const [isAddPickerVisible, setIsAddPickerVisible] = useState(false);
+  // Libro que se está renombrando, con el texto en edición.
+  const [renaming, setRenaming] = useState<{ book: Book; value: string } | null>(null);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [collectionBookIds, setCollectionBookIds] = useState<Set<string> | null>(null);
   const hasAutoOpenedRef = useRef(false);
@@ -185,8 +193,8 @@ export default function HomeScreen() {
         lastScanAtRef.current = Date.now();
         lastScanKeyRef.current = scanKey;
         try {
-          const added = await scanLibraryFolders(settings.libraryFolders, settings.excludedFolders);
-          if (active && added > 0) await loadRecentDocuments();
+          const cambios = await scanLibraryFolders(settings.libraryFolders, settings.excludedFolders);
+          if (active && cambios > 0) await loadRecentDocuments();
         } catch {
           // El escaneo nunca debe romper el Home.
         }
@@ -280,7 +288,19 @@ export default function HomeScreen() {
         ),
         settings.librarySort,
       );
-      return { folderUri, name: folderName, books };
+      // Los libros del escaneo guardan solo el nombre del archivo, pero su URI
+      // de SAF sí trae la ruta: de ahí sale en qué subcarpeta está cada uno.
+      const porSubcarpeta = new Map<string, Book[]>();
+      for (const book of books) {
+        const sub = getSubfolderPath(book.uri, folderUri);
+        const actual = porSubcarpeta.get(sub);
+        if (actual) actual.push(book);
+        else porSubcarpeta.set(sub, [book]);
+      }
+      const groups = [...porSubcarpeta.entries()]
+        .sort((a, b) => compareSubfolders(a[0], b[0]))
+        .map(([path, libros]) => ({ path, books: libros }));
+      return { folderUri, name: folderName, books, groups };
     });
     const grouped = new Set(sections.flatMap((section) => section.books.map((b) => b.id)));
     const ungrouped = sortBooks(
@@ -372,6 +392,36 @@ export default function HomeScreen() {
       unsubscribe();
     };
   }, []);
+
+  // Agregar una carpeta entera desde el Inicio: el mismo selector del sistema
+  // que usa Ajustes. Antes esto solo se podía desde Ajustes, y es lo primero
+  // que querés hacer con la app recién instalada.
+  const handleAddFolder = useCallback(async () => {
+    const folderUri = await requestLibraryFolder();
+    if (!folderUri) return;
+    if (settings.libraryFolders.includes(folderUri)) {
+      Alert.alert('Esa carpeta ya está', 'Ya la tenías agregada; si faltan libros, tirá para abajo para escanear de nuevo.');
+      return;
+    }
+    await updateSettings({ libraryFolders: [...settings.libraryFolders, folderUri] });
+  }, [settings.libraryFolders, updateSettings]);
+
+  const handleSetStatus = useCallback(async (book: Book, status: BookStatus) => {
+    await bookRepository.setStatus(book.id, status);
+    setRecentDocuments((prev) => prev.map((b) => (b.id === book.id ? { ...b, status } : b)));
+  }, []);
+
+  const handleRename = useCallback(async () => {
+    const pendiente = renaming;
+    if (!pendiente) return;
+    setRenaming(null);
+    const nuevo = pendiente.value.trim();
+    // Vacío = volver al nombre del archivo.
+    const title = nuevo.length > 0 ? nuevo : null;
+    await bookRepository.setTitle(pendiente.book.id, title);
+    setRecentDocuments((prev) => prev.map((b) => (b.id === pendiente.book.id ? { ...b, title } : b)));
+    setLastOpenedDocument((prev) => (prev && prev.id === pendiente.book.id ? { ...prev, title } : prev));
+  }, [renaming]);
 
   const handleOpenDocument = useCallback(async () => {
     setIsImporting(true);
@@ -505,7 +555,26 @@ export default function HomeScreen() {
 
     for (const section of librarySections.sections) {
       rows.push({ kind: 'folder', key: `f-${section.folderUri}`, section });
-      if (expandedFolders[section.folderUri] ?? true) pushBooks(section.books, section.folderUri);
+      if (!(expandedFolders[section.folderUri] ?? true)) continue;
+      // Con una sola subcarpeta (o ninguna) no hay nada que separar: poner una
+      // cabecera sola arriba de todo seria ruido.
+      if (section.groups.length <= 1) {
+        pushBooks(section.books, section.folderUri);
+        continue;
+      }
+      for (const group of section.groups) {
+        const subKey = `${section.folderUri}#${group.path}`;
+        if (group.path !== '') {
+          rows.push({
+            kind: 'subfolder',
+            key: `s-${subKey}`,
+            folderUri: section.folderUri,
+            path: group.path,
+            count: group.books.length,
+          });
+        }
+        if (expandedFolders[subKey] ?? true) pushBooks(group.books, subKey);
+      }
     }
     if (librarySections.ungrouped.length > 0) {
       if (librarySections.sections.length > 0) {
@@ -520,6 +589,25 @@ export default function HomeScreen() {
     ({ item }: { item: LibraryRow }) => {
       if (item.kind === 'subtitle') {
         return <Text style={[styles.subsectionTitle, { color: colors.textMuted }]}>{item.text}</Text>;
+      }
+      if (item.kind === 'subfolder') {
+        const subKey = `${item.folderUri}#${item.path}`;
+        const expanded = expandedFolders[subKey] ?? true;
+        return (
+          <Pressable
+            onPress={() => setExpandedFolders((prev) => ({ ...prev, [subKey]: !expanded }))}
+            style={styles.subfolderHeader}
+            accessibilityRole="button"
+            accessibilityLabel={`Subcarpeta ${item.path}, ${item.count} libros`}
+          >
+            <Icon name="folder-open-outline" size={15} color={colors.textMuted} />
+            <Text style={[styles.subfolderName, { color: colors.text }]} numberOfLines={1}>
+              {formatSubfolderLabel(item.path)}
+            </Text>
+            <Text style={[styles.folderCount, { color: colors.textMuted }]}>{item.count}</Text>
+            <Icon name={expanded ? 'chevron-up' : 'chevron-down'} size={15} color={colors.textMuted} />
+          </Pressable>
+        );
       }
       if (item.kind === 'folder') {
         const expanded = expandedFolders[item.section.folderUri] ?? true;
@@ -560,10 +648,10 @@ export default function HomeScreen() {
       colors={colors}
       floating={
         <Pressable
-          onPress={() => { void handleOpenDocument(); }}
+          onPress={() => setIsAddPickerVisible(true)}
           disabled={isImporting}
           accessibilityRole="button"
-          accessibilityLabel="Abrir un archivo"
+          accessibilityLabel="Agregar libros"
           style={({ pressed }) => [styles.fab, { backgroundColor: colors.primary, opacity: isImporting ? 0.6 : pressed ? 0.85 : 1 }]}
         >
           {isImporting ? <ActivityIndicator color={colors.primaryText} /> : <Icon name="add" size={30} color={colors.primaryText} />}
@@ -777,6 +865,62 @@ export default function HomeScreen() {
         }
       />
 
+      {/* Qué agregar: un archivo suelto o una carpeta entera. */}
+      <OptionPickerModal
+        title="Agregar a la biblioteca"
+        visible={isAddPickerVisible}
+        options={[
+          {
+            value: 'file',
+            label: 'Un libro',
+            icon: 'document-outline',
+            description: 'Elegís un archivo y se abre al toque. PDF, EPUB, TXT, DOCX o cómic.',
+          },
+          {
+            value: 'folder',
+            label: 'Una carpeta',
+            icon: 'folder-open-outline',
+            description: 'Todo lo que haya adentro, con sus subcarpetas, aparece solo y se mantiene al día.',
+          },
+        ]}
+        selectedValue=""
+        colors={colors}
+        onClose={() => setIsAddPickerVisible(false)}
+        onSelect={(value) => {
+          setIsAddPickerVisible(false);
+          if (value === 'file') void handleOpenDocument();
+          else void handleAddFolder();
+        }}
+      />
+
+      {/* Renombrar: cambia el título que se ve, no el archivo. */}
+      <Modal visible={renaming !== null} transparent animationType="fade" onRequestClose={() => setRenaming(null)}>
+        <Pressable style={[styles.renameScrim, { backgroundColor: colors.scrim }]} onPress={() => setRenaming(null)}>
+          <Pressable
+            style={[styles.renameCard, { backgroundColor: colors.surface, borderColor: colors.border }]}
+            onPress={(event) => event.stopPropagation()}
+          >
+            <Text style={[styles.renameTitle, { color: colors.text }]}>Renombrar</Text>
+            <Text style={[styles.renameHint, { color: colors.textMuted }]}>
+              Cambia el título que muestra la biblioteca. El archivo del teléfono no se toca.
+            </Text>
+            <TextInput
+              value={renaming?.value ?? ''}
+              onChangeText={(value) => setRenaming((prev) => (prev ? { ...prev, value } : prev))}
+              placeholder={renaming ? renaming.book.name : ''}
+              placeholderTextColor={colors.textMuted}
+              autoFocus
+              selectTextOnFocus
+              style={[styles.renameInput, { color: colors.text, borderColor: colors.border, backgroundColor: colors.surfaceMuted }]}
+            />
+            <View style={styles.renameActions}>
+              <AppButton label="Cancelar" onPress={() => setRenaming(null)} variant="secondary" colors={colors} compact />
+              <AppButton label="Guardar" icon="checkmark" onPress={() => { void handleRename(); }} colors={colors} compact />
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       <OptionPickerModal
         title="Ordenar por"
         visible={isSortPickerVisible}
@@ -810,6 +954,35 @@ export default function HomeScreen() {
                 icon: 'headset-outline' as const,
                 description: pendingProgress > 0 ? `La voz arranca en el ${pendingProgress.toFixed(0)} %.` : 'La voz arranca desde el principio.',
               }]),
+          // Marcar leído/para leer funciona igual en libros y en cómics: es el
+          // estado guardado, no depende de que haya texto que narrar.
+          ...(pendingBook?.status === 'read'
+            ? [{
+                value: 'unread',
+                label: 'Desmarcar como leído',
+                icon: 'refresh-circle-outline' as const,
+                description: 'Vuelve a quedar según tu progreso.',
+              }]
+            : [{
+                value: 'mark_read',
+                label: 'Marcar como leído',
+                icon: 'checkmark-done-outline' as const,
+                description: 'Lo manda al filtro "Leídos". No borra tu progreso.',
+              }]),
+          ...(pendingBook?.status === 'to_read'
+            ? []
+            : [{
+                value: 'mark_to_read',
+                label: 'Marcar para leer',
+                icon: 'bookmark-outline' as const,
+                description: 'Lo guarda en el filtro "Para leer".',
+              }]),
+          {
+            value: 'rename',
+            label: 'Renombrar',
+            icon: 'create-outline',
+            description: 'Cambia el título que se muestra, no el archivo del teléfono.',
+          },
           {
             value: 'about',
             label: 'Sobre este libro',
@@ -846,6 +1019,17 @@ export default function HomeScreen() {
           if (value === 'about') {
             setPendingBook(null);
             router.push({ pathname: '/book', params: { bookId: book.id } });
+            return;
+          }
+          if (value === 'mark_read' || value === 'unread' || value === 'mark_to_read') {
+            setPendingBook(null);
+            const estado: BookStatus = value === 'mark_read' ? 'read' : value === 'mark_to_read' ? 'to_read' : 'none';
+            void handleSetStatus(book, estado);
+            return;
+          }
+          if (value === 'rename') {
+            setPendingBook(null);
+            setRenaming({ book, value: book.title ?? getDisplayTitle(book) });
             return;
           }
           if (value === 'restart') {
@@ -888,6 +1072,30 @@ const styles = StyleSheet.create({
   // Wordmark en Lora Bold (embebida por el plugin expo-font de app.json; en Android la familia es el
   // nombre del archivo). Sin fontWeight: con una fuente propia, Android sintetizaría otra negrita encima.
   brandTitle: { fontSize: 28, fontFamily: 'Lora-Bold', letterSpacing: -0.3 },
+  renameScrim: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  renameCard: {
+    width: '100%',
+    maxWidth: 420,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 18,
+    gap: 10,
+  },
+  renameTitle: { fontSize: 18, fontWeight: '800' },
+  renameHint: { fontSize: 13, lineHeight: 18 },
+  renameInput: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 15,
+  },
+  renameActions: { flexDirection: 'row', justifyContent: 'flex-end', gap: 8, marginTop: 2 },
   fab: {
     width: 60,
     height: 60,
@@ -934,5 +1142,20 @@ const styles = StyleSheet.create({
   hiddenBannerText: { flex: 1, fontSize: 13 },
   folderHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderRadius: radius.md, paddingHorizontal: 14, paddingVertical: 12 },
   folderName: { flex: 1, fontSize: 15, fontWeight: '700' },
+  // La subcarpeta va un escalón más abajo que la carpeta: sin recuadro, con
+  // sangría, para que se lea como "adentro de".
+  subfolderHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingLeft: 14,
+    paddingRight: 4,
+    paddingVertical: 6,
+  },
+  subfolderName: {
+    flex: 1,
+    fontSize: 13,
+    fontWeight: '700',
+  },
   folderCount: { fontSize: 12.5, fontWeight: '600' },
 });

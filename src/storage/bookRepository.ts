@@ -111,6 +111,20 @@ export const bookRepository = {
     await db.runAsync('UPDATE books SET status = ? WHERE id = ?', [status, bookId]);
   },
 
+  /**
+   * Renombra un libro para la biblioteca.
+   *
+   * Cambia el TÍTULO que se muestra, no el archivo en el disco: renombrar el
+   * archivo de verdad pediría permiso de escritura sobre la carpeta y, si el
+   * libro vino de un escaneo, el próximo escaneo lo volvería a encontrar como
+   * uno nuevo. Con `null` vuelve a mostrarse el nombre del archivo.
+   */
+  async setTitle(bookId: string, title: string | null): Promise<void> {
+    const db = await getDatabase();
+    const limpio = title?.trim() ?? '';
+    await db.runAsync('UPDATE books SET title = ? WHERE id = ?', [limpio.length > 0 ? limpio : null, bookId]);
+  },
+
   async setFavorite(bookId: string, favorite: boolean): Promise<void> {
     const db = await getDatabase();
     await db.runAsync('UPDATE books SET favorite = ? WHERE id = ?', [favorite ? 1 : 0, bookId]);

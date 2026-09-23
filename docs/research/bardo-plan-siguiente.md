@@ -423,3 +423,64 @@ La paleta vieja era la de Tailwind por defecto y el ámbar sobre fondo claro dab
 **Falta la tipografía de marca (Lora Bold):** no está el `.ttf` en el repo y
 `expo-font` no está instalado. Queda esperando a Cowork y al OK de Facu para la
 dependencia.
+
+---
+
+## Sexta tanda del 2026-09-23 (pedidos de Facu sobre la biblioteca)
+
+Seis pedidos, todos probados en el emulador.
+
+### Badges de estado y "marcar como leído"
+
+La celda ahora lleva una píldora arriba a la izquierda: **Leyendo** (lacre),
+**Leído** (verde) o **Para leer** (tinta). El criterio sale de `getBookBadge`,
+que usa **los mismos tres criterios que los filtros** de la biblioteca, así que
+el badge y el filtro no se pueden contradecir.
+
+Marcar leído / para leer / desmarcar está en el menú de mantener apretado, que
+funciona igual en libros y en cómics porque es el estado guardado, no depende de
+que haya texto que narrar.
+
+### Las subcarpetas ya no se mezclan
+
+Era el pedido más de fondo. **El escaneo entra en las subcarpetas pero guardaba
+sólo el nombre del archivo**, así que una carpeta con subcarpetas se mostraba
+como una bolsa de 95 libros sueltos.
+
+La ruta sí estaba en la URI de SAF (`…/tree/<raíz>/document/<ruta completa>`).
+`src/utils/libraryFolders.ts` la saca de ahí (15 tests), así que **los libros ya
+guardados se reagrupan solos, sin migrar la base ni volver a escanear**. Las
+subcarpetas se pliegan igual que la carpeta y las muy anidadas se muestran como
+`… / Marvel / 2024`.
+
+**Dos bugs que aparecieron probando esto**, los dos de reubicación de archivos:
+
+1. **`uriExists` devolvía `true` cuando fallaba.** En SAF, preguntar por un
+   documento que se movió **tira excepción** en vez de contestar "no existe", así
+   que un archivo movido de carpeta se leía como "sigue estando" y nunca se
+   reapuntaba: el libro no abría más y seguía apareciendo en la carpeta vieja.
+2. **El Inicio recargaba la lista sólo si había libros NUEVOS.** Mover archivos
+   reapuntaba bien en la base pero la pantalla se quedaba con las rutas viejas.
+   `scanLibraryFolders` ahora devuelve cuánto CAMBIÓ (nuevos + reubicados).
+
+Probado moviendo archivos a mano en el emulador: `Saga Ejemplo (5)`,
+`Comics/Marvel (3)` y `Sub (2)` aparecen agrupados y los movidos se reubican.
+
+### Renombrar
+
+Cambia el **título que se muestra**, no el archivo del teléfono: renombrar de
+verdad pediría permiso de escritura sobre la carpeta y, si el libro vino de un
+escaneo, el próximo escaneo lo encontraría como uno nuevo. Vaciando el campo
+vuelve el nombre del archivo.
+
+### El "+" ahora pregunta
+
+Antes abría directo el selector de archivos y agregar una carpeta estaba sólo en
+Ajustes — que es lo primero que querés hacer con la app recién instalada. Ahora
+ofrece **Un libro** o **Una carpeta**.
+
+### Ajustes subdividido
+
+"Lectura" tenía quince filas de cosas que no tenían que ver entre sí. Quedó
+partido en **Texto** (cómo se ve el texto), **Páginas y gestos** (PDF y cómics) y
+**Pantalla y arranque**. Voz, Biblioteca, Almacenamiento y Acerca de no cambian.

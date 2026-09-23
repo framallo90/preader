@@ -30,6 +30,23 @@ function getGeneratedCoverColor(bookId: string): string {
   return GENERATED_COVER_COLORS[hash % GENERATED_COVER_COLORS.length];
 }
 
+/**
+ * En qué estado está el libro, para mostrarlo de un vistazo.
+ *
+ * Son los mismos tres criterios que usan los filtros de la biblioteca, así que
+ * el badge y el filtro nunca se contradicen: "Leyendo" es tener progreso sin
+ * haberlo terminado, "Leído" es el estado guardado (o llegar al final), y
+ * "Para leer" es haberlo marcado a mano.
+ */
+export type BookBadge = 'reading' | 'read' | 'to_read' | null;
+
+export function getBookBadge(status: string, progress: number | undefined): BookBadge {
+  if (status === 'read' || (progress !== undefined && progress >= 99.5)) return 'read';
+  if (progress !== undefined && progress > 0) return 'reading';
+  if (status === 'to_read') return 'to_read';
+  return null;
+}
+
 function getInitials(title: string): string {
   const words = title.split(/\s+/).filter(Boolean);
   return `${words[0]?.[0] ?? '?'}${words[1]?.[0] ?? ''}`.toUpperCase();
@@ -42,7 +59,8 @@ function getInitials(title: string): string {
 function BookGridItemComponent({ book, colors, progress, onOpen, onLongPress }: BookGridItemProps) {
   const title = getDisplayTitle(book);
   const hasProgress = progress !== undefined && progress > 0;
-  const isFinished = book.status === 'read' || (progress !== undefined && progress >= 99.5);
+  const badge = getBookBadge(book.status, progress);
+  const isFinished = badge === 'read';
   const handleOpen = useCallback(() => onOpen(book), [book, onOpen]);
   const handleLongPress = useCallback(() => onLongPress(book), [book, onLongPress]);
 
@@ -64,9 +82,10 @@ function BookGridItemComponent({ book, colors, progress, onOpen, onLongPress }: 
             <Icon name="heart" size={14} color={colors.warm} />
           </View>
         ) : null}
-        {isFinished ? (
-          <View style={[styles.finished, { backgroundColor: colors.success }]}>
-            <Icon name="checkmark" size={12} color="#fff" />
+        {badge ? (
+          <View style={[styles.estado, { backgroundColor: BADGE_COLOR[badge](colors) }]}>
+            <Icon name={BADGE_ICON[badge]} size={10} color="#fff" />
+            <Text style={styles.estadoText}>{BADGE_LABEL[badge]}</Text>
           </View>
         ) : null}
       </View>
@@ -96,6 +115,24 @@ function BookGridItemComponent({ book, colors, progress, onOpen, onLongPress }: 
  * reconciliaba las ~8 vistas de CADA libro de la biblioteca.
  */
 export const BookGridItem = memo(BookGridItemComponent);
+
+const BADGE_LABEL: Record<Exclude<BookBadge, null>, string> = {
+  reading: 'Leyendo',
+  read: 'Leído',
+  to_read: 'Para leer',
+};
+
+const BADGE_ICON: Record<Exclude<BookBadge, null>, 'book' | 'checkmark-done' | 'bookmark'> = {
+  reading: 'book',
+  read: 'checkmark-done',
+  to_read: 'bookmark',
+};
+
+const BADGE_COLOR: Record<Exclude<BookBadge, null>, (c: ThemeColors) => string> = {
+  reading: (c) => c.warm,
+  read: (c) => c.success,
+  to_read: (c) => c.primary,
+};
 
 const styles = StyleSheet.create({
   item: {
@@ -142,16 +179,21 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  finished: {
+  // Píldora de estado arriba a la izquierda: tiene que leerse sobre cualquier
+  // tapa, así que va con color pleno y texto blanco, no translúcida.
+  estado: {
     position: 'absolute',
     top: 6,
     left: 6,
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+    flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
+    gap: 3,
+    borderRadius: 999,
+    paddingLeft: 5,
+    paddingRight: 7,
+    paddingVertical: 2.5,
   },
+  estadoText: { color: '#fff', fontSize: 9, fontWeight: '800', letterSpacing: 0.2 },
   progressTrack: {
     height: 4,
     borderRadius: 999,

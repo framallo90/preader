@@ -145,12 +145,27 @@ const MAX_SCAN_DEPTH = 4;
 
 /** Entradas de una carpeta SAF: nativo si está, expo-file-system si no. */
 /** ¿El archivo sigue donde dice la fila? Ante la duda, se asume que sí. */
+/**
+ * ¿El archivo al que apunta esta URI sigue estando?
+ *
+ * Con `content://` (SAF), preguntar por un documento que se movió o se borró
+ * **tira excepción** en vez de contestar "no existe". Devolver `true` ahí —que
+ * era lo que hacía— dejaba al libro apuntando para siempre a la ruta vieja: si
+ * movías un archivo de carpeta, no volvía a abrir y en la biblioteca seguía
+ * apareciendo en la carpeta donde ya no está.
+ *
+ * Que un `content://` falle se toma entonces como que no está. El riesgo es
+ * bajo: quien llama sólo usa esto para reapuntar a un archivo que ACABA de
+ * encontrar en el escaneo con la misma huella de contenido, así que en el peor
+ * caso el libro queda apuntando a una copia igual. Para `file://`, que sí
+ * contesta bien, se sigue confiando en la respuesta.
+ */
 async function uriExists(uri: string): Promise<boolean> {
   try {
     const info = await FileSystem.getInfoAsync(uri);
     return info.exists;
   } catch {
-    return true;
+    return !uri.startsWith('content://');
   }
 }
 
@@ -176,6 +191,12 @@ async function listFolder(folderUri: string): Promise<DocumentTreeEntry[]> {
 let scanInFlight: Promise<number> | null = null;
 let scanInFlightKey = '';
 
+/**
+ * Escanea las carpetas y devuelve CUÁNTO CAMBIÓ: libros nuevos más libros que
+ * cambiaron de ruta porque los moviste. Quien llama recarga la lista si esto es
+ * mayor que cero; contando solo los nuevos, mover un archivo de carpeta dejaba
+ * la pantalla con la ruta vieja.
+ */
 export async function scanLibraryFolders(folderUris: string[], excludedPaths: string[] = []): Promise<number> {
   // Dos pantallas pidiendo EL MISMO escaneo a la vez comparten el mismo trabajo.
   // Si las carpetas cambiaron (recién agregaste una), es otro pedido y se encola:
@@ -203,6 +224,10 @@ async function runScan(folderUris: string[], excludedPaths: string[]): Promise<n
   // URIs ya conocidos, de una sola consulta: el escaneo solo mira lo nuevo.
   const knownUris = new Set(await bookRepository.listBookUris());
   let added = 0;
+  // Un archivo que MOVISTE de carpeta no suma un libro nuevo, pero sí cambia su
+  // ruta: si esto no se contara, el Inicio se quedaba mostrando la ruta vieja
+  // (y el libro no abría) hasta que algo más recargara la lista.
+  let relocated = 0;
 
   const scanFolder = async (folderUri: string, depth: number): Promise<void> => {
     let entries: DocumentTreeEntry[] = [];
@@ -240,6 +265,7 @@ async function runScan(folderUris: string[], excludedPaths: string[]): Promise<n
           if (existing.uri !== entry.uri && !(await uriExists(existing.uri))) {
             await bookRepository.saveBook({ ...existing, uri: entry.uri, name: entry.name });
             knownUris.add(entry.uri);
+            relocated += 1;
           }
           continue;
         }
@@ -264,7 +290,7 @@ async function runScan(folderUris: string[], excludedPaths: string[]): Promise<n
     await scanFolder(folderUri, 0);
   }
 
-  return added;
+  return added + relocated;
 }
 
 /**
