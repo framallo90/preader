@@ -1,3 +1,4 @@
+import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 
 const { StorageAccessFramework } = FileSystem;
@@ -31,4 +32,16 @@ export function safeFileName(base: string, extension: string): string {
     .slice(0, 60);
   const fecha = new Date().toISOString().slice(0, 10);
   return `${limpio.length > 0 ? limpio : 'bardo'} ${fecha}.${extension}`;
+}
+
+/**
+ * Deja elegir un archivo y devuelve su contenido como texto.
+ *
+ * Se usa el selector de documentos (no el de carpetas) porque acá se elige UN
+ * archivo puntual: el respaldo a restaurar.
+ */
+export async function readPickedTextFile(): Promise<string | null> {
+  const result = await DocumentPicker.getDocumentAsync({ type: ['application/json', 'text/*', '*/*'], copyToCacheDirectory: true });
+  if (result.canceled || !result.assets?.[0]) return null;
+  return FileSystem.readAsStringAsync(result.assets[0].uri, { encoding: FileSystem.EncodingType.UTF8 });
 }

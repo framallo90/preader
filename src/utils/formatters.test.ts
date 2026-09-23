@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { formatRelativeDateLabel, formatShortDate, getDocumentTypeLabel } from './formatters';
+import { countLabel, formatRelativeDateLabel, formatShortDate, getDocumentTypeLabel } from './formatters';
 
 const MIN = 60_000;
 const HOUR = 60 * MIN;
@@ -35,4 +35,15 @@ describe('getDocumentTypeLabel', () => {
   it('txt', () => expect(getDocumentTypeLabel('text/plain')).toBe('TXT'));
   it('docx', () => expect(getDocumentTypeLabel('application/vnd.openxmlformats-officedocument.wordprocessingml.document')).toBe('DOCX'));
   it('null → genérico', () => expect(getDocumentTypeLabel(null)).toBe('Archivo'));
+});
+
+describe('countLabel', () => {
+  it('usa el singular sólo con uno', () => {
+    expect(countLabel(1, 'anotación', 'anotaciones')).toBe('1 anotación');
+  });
+
+  it('usa el plural con cero y con varios', () => {
+    expect(countLabel(0, 'libro', 'libros')).toBe('0 libros');
+    expect(countLabel(97, 'libro', 'libros')).toBe('97 libros');
+  });
 });

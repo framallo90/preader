@@ -1,5 +1,5 @@
 import { getDatabase } from './database';
-import { AppSettings, AUTO_SCROLL_SPEEDS, DEFAULT_SETTINGS, LIBRARY_SORTS, LibrarySort, MAX_TEXT_MARGIN, MIN_TEXT_MARGIN } from '../types/storage';
+import { AppSettings, AUTO_SCROLL_SPEEDS, DEFAULT_SETTINGS, LIBRARY_LAYOUTS, LIBRARY_SORTS, LibraryLayout, LibrarySort, MAX_TEXT_MARGIN, MIN_TEXT_MARGIN } from '../types/storage';
 
 type SettingsRow = {
   key: string;
@@ -125,6 +125,11 @@ export const settingsRepository = {
       if (row.key === 'librarySort') {
         const parsed = parseValue('librarySort', row.value);
         nextSettings.librarySort = LIBRARY_SORTS.includes(parsed as LibrarySort) ? (parsed as LibrarySort) : 'recent';
+      }
+
+      if (row.key === 'libraryLayout') {
+        const parsed = parseValue('libraryLayout', row.value);
+        nextSettings.libraryLayout = LIBRARY_LAYOUTS.includes(parsed as LibraryLayout) ? (parsed as LibraryLayout) : 'grid';
       }
 
       if (row.key === 'libraryFolders') {

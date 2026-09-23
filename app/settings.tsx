@@ -12,6 +12,9 @@ import { useAppSettings } from '../src/hooks/useAppSettings';
 
 import { getDisplayNameFromSafUri, requestLibraryFolder, restoreIgnoredBooks } from '../src/services/libraryScanService';
 import { clearAllPdfPages } from '../src/services/pdfLocalService';
+import { applyBackup, buildBackup } from '../src/services/backupService';
+import { readPickedTextFile, safeFileName, saveTextFile } from '../src/services/exportService';
+import { parseBackup } from '../src/utils/backupFormat';
 import { clearAllAudio, listVoices, synthesizeSpeech } from '../src/services/systemTtsService';
 import { parsedDocumentRepository } from '../src/storage/parsedDocumentRepository';
 import { documentAudioPlaybackService } from '../src/services/documentAudioPlaybackService';
@@ -19,6 +22,7 @@ import { clampRounded } from '../src/utils/math';
 import { MAX_RATE, MIN_RATE, decreaseRate, formatRate, increaseRate } from '../src/utils/playbackRate';
 import { MAX_TEXT_MARGIN, MIN_TEXT_MARGIN, ReadingTheme, TEXT_MARGIN_STEP } from '../src/types/storage';
 import { getSafFolderPath } from '../src/utils/safPaths';
+import { countLabel } from '../src/utils/formatters';
 import { VoiceOption, buildVoiceOptions, primaryLanguage } from '../src/utils/voices';
 
 const AUTO_VOICE = 'auto';
@@ -162,6 +166,63 @@ export default function SettingsScreen() {
     },
     [settings.fontSize, updateSettings],
   );
+
+  const [isBusy, setIsBusy] = useState(false);
+
+  const handleExportData = useCallback(async () => {
+    if (isBusy) return;
+    setIsBusy(true);
+    try {
+      const contenido = await buildBackup(settings);
+      const resultado = await saveTextFile(safeFileName('Bardo respaldo', 'json'), 'application/json', contenido);
+      if (resultado === 'saved') {
+        Alert.alert('Listo', 'Guardá ese archivo donde quieras. Con él recuperás tu progreso y tus notas en otro teléfono.');
+      }
+    } catch (error) {
+      Alert.alert('No se pudo exportar', error instanceof Error ? error.message : 'Probá de nuevo.');
+    } finally {
+      setIsBusy(false);
+    }
+  }, [isBusy, settings]);
+
+  const handleImportData = useCallback(async () => {
+    if (isBusy) return;
+    try {
+      const crudo = await readPickedTextFile();
+      if (!crudo) return;
+      const respaldo = parseBackup(crudo);
+      if (!respaldo) {
+        Alert.alert('Ese archivo no es un respaldo de Bardo', 'Elegí el .json que exportaste desde acá.');
+        return;
+      }
+      Alert.alert(
+        '¿Importar?',
+        'Se devuelve tu progreso, notas y listas a los libros que ya tengas. No se borra ni se agrega ningún libro.',
+        [
+          { text: 'Cancelar', style: 'cancel' },
+          {
+            text: 'Importar',
+            onPress: () => {
+              setIsBusy(true);
+              void applyBackup(respaldo)
+                .then((resumen) => {
+                  const faltantes = resumen.skipped > 0
+                    ? ` Quedaron ${countLabel(resumen.skipped, 'dato', 'datos')} de libros que todavía no están en esta biblioteca: agregá esas carpetas y volvé a importar.`
+                    : '';
+                  Alert.alert('Listo', `Restaurado: ${countLabel(resumen.books, 'libro', 'libros')}, ${countLabel(resumen.notes, 'anotación', 'anotaciones')} y ${countLabel(resumen.progress, 'posición', 'posiciones')}.${faltantes}`);
+                })
+                .catch((error: unknown) => {
+                  Alert.alert('No se pudo importar', error instanceof Error ? error.message : 'Probá de nuevo.');
+                })
+                .finally(() => setIsBusy(false));
+            },
+          },
+        ],
+      );
+    } catch (error) {
+      Alert.alert('No se pudo leer el archivo', error instanceof Error ? error.message : 'Probá de nuevo.');
+    }
+  }, [isBusy]);
 
   const handleClearCache = useCallback(() => {
     Alert.alert(
@@ -443,6 +504,28 @@ export default function SettingsScreen() {
           subtitle="Los que eliminaste pero siguen en una carpeta escaneada"
           colors={colors}
           right={<AppButton label="Restaurar" onPress={handleRestoreHidden} variant="secondary" colors={colors} compact />}
+          last
+        />
+      </Section>
+
+      <Section
+        title="Tus datos"
+        colors={colors}
+        hint="El respaldo automático de Android está apagado a propósito: subía tu biblioteca y tus notas a Google. Esto es lo mismo, pero lo decidís vos."
+      >
+        <Row
+          icon="download-outline"
+          title="Exportar mis datos"
+          subtitle="Progreso, notas, listas y ajustes en un archivo. Los libros no: esos ya los tenés."
+          colors={colors}
+          onPress={() => { void handleExportData(); }}
+        />
+        <Row
+          icon="cloud-upload-outline"
+          title="Importar mis datos"
+          subtitle="Devuelve lo tuyo a los libros que ya estén. No borra ni agrega libros."
+          colors={colors}
+          onPress={() => { void handleImportData(); }}
           last
         />
       </Section>

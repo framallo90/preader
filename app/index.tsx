@@ -5,6 +5,7 @@ import { ActivityIndicator, Alert, FlatList, Modal, Pressable, ScrollView, Style
 
 import { AppButton } from '../src/components/AppButton';
 import { BookGridItem } from '../src/components/BookGridItem';
+import { BookListItem } from '../src/components/BookListItem';
 import { OptionPickerModal } from '../src/components/OptionPickerModal';
 import { ReorderSheet } from '../src/components/ReorderSheet';
 import { Screen } from '../src/components/Screen';
@@ -585,9 +586,12 @@ export default function HomeScreen() {
   // en el primer dibujado del Inicio.
   const libraryRows = useMemo<LibraryRow[]>(() => {
     const rows: LibraryRow[] = [];
+    // En lista va un libro por fila; en grilla, tres. La virtualización es la
+    // misma: cambia sólo de a cuántos se agrupan.
+    const porFila = settings.libraryLayout === 'list' ? 1 : LIBRARY_COLUMNS;
     const pushBooks = (books: Book[], prefix: string) => {
-      for (let i = 0; i < books.length; i += LIBRARY_COLUMNS) {
-        const slice = books.slice(i, i + LIBRARY_COLUMNS);
+      for (let i = 0; i < books.length; i += porFila) {
+        const slice = books.slice(i, i + porFila);
         rows.push({ kind: 'books', key: `${prefix}-${slice[0].id}`, books: slice });
       }
     };
@@ -644,7 +648,7 @@ export default function HomeScreen() {
       pushBooks(librarySections.ungrouped, 'sueltos');
     }
     return rows;
-  }, [librarySections, expandedFolders, settings.librarySort, filteredDocuments]);
+  }, [librarySections, expandedFolders, settings.librarySort, settings.libraryLayout, filteredDocuments]);
 
   const renderLibraryRow = useCallback(
     ({ item }: { item: LibraryRow }) => {
@@ -688,21 +692,32 @@ export default function HomeScreen() {
         );
       }
       return (
-        <View style={styles.grid}>
-          {item.books.map((document) => (
-            <BookGridItem
-              key={document.id}
-              book={document}
-              colors={colors}
-              progress={progressMap.get(document.id)}
-              onOpen={handleOpenBook}
-              onLongPress={openChooser}
-            />
-          ))}
+        <View style={settings.libraryLayout === 'list' ? styles.listRow : styles.grid}>
+          {item.books.map((document) =>
+            settings.libraryLayout === 'list' ? (
+              <BookListItem
+                key={document.id}
+                book={document}
+                colors={colors}
+                progress={progressMap.get(document.id)}
+                onOpen={handleOpenBook}
+                onLongPress={openChooser}
+              />
+            ) : (
+              <BookGridItem
+                key={document.id}
+                book={document}
+                colors={colors}
+                progress={progressMap.get(document.id)}
+                onOpen={handleOpenBook}
+                onLongPress={openChooser}
+              />
+            ),
+          )}
         </View>
       );
     },
-    [colors, expandedFolders, progressMap, handleOpenBook, openChooser],
+    [colors, expandedFolders, progressMap, handleOpenBook, openChooser, settings.libraryLayout],
   );
   return (
     <Screen
@@ -855,7 +870,16 @@ export default function HomeScreen() {
                   <Text style={[styles.sectionCount, { color: colors.textMuted }]}>{libraryCountLabel}</Text>
                 ) : null}
                 {recentDocuments.length > 1 ? (
-                  <IconButton name="swap-vertical-outline" label="Ordenar la biblioteca" onPress={() => setIsSortPickerVisible(true)} colors={colors} size={20} />
+                  <>
+                    <IconButton
+                      name={settings.libraryLayout === 'list' ? 'grid-outline' : 'list-outline'}
+                      label={settings.libraryLayout === 'list' ? 'Ver como grilla' : 'Ver como lista'}
+                      onPress={() => { void updateSettings({ libraryLayout: settings.libraryLayout === 'list' ? 'grid' : 'list' }); }}
+                      colors={colors}
+                      size={20}
+                    />
+                    <IconButton name="swap-vertical-outline" label="Ordenar la biblioteca" onPress={() => setIsSortPickerVisible(true)} colors={colors} size={20} />
+                  </>
                 ) : null}
               </View>
             </View>
@@ -1218,6 +1242,8 @@ const styles = StyleSheet.create({
   folderGroup: { gap: 12 },
   listContent: { padding: 20, paddingBottom: 96, gap: 12 },
   listHeader: { gap: 18 },
+  // En lista cada fila trae un solo libro y ocupa todo el ancho.
+  listRow: { marginBottom: 8 },
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, rowGap: 16 },
   hiddenBanner: { flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderRadius: radius.md, paddingLeft: 14, paddingRight: 6, paddingVertical: 6 },
   hiddenBannerText: { flex: 1, fontSize: 13 },

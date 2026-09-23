@@ -12,6 +12,7 @@ import { withDatabaseRetry } from '../src/storage/database';
 import { NoteWithBook, noteRepository } from '../src/storage/noteRepository';
 import { NoteType } from '../src/types/storage';
 import { cleanFileName } from '../src/utils/bookDisplay';
+import { countLabel } from '../src/utils/formatters';
 import { libraryNotesToMarkdown } from '../src/utils/notesMarkdown';
 import { radius } from '../src/utils/theme';
 
@@ -67,7 +68,7 @@ export default function NotesScreen() {
       }
       const markdown = libraryNotesToMarkdown([...porLibro.values()]);
       const resultado = await saveTextFile(safeFileName('Mis notas de Bardo', 'md'), 'text/markdown', markdown);
-      if (resultado === 'saved') Alert.alert('Listo', `Se guardaron ${notes.length} anotaciones.`);
+      if (resultado === 'saved') Alert.alert('Listo', `Se guardaron ${countLabel(notes.length, 'anotación', 'anotaciones')}.`);
     } catch (error) {
       Alert.alert('No se pudo exportar', error instanceof Error ? error.message : 'Probá de nuevo.');
     } finally {
@@ -99,7 +100,7 @@ export default function NotesScreen() {
         ) : null}
       </View>
       <Text style={[styles.count, { color: colors.textMuted }]}>
-        {isLoading ? 'Buscando…' : `${notes.length} ${notes.length === 1 ? 'anotación' : 'anotaciones'}`}
+        {isLoading ? 'Buscando…' : countLabel(notes.length, 'anotación', 'anotaciones')}
       </Text>
     </View>
   ), [colors, query, notes.length, isLoading]);

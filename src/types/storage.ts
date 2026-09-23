@@ -140,6 +140,8 @@ export type AppSettings = {
   announceChapters: boolean;
   /** Orden de la biblioteca. */
   librarySort: LibrarySort;
+  /** Cómo se ve la biblioteca: grilla de tapas o lista con autor y avance. */
+  libraryLayout: LibraryLayout;
 };
 
 export type ReadingTheme = 'auto' | 'day' | 'sepia' | 'night';
@@ -152,6 +154,9 @@ export type ReaderFontFamily = 'sans' | 'serif';
  */
 export const LIBRARY_SORTS = ['recent', 'title', 'author', 'manual'] as const;
 export type LibrarySort = (typeof LIBRARY_SORTS)[number];
+
+export const LIBRARY_LAYOUTS = ['grid', 'list'] as const;
+export type LibraryLayout = (typeof LIBRARY_LAYOUTS)[number];
 
 /** Margen lateral del modo texto: de casi pegado al borde a una columna angosta. */
 /** Auto-scroll: de un renglón cada par de segundos a lectura rápida. */
@@ -184,4 +189,5 @@ export const DEFAULT_SETTINGS: AppSettings = {
   volumeKeysTurnPage: false,
   announceChapters: true,
   librarySort: 'recent',
+  libraryLayout: 'grid',
 };

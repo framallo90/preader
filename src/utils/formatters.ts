@@ -80,3 +80,8 @@ export function getDocumentTypeLabel(type: string | null) {
 
   return type.split('/').pop()?.toUpperCase() ?? 'Archivo';
 }
+
+/** "1 libro", "3 libros": el número con la palabra en singular o plural. */
+export function countLabel(count: number, singular: string, plural: string): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}

@@ -27,6 +27,7 @@ import { getAbsoluteCharIndex, getPositionFromAbsoluteChar } from '../src/utils/
 import { charForPage, pageForChar, pageForProgress } from '../src/utils/pageMap';
 import { sentenceSpanAround } from '../src/utils/textSpans';
 import { chapterToAnnounce } from '../src/utils/chapterAnnouncement';
+import { nextInSeries } from '../src/utils/series';
 import { speakAnnouncement } from '../src/services/chapterAnnouncer';
 import { detectLanguage } from '../src/utils/languageDetect';
 import { findQuoteIndex } from '../src/utils/pageQuote';
@@ -48,7 +49,7 @@ import { resolveChapters } from '../src/utils/resolveChapters';
 import { BlockLayoutCache } from '../src/utils/blockLayout';
 import { MAX_RATE, MIN_RATE, decreaseRate, formatRate, increaseRate } from '../src/utils/playbackRate';
 import { SearchMatch, foldText, searchText } from '../src/utils/textSearch';
-import { ThemeColors, getReaderColors, resolveReadingMode } from '../src/utils/theme';
+import { ThemeColors, getReaderColors, radius, resolveReadingMode } from '../src/utils/theme';
 
 const KEEP_AWAKE_TAG = 'reader-screen';
 const READING_THEMES: ReadingTheme[] = ['auto', 'day', 'sepia', 'night'];
@@ -680,19 +681,47 @@ export default function ReaderScreen() {
   // Scroll manual en la lista de texto → guarda progreso (el bloque de arriba).
   // Identidad estable (RN prohíbe cambiar onViewableItemsChanged en caliente):
   // lee el controlador por ref, deps vacías.
+  /**
+   * ¿Se ve el final del libro?
+   *
+   * El progreso se toma del párrafo de ARRIBA de la pantalla. Al llegar al final
+   * del libro, el último párrafo nunca llega arriba: en un libro corto el avance
+   * se quedaba en 67 % con el libro terminado, nunca se marcaba como leído y no
+   * se ofrecía el siguiente de la saga.
+   *
+   * La señal es que el ÚLTIMO párrafo esté en pantalla, no el tamaño de la
+   * lista: con alturas estimadas, el alto total que informa la lista no es el
+   * real hasta que se dibuja todo, y si el libro abre ya en la última pantalla
+   * deslizar no la mueve y no llega ningún evento de scroll.
+   */
+  const textAtEndRef = useRef(false);
+
+  const syncToTextEnd = useCallback(() => {
+    const blocks = parsedDocumentRef.current?.blocks;
+    if (!blocks || blocks.length === 0) return;
+    const last = blocks.length - 1;
+    textStartIndexRef.current = last;
+    void readerRef.current.syncPosition(last, blocks[last].endChar - blocks[last].startChar);
+  }, []);
+
   const handleTextViewable = useCallback(
     ({ viewableItems }: { viewableItems: { index: number | null }[] }) => {
       if (isPlayingRef.current) return; // sonando manda el audio, no el scroll
       // Al abrir, la lista arranca arriba de todo: si eso se guardara, cada
       // reapertura pisaría el progreso con 0%. Recién cuenta el scroll del usuario.
       if (!initialTextScrollDoneRef.current || Date.now() < suppressViewSyncUntilRef.current) return;
+      const total = parsedDocumentRef.current?.blocks.length ?? 0;
+      const seVeElFinal = total > 1 && viewableItems.some((v) => v.index === total - 1);
+      textAtEndRef.current = seVeElFinal;
+      // Con el final en pantalla manda el final del libro, no el párrafo de arriba.
+      if (seVeElFinal) { syncToTextEnd(); return; }
       const topIndex = viewableItems.find((v) => v.index !== null)?.index;
       if (typeof topIndex === 'number') {
         textStartIndexRef.current = topIndex;
         void readerRef.current.syncPosition(topIndex, 0);
       }
     },
-    [],
+    [syncToTextEnd],
   );
   const textViewabilityConfig = useRef({ itemVisiblePercentThreshold: 30 }).current;
 
@@ -1058,6 +1087,36 @@ export default function ReaderScreen() {
       .slice(0, 3);
     setResumeHint({ excerpt, notes: cercanas });
   }, [parsedDocument, savedProgress, isLoading]);
+
+  // ── Seguir con el siguiente de la saga ───────────────────────────────────
+  //
+  // Al llegar al final, se ofrece el libro que sigue en la MISMA carpeta. Una
+  // saga se lee como una sola cosa: terminar el tomo 2 y tener que volver a la
+  // biblioteca a buscar el 3 corta justo cuando más ganas hay de seguir.
+  const [nextBook, setNextBook] = useState<Book | null>(null);
+  const [nextDismissed, setNextDismissed] = useState(false);
+  const isAtEnd = pageInfo
+    ? pageInfo.pageCount > 1 && pdfPageForUi >= pageInfo.pageCount - 1
+    : (parsedDocument?.blocks.length ?? 0) > 1 && reader.progressPercentage >= 99;
+
+  useEffect(() => {
+    if (!isAtEnd || nextDismissed || nextBook || !documentRecord) return;
+    let vivo = true;
+    // Se consulta recién al llegar al final: no tiene sentido traer la
+    // biblioteca entera en cada apertura para algo que casi nunca se usa.
+    void bookRepository.listAllBooks().then((books) => {
+      if (!vivo) return;
+      setNextBook(nextInSeries(documentRecord, books));
+    }).catch(() => {});
+    return () => { vivo = false; };
+  }, [isAtEnd, nextDismissed, nextBook, documentRecord]);
+
+  const openNextBook = useCallback(() => {
+    if (!nextBook) return;
+    const destino = nextBook.id;
+    setNextBook(null);
+    router.replace({ pathname: '/reader', params: { documentId: destino } });
+  }, [nextBook]);
 
   // ── Resaltar en la PÁGINA lo que la voz está leyendo ──────────────────────
   //
@@ -1533,6 +1592,19 @@ export default function ReaderScreen() {
                 ? `Preparando voz y búsqueda…${textPrepPercent ? ` ${textPrepPercent} %` : ''}`
                 : 'PDF escaneado: sin texto para la voz'}
             </Text>
+          </View>
+        ) : null}
+
+        {isAtEnd && nextBook && !nextDismissed ? (
+          <View style={[styles.nextCard, { backgroundColor: colors.surface, borderColor: colors.border }]}>
+            <View style={styles.nextText}>
+              <Text style={[styles.sheetLabel, { color: colors.textMuted }]}>SIGUE EN LA SAGA</Text>
+              <Text style={[styles.nextTitle, { color: colors.text }]} numberOfLines={2}>
+                {getDisplayTitle(nextBook)}
+              </Text>
+            </View>
+            <IconButton name="close" label="No, gracias" onPress={() => setNextDismissed(true)} colors={colors} />
+            <AppButton label="Abrir" icon="arrow-forward" onPress={openNextBook} colors={colors} compact />
           </View>
         ) : null}
 
@@ -2034,6 +2106,21 @@ const styles = StyleSheet.create({
   headerMenuLabel: { fontSize: 14, fontWeight: '700' },
   headerActions: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   resumeNote: { fontSize: 13.5, lineHeight: 19 },
+  nextCard: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    bottom: 96,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 12,
+    borderRadius: radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    elevation: 6,
+  },
+  nextText: { flex: 1, gap: 2 },
+  nextTitle: { fontSize: 15, fontWeight: '700' },
   annotationExcerpt: { fontSize: 13, lineHeight: 19, fontStyle: 'italic' },
   annotationInput: { borderWidth: 1, borderRadius: 12, paddingHorizontal: 12, paddingVertical: 9, fontSize: 14, minHeight: 64, textAlignVertical: 'top' },
   topBackdrop: { justifyContent: 'flex-start', paddingTop: 56, paddingHorizontal: 12 },
