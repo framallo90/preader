@@ -51,3 +51,7 @@ modules/**/android/build/
 
 # binarios ajenos usados para analisis (p. ej. el APK de ReadEra)
 *.apk
+
+# Material suelto de Cowork y cosas para borrar a mano: nunca entran a git
+Claude outputs/
+_to_delete/

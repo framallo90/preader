@@ -1,0 +1,19 @@
+# Todo el texto se guarda con LF (Unix), escriba quien escriba el archivo.
+# Sin esto, core.autocrlf=true en Windows hacía que archivos reescritos por
+# herramientas figuraran como modificados sin cambio real.
+* text=auto eol=lf
+
+# Binarios: nunca tocar sus bytes.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.ttf binary
+*.otf binary
+*.jar binary
+*.aar binary
+*.so binary
+*.apk binary
+*.pdf binary
+*.zip binary

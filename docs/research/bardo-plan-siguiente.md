@@ -649,3 +649,50 @@ todavía era la 1. Pasaba 2 de cada 4 veces tras instalar una versión nueva; co
 bien. La página de arranque se fija al crear el documento provisorio, no en el render siguiente.
 
 **Otro de paso:** un libro marcado "Leído" a mano sin progreso decía "Leído · Sin empezar".
+
+---
+
+## Cerrar la versión (2026-09-23) — sin funciones nuevas hasta que esto esté
+
+Pedido de Cowork después de revisar las cinco tandas. Lo que se pudo hacer sin el teléfono, hecho;
+lo demás, acá para hacerlo con Facu.
+
+### Medición contra la versión anterior (hecha)
+
+Misma máquina, mismo emulador y la misma biblioteca de 98 libros, **alternando** la build de antes de
+la tanda 1 (`ef9cd75`) con la de ahora (`6d4e417`), para que el ruido del emulador pegue igual en las
+dos. El 366 ms de la línea de base era de otro día y otro estado del emulador: comparar contra ese
+número habría inventado una regresión de 100 ms.
+
+| | Antes (`ef9cd75`) | Ahora (`6d4e417`) |
+|---|---|---|
+| Arranque en frío, mediana | ~690 ms | ~690 ms |
+| Inicio quieto (PSS / RSS) | 125-129 / 229-233 MB | 97-121 / 202-225 MB |
+| Lector con la voz narrando (PSS) | 200-226 MB | 201-208 MB |
+| APK x86_64 | 49,38 MB | 49,52 MB (+135 KB) |
+
+**Sin regresión.** El arranque es igual, la memoria igual o menor y el APK apenas más grande. El
+ruido del emulador es de ±10 MB y ±150 ms entre corridas iguales: por eso se alterna.
+
+### En el teléfono de Facu (la Tanda 0, que nunca se hizo)
+
+Instalar la build **encima** de la versión que ya tiene (no desinstalar): así las migraciones
+v7→v9 corren sobre sus datos reales.
+
+1. Abrir la app: la biblioteca, el progreso y las notas siguen ahí.
+2. Una hora escuchando con la pantalla bloqueada. Que no se corte.
+3. Temporizador "al terminar el capítulo": que pare ahí.
+4. Anuncio de capítulo al pasar de uno a otro.
+5. Una entrada de pronunciación, oída con **su** motor de voz.
+6. Pellizco de zoom en un PDF.
+7. Reabrir varios PDF varias veces: cada uno vuelve a su página.
+8. Exportar mis datos → importar ese mismo archivo: nada se duplica.
+9. **Densidad de la interfaz:** entraron Mis notas, Estadísticas, Reproduciendo, Personajes, Mapa,
+   lista/grilla, pronunciación y voz por libro. Cada una está bien sola; mirar con Facu si juntas
+   cargan la app. Sin cambios hasta verlo en la mano.
+
+### Pendiente de Facu, no se toca
+
+- Bloquear el permiso `INTERNET` en release.
+- Borrar `Claude outputs/` y `_to_delete/` (ahora están en `.gitignore`: no pueden entrar a git).
+- Borrar `src/config/apiKeys.ts` y rotar lo que haya adentro si se reusó.
