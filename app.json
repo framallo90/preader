@@ -23,6 +23,7 @@
     },
     "android": {
       "package": "com.personal.pdfvoicereader",
+      "allowBackup": false,
       "adaptiveIcon": {
         "backgroundColor": "#231F5C",
         "foregroundImage": "./assets/android-icon-foreground.png",
