@@ -27,6 +27,8 @@ export type RestoreSummary = {
   progress: number;
   notes: number;
   collections: number;
+  /** Días con tiempo leído o escuchado. */
+  stats: number;
   /** Anotaciones y progreso de libros que todavía no están en esta biblioteca. */
   skipped: number;
 };
@@ -76,6 +78,7 @@ export async function buildBackup(settings: AppSettings): Promise<string> {
     progress,
     notes: notes.map((note) => ({ ...note, type: note.type as BackupFile['notes'][number]['type'] })),
     collections: conLibros,
+    stats: await db.getAllAsync<BackupFile['stats'][number]>('SELECT bookId, day, mode, seconds FROM reading_stats'),
     settings: portableSettings(settings),
   };
   // Con sangría: un respaldo que se puede abrir y leer da confianza de que
@@ -93,7 +96,7 @@ export async function buildBackup(settings: AppSettings): Promise<string> {
 export async function applyBackup(backup: BackupFile): Promise<RestoreSummary> {
   const existentes = await bookRepository.listAllBooks();
   const conocidos = new Set(existentes.map((book) => book.id));
-  const resumen: RestoreSummary = { books: 0, progress: 0, notes: 0, collections: 0, skipped: 0 };
+  const resumen: RestoreSummary = { books: 0, progress: 0, notes: 0, collections: 0, stats: 0, skipped: 0 };
 
   // ── Lo del libro: estado, reseña, orden, velocidad ────────────────────────
   for (const book of backup.books) {
@@ -165,6 +168,21 @@ export async function applyBackup(backup: BackupFile): Promise<RestoreSummary> {
       await collectionRepository.setBookInCollection(bookId, id, true);
     }
     resumen.collections += 1;
+  }
+
+  // ── Estadísticas: se quedan con el MAYOR de los dos valores del día ───────
+  // Así importar dos veces el mismo respaldo no duplica el tiempo, y lo que
+  // leíste en este teléfono después de exportar no se pierde. Entran aunque
+  // el libro no esté: son tu historia, no la del archivo.
+  if (backup.stats.length > 0) {
+    for (const stat of backup.stats) {
+      await db.runAsync(
+        `INSERT INTO reading_stats (bookId, day, mode, seconds) VALUES (?, ?, ?, ?)
+         ON CONFLICT(bookId, day, mode) DO UPDATE SET seconds = MAX(seconds, excluded.seconds)`,
+        [stat.bookId, stat.day, stat.mode, stat.seconds],
+      );
+      resumen.stats += 1;
+    }
   }
 
   if (Object.keys(backup.settings).length > 0) {

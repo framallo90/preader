@@ -47,6 +47,7 @@ function RootNavigator() {
         <Stack.Screen name="settings" options={{ title: 'Ajustes' }} />
         <Stack.Screen name="notes" options={{ title: 'Mis notas' }} />
         <Stack.Screen name="pronunciation" options={{ title: 'Pronunciación' }} />
+        <Stack.Screen name="stats" options={{ title: 'Estadísticas' }} />
       </Stack>
     </>
   );

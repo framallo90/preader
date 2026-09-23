@@ -140,6 +140,8 @@ export type AppSettings = {
   announceChapters: boolean;
   /** Cómo tiene que decir la voz ciertas palabras: [{ from: 'Qhorin', to: 'Corin' }]. */
   pronunciations: { from: string; to: string }[];
+  /** Cuántos libros querés terminar este año; 0 = sin meta. */
+  yearlyGoal: number;
   /** Orden de la biblioteca. */
   librarySort: LibrarySort;
   /** Cómo se ve la biblioteca: grilla de tapas o lista con autor y avance. */
@@ -191,6 +193,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
   volumeKeysTurnPage: false,
   announceChapters: true,
   pronunciations: [],
+  yearlyGoal: 0,
   librarySort: 'recent',
   libraryLayout: 'grid',
 };

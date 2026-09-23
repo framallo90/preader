@@ -3,7 +3,7 @@ import { SQLiteDatabase, openDatabaseAsync } from 'expo-sqlite';
 // Nombre heredado de cuando la app se llamaba así: cambiarlo dejaría la biblioteca
 // del teléfono en un archivo huérfano.
 const DATABASE_NAME = 'pdf-voice-reader.db';
-const CURRENT_DB_VERSION = 7;
+const CURRENT_DB_VERSION = 8;
 let databasePromise: Promise<SQLiteDatabase> | null = null;
 
 export async function getDatabase() {
@@ -228,6 +228,22 @@ async function runMigrations(db: SQLiteDatabase) {
     // vez que cambiabas de libro. NULL = usar el ajuste general.
     await addColumnIfMissing(db, 'books', 'rate', 'REAL');
     await addColumnIfMissing(db, 'books', 'voiceId', 'TEXT');
+  }
+
+  if (version < 8) {
+    // v8: estadísticas. UNA fila por libro, día y modo (leer / escuchar) que se
+    // va sumando: un año de lectura diaria son unos pocos miles de filas.
+    // El día es LOCAL ("2026-09-23"): leer a las 23:30 cuenta para hoy.
+    await db.execAsync(`
+      CREATE TABLE IF NOT EXISTS reading_stats (
+        bookId TEXT NOT NULL,
+        day TEXT NOT NULL,
+        mode TEXT NOT NULL,
+        seconds REAL NOT NULL DEFAULT 0,
+        PRIMARY KEY (bookId, day, mode)
+      );
+      CREATE INDEX IF NOT EXISTS idx_reading_stats_day ON reading_stats (day);
+    `);
   }
 
   if (version < CURRENT_DB_VERSION) {

@@ -109,3 +109,22 @@ describe('shouldReplaceProgress', () => {
     expect(shouldReplaceProgress({ updatedAt: 'roto' }, { updatedAt: '2026-01-01T00:00:00Z' })).toBe(true);
   });
 });
+
+describe('parseBackup: estadísticas', () => {
+  it('lee las filas válidas y descarta las rotas', () => {
+    const raw = JSON.stringify({
+      app: 'bardo',
+      stats: [
+        { bookId: 'a', day: '2026-09-23', mode: 'read', seconds: 120 },
+        { bookId: 'a', day: 'ayer', mode: 'read', seconds: 120 },
+        { bookId: 'a', day: '2026-09-23', mode: 'dormir', seconds: 120 },
+        { bookId: 'a', day: '2026-09-23', mode: 'listen', seconds: -5 },
+      ],
+    });
+    expect(parseBackup(raw)?.stats).toEqual([{ bookId: 'a', day: '2026-09-23', mode: 'read', seconds: 120 }]);
+  });
+
+  it('un respaldo viejo, sin estadísticas, igual se lee', () => {
+    expect(parseBackup(JSON.stringify({ app: 'bardo' }))?.stats).toEqual([]);
+  });
+});

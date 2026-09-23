@@ -121,6 +121,11 @@ export const settingsRepository = {
           : [];
       }
 
+      if (row.key === 'yearlyGoal') {
+        const parsed = Number(parseValue('yearlyGoal', row.value));
+        nextSettings.yearlyGoal = Number.isFinite(parsed) ? Math.min(Math.max(Math.round(parsed), 0), 500) : 0;
+      }
+
       if (row.key === 'announceChapters') {
         nextSettings.announceChapters = parseValue('announceChapters', row.value) !== false;
       }

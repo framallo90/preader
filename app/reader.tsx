@@ -29,6 +29,11 @@ import { charForPage, pageForChar, pageForProgress } from '../src/utils/pageMap'
 import { sentenceSpanAround } from '../src/utils/textSpans';
 import { chapterToAnnounce } from '../src/utils/chapterAnnouncement';
 import { nextInSeries } from '../src/utils/series';
+import { CharacterCandidate, findCharacterCandidates, findMentions, mentionSnippet } from '../src/utils/characters';
+import { countableSeconds, dayKey } from '../src/utils/readingStats';
+import { statsRepository } from '../src/storage/statsRepository';
+import { buildMapMarkers, linearScale, pagedScale, resolveMapTap, snapMapTap } from '../src/utils/bookMap';
+import { BookMapBar } from '../src/components/BookMapBar';
 import { speakAnnouncement } from '../src/services/chapterAnnouncer';
 import { detectLanguage } from '../src/utils/languageDetect';
 import { findQuoteIndex } from '../src/utils/pageQuote';
@@ -56,6 +61,10 @@ const KEEP_AWAKE_TAG = 'reader-screen';
 const READING_THEMES: ReadingTheme[] = ['auto', 'day', 'sepia', 'night'];
 const READING_THEME_LABELS: Record<ReadingTheme, string> = { auto: 'Auto', day: 'Día', sepia: 'Sepia', night: 'Noche' };
 const MAX_QUOTE_CHARS = 1200;
+/** Cada cuánto se suma tiempo leído. */
+const READ_TICK_MS = 5000;
+/** Sin tocar nada por más que esto, el libro abierto deja de contar como lectura. */
+const READ_IDLE_MS = 3 * 60 * 1000;
 /** Después de esto, volver al libro merece un recordatorio de dónde ibas. */
 const RESUME_HINT_AFTER_MS = 3 * 24 * 60 * 60 * 1000;
 const DIM_STEP = 0.1;
@@ -68,6 +77,8 @@ const MAX_FONT_SIZE = 28;
 const MIN_LINE_HEIGHT = 1.3;
 const MAX_LINE_HEIGHT = 2.0;
 const INDEX_ROW_HEIGHT = 48;
+/** Cuántas menciones de un personaje se listan como mucho. */
+const MENTIONS_LIMIT = 300;
 
 /** Hojas del lector: índice, aspecto y voz. Una sola abierta por vez. */
 type ReaderSheet = 'none' | 'index' | 'look' | 'audio';
@@ -589,6 +600,7 @@ export default function ReaderScreen() {
   // el auto-seguimiento no pelea con la voz.
   const handlePdfPageChange = useCallback(
     (pageIndex: number) => {
+      readStatsRef.current.lastActivity = Date.now();
       currentPdfPageRef.current = pageIndex;
       setPdfPageForUi(pageIndex);
       if (isPlayingRef.current) return;
@@ -1102,6 +1114,102 @@ export default function ReaderScreen() {
       ? pagePercentage(pageForChar(currentAbsoluteChar, pagedInfo.pageOffsets), pagedInfo.pageCount)
       : Math.min(Math.max((currentAbsoluteChar / parsedDocument.fullText.length) * 100, 0), 100);
 
+  // ── Mapa del libro ───────────────────────────────────────────────────────
+  // Capítulos, notas y marcadores a lo largo del libro, arriba del índice.
+  const totalChars = parsedDocument?.fullText.length ?? 0;
+  // En un PDF el mapa va por páginas, igual que el porcentaje que se ve.
+  const mapScale = useMemo(
+    () => (pagedInfo ? pagedScale(pagedInfo.pageOffsets, totalChars) : linearScale(totalChars)),
+    [pagedInfo, totalChars],
+  );
+  const mapMarkers = useMemo(
+    () => buildMapMarkers(mapScale, parsedDocument?.chapters, notes),
+    [mapScale, parsedDocument?.chapters, notes],
+  );
+  const handleMapTap = useCallback((fraction: number) => {
+    setActiveSheet('none');
+    // En un PDF, un toque lejos de toda marca va a la PÁGINA tocada: las
+    // páginas sin texto (láminas, tapas) no tienen posición de texto propia.
+    if (pageInfo && !snapMapTap(fraction, mapMarkers)) {
+      const f = Math.min(Math.max(fraction, 0), 1);
+      pdfListRef.current?.scrollToPage(Math.min(Math.floor(f * pageInfo.pageCount), pageInfo.pageCount - 1));
+      return;
+    }
+    jumpToChar(resolveMapTap(fraction, mapMarkers, mapScale));
+  }, [mapMarkers, mapScale, jumpToChar, pageInfo]);
+
+  // ── Tiempo leído, para las estadísticas ──────────────────────────────────
+  //
+  // Se suma de a cinco segundos y se guarda de a un minuto. Sólo cuenta si
+  // hubo actividad (pasar de página, scrollear) en los últimos minutos: dejar
+  // el teléfono abierto en el libro no es leer. Y mientras suena la voz no se
+  // suma acá: eso lo cuenta el servicio de voz como tiempo escuchado.
+  const readStatsRef = useRef({ seconds: 0, lastTick: Date.now(), lastActivity: Date.now() });
+  const markReadingActivity = useCallback(() => {
+    readStatsRef.current.lastActivity = Date.now();
+  }, []);
+
+  useEffect(() => {
+    if (!documentId) return;
+    const acc = readStatsRef.current;
+    acc.lastTick = Date.now();
+    acc.lastActivity = Date.now();
+    const flush = () => {
+      if (acc.seconds <= 0) return;
+      const segundos = acc.seconds;
+      acc.seconds = 0;
+      void statsRepository.addSeconds(documentId, dayKey(new Date()), 'read', segundos).catch(() => {});
+    };
+    const timer = setInterval(() => {
+      const now = Date.now();
+      const delta = now - acc.lastTick;
+      acc.lastTick = now;
+      if (isPlayingRef.current) return;
+      if (AppState.currentState !== 'active') return;
+      if (now - acc.lastActivity > READ_IDLE_MS) return;
+      acc.seconds += countableSeconds(delta, READ_TICK_MS * 3);
+      if (acc.seconds >= 60) flush();
+    }, READ_TICK_MS);
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') flush();
+    });
+    return () => {
+      clearInterval(timer);
+      sub.remove();
+      flush();
+    };
+  }, [documentId]);
+
+  // ── Personajes, sin spoilers ─────────────────────────────────────────────
+  //
+  // Se calcula al abrir la hoja y SÓLO sobre lo que ya leíste: nunca aparece
+  // alguien que todavía no entró, ni una mención de más adelante.
+  const [isCharactersVisible, setIsCharactersVisible] = useState(false);
+  const [characters, setCharacters] = useState<CharacterCandidate[] | null>(null);
+  const [selectedCharacter, setSelectedCharacter] = useState<string | null>(null);
+  const charactersUntilRef = useRef(0);
+
+  const openCharacters = useCallback(() => {
+    setIsSearchVisible(false);
+    setSelectedCharacter(null);
+    setCharacters(null);
+    setIsCharactersVisible(true);
+    const doc = parsedDocumentRef.current;
+    const hasta = absoluteCharRef.current;
+    charactersUntilRef.current = hasta;
+    // Un respiro para que la hoja se dibuje antes de recorrer el texto.
+    setTimeout(() => {
+      if (!doc || doc.pdf?.textPending) { setCharacters([]); return; }
+      // Medido en Hermes: medio Quijote (1 millón de letras) tarda ~0,3 s.
+      setCharacters(findCharacterCandidates(doc.fullText, hasta));
+    }, 60);
+  }, []);
+
+  const characterMentions = useMemo(() => {
+    if (!selectedCharacter || !parsedDocument) return [];
+    return findMentions(parsedDocument.fullText, selectedCharacter, charactersUntilRef.current, MENTIONS_LIMIT);
+  }, [selectedCharacter, parsedDocument]);
+
   // ── Seguir con el siguiente de la saga ───────────────────────────────────
   //
   // Al llegar al final, se ofrece el libro que sigue en la MISMA carpeta. Una
@@ -1509,7 +1617,7 @@ export default function ReaderScreen() {
           contentContainerStyle={[styles.listContent, { paddingHorizontal: settings.textMargin }]}
           showsVerticalScrollIndicator={false}
           onScrollBeginDrag={() => { textScrolledAtRef.current = Date.now(); }}
-          onScroll={(event) => { autoScrollRef.current.offset = event.nativeEvent.contentOffset.y; }}
+          onScroll={(event) => { autoScrollRef.current.offset = event.nativeEvent.contentOffset.y; markReadingActivity(); }}
           scrollEventThrottle={100}
           onViewableItemsChanged={handleTextViewable}
           viewabilityConfig={textViewabilityConfig}
@@ -1645,7 +1753,7 @@ export default function ReaderScreen() {
       {/* Barra inferior: lo que se usa todo el tiempo, siempre en el mismo lugar. */}
       {!isImmersive ? (
         <View style={[styles.toolbar, { backgroundColor: colors.surface, borderColor: colors.border }]}>
-          <IconButton name="list-outline" label="Índice" showLabel onPress={() => setActiveSheet('index')} colors={colors} disabled={!hasChapters} />
+          <IconButton name="list-outline" label="Índice" showLabel onPress={() => setActiveSheet('index')} colors={colors} disabled={!hasChapters && notes.length === 0} />
           <IconButton
             name="search-outline"
             label="Buscar"
@@ -1665,10 +1773,23 @@ export default function ReaderScreen() {
 
       {/* Índice del libro: capítulos reales (o detectados), con el actual marcado. */}
       <Sheet visible={activeSheet === 'index'} onClose={() => setActiveSheet('none')} colors={colors} title="Índice" scroll={false} maxHeight="75%">
+        <BookMapBar
+          progress={mapScale.toFraction(currentAbsoluteChar)}
+          markers={mapMarkers}
+          colors={colors}
+          onTap={handleMapTap}
+        />
+        {hasChapters ? (
         <FlatList
           data={parsedDocument.chapters}
           keyExtractor={(chapter) => chapter.id}
-          initialScrollIndex={currentChapter ? Math.max(0, Math.min(currentChapter.orderIndex, parsedDocument.chapters.length - 1)) : 0}
+          // Sólo si la lista no entra entera: con pocos capítulos, empezar
+          // scrolleado deja el primero sin dibujar y un hueco vacío arriba.
+          initialScrollIndex={
+            currentChapter && parsedDocument.chapters.length > 9
+              ? Math.max(0, Math.min(currentChapter.orderIndex - 2, parsedDocument.chapters.length - 1))
+              : undefined
+          }
           getItemLayout={(_, index) => ({ length: INDEX_ROW_HEIGHT, offset: INDEX_ROW_HEIGHT * index, index })}
           style={styles.indexList}
           renderItem={({ item }) => {
@@ -1693,6 +1814,7 @@ export default function ReaderScreen() {
             );
           }}
         />
+        ) : null}
       </Sheet>
 
       {/* Aspecto: tema, letra, brillo y márgenes. */}
@@ -2065,6 +2187,67 @@ export default function ReaderScreen() {
         </View>
       </Sheet>
 
+      {/* Personajes: nombres y menciones sólo hasta donde leíste. */}
+      <Sheet
+        visible={isCharactersVisible}
+        onClose={() => setIsCharactersVisible(false)}
+        colors={colors}
+        title={selectedCharacter ?? 'Personajes'}
+        scroll={false}
+        maxHeight="70%"
+      >
+        <Text style={[styles.searchCount, { color: colors.textMuted }]}>
+          Sólo lo que ya leíste: no hay nada de más adelante.
+        </Text>
+        {characters === null ? (
+          <ActivityIndicator color={colors.primary} style={styles.charactersSpinner} />
+        ) : selectedCharacter ? (
+          <>
+            <AppButton label="Todos los personajes" icon="arrow-back" onPress={() => setSelectedCharacter(null)} variant="secondary" colors={colors} compact />
+            <Text style={[styles.searchCount, { color: colors.textMuted }]}>
+              {characterMentions.length >= MENTIONS_LIMIT ? `Más de ${MENTIONS_LIMIT} menciones · se muestran las primeras` : `${characterMentions.length} ${characterMentions.length === 1 ? 'mención' : 'menciones'} · la primera es la de arriba`}
+            </Text>
+            <FlatList
+              data={characterMentions}
+              keyExtractor={(m) => String(m.start)}
+              renderItem={({ item, index }) => (
+                <TouchableOpacity
+                  style={[styles.searchRow, { borderColor: colors.border }]}
+                  onPress={() => { setIsCharactersVisible(false); jumpToChar(item.start); }}
+                >
+                  {index === 0 ? (
+                    <Text style={[styles.searchPage, { color: colors.primary }]}>PRIMERA APARICIÓN</Text>
+                  ) : null}
+                  <Text style={[styles.searchSnippet, { color: colors.textMuted }]} numberOfLines={3}>
+                    {parsedDocument ? mentionSnippet(parsedDocument.fullText, item) : ''}
+                  </Text>
+                </TouchableOpacity>
+              )}
+            />
+          </>
+        ) : characters.length === 0 ? (
+          <Text style={[styles.resumeNote, { color: colors.textMuted }]}>
+            Todavía no aparece nadie seguido. Seguí leyendo y volvé.
+          </Text>
+        ) : (
+          <FlatList
+            data={characters}
+            keyExtractor={(c) => c.name}
+            renderItem={({ item }) => (
+              <TouchableOpacity
+                style={[styles.searchRow, { borderColor: colors.border }]}
+                onPress={() => setSelectedCharacter(item.name)}
+              >
+                <Text style={[styles.characterName, { color: colors.text }]}>{item.name}</Text>
+                <Text style={[styles.searchPage, { color: colors.textMuted }]}>
+                  {item.count} {item.count === 1 ? 'vez' : 'veces'}
+                </Text>
+              </TouchableOpacity>
+            )}
+          />
+        )}
+      </Sheet>
+
       {/* Buscar en el libro (sin distinguir tildes ni mayúsculas). */}
       <Sheet visible={isSearchVisible} onClose={() => setIsSearchVisible(false)} colors={colors} top maxHeight="52%" scroll={false}>
         <View style={styles.inlineActions}>
@@ -2083,6 +2266,16 @@ export default function ReaderScreen() {
           </View>
           <AppButton label="Buscar" onPress={handleRunSearch} colors={colors} compact disabled={searchQuery.trim().length < 2} />
         </View>
+        {searchResults === null && canNarrate ? (
+          <AppButton
+            label="¿Quién era…? Personajes, sin spoilers"
+            icon="people-outline"
+            onPress={openCharacters}
+            variant="secondary"
+            colors={colors}
+            compact
+          />
+        ) : null}
         {searchResults !== null ? (
           <Text style={[styles.searchCount, { color: colors.textMuted }]}>
             {searchResults.length === 0
@@ -2232,6 +2425,8 @@ const styles = StyleSheet.create({
   playingPercent: { fontSize: 12.5, fontWeight: '700', minWidth: 38, textAlign: 'right' },
   playingControls: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginVertical: 8 },
   playingMain: { width: 76, height: 76, borderRadius: 38, alignItems: 'center', justifyContent: 'center' },
+  charactersSpinner: { marginVertical: 24 },
+  characterName: { fontSize: 15.5, fontWeight: '700' },
   nextCard: {
     position: 'absolute',
     left: 12,

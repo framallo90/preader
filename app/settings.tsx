@@ -197,7 +197,7 @@ export default function SettingsScreen() {
       }
       Alert.alert(
         '¿Importar?',
-        'Se devuelve tu progreso, notas y listas a los libros que ya tengas. No se borra ni se agrega ningún libro.',
+        'Se devuelve tu progreso, notas, listas y tiempo de lectura a los libros que ya tengas. No se borra ni se agrega ningún libro.',
         [
           { text: 'Cancelar', style: 'cancel' },
           {
@@ -209,7 +209,7 @@ export default function SettingsScreen() {
                   const faltantes = resumen.skipped > 0
                     ? ` Quedaron ${countLabel(resumen.skipped, 'dato', 'datos')} de libros que todavía no están en esta biblioteca: agregá esas carpetas y volvé a importar.`
                     : '';
-                  Alert.alert('Listo', `Restaurado: ${countLabel(resumen.books, 'libro', 'libros')}, ${countLabel(resumen.notes, 'anotación', 'anotaciones')} y ${countLabel(resumen.progress, 'posición', 'posiciones')}.${faltantes}`);
+                  Alert.alert('Listo', `Restaurado: ${countLabel(resumen.books, 'libro', 'libros')}, ${countLabel(resumen.notes, 'anotación', 'anotaciones')} y ${countLabel(resumen.progress, 'posición', 'posiciones')}${resumen.stats > 0 ? `, más tu tiempo de lectura (${countLabel(resumen.stats, 'registro', 'registros')})` : ''}.${faltantes}`);
                 })
                 .catch((error: unknown) => {
                   Alert.alert('No se pudo importar', error instanceof Error ? error.message : 'Probá de nuevo.');
@@ -502,6 +502,13 @@ export default function SettingsScreen() {
             right={<IconButton name="close-circle-outline" label="Quitar exclusión" onPress={() => { void handleRemoveExcludedFolder(path); }} colors={colors} />}
           />
         ))}
+        <Row
+          icon="stats-chart-outline"
+          title="Estadísticas"
+          subtitle="Cuánto leés y escuchás, tu racha y tu meta del año"
+          colors={colors}
+          onPress={() => router.push('/stats')}
+        />
         <Row
           icon="chatbox-ellipses-outline"
           title="Mis notas y citas"

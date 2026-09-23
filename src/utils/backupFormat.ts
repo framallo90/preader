@@ -32,6 +32,9 @@ export type BackupProgress = Pick<
 
 export type BackupCollection = { id: string; name: string; bookIds: string[] };
 
+/** Tiempo leído o escuchado: una fila por libro, día y modo. */
+export type BackupStat = { bookId: string; day: string; mode: 'read' | 'listen'; seconds: number };
+
 export type BackupFile = {
   app: 'bardo';
   version: number;
@@ -40,6 +43,8 @@ export type BackupFile = {
   progress: BackupProgress[];
   notes: BackupNote[];
   collections: BackupCollection[];
+  /** Desde la versión con estadísticas; un respaldo viejo no la trae. */
+  stats: BackupStat[];
   settings: Partial<AppSettings>;
 };
 
@@ -76,6 +81,15 @@ const isBackupNote = (v: unknown): v is BackupNote =>
   isObject(v) && typeof v.id === 'string' && typeof v.bookId === 'string' && typeof v.charIndex === 'number';
 const isBackupProgress = (v: unknown): v is BackupProgress =>
   isObject(v) && typeof v.bookId === 'string' && typeof v.blockIndex === 'number';
+const isBackupStat = (v: unknown): v is BackupStat =>
+  isObject(v) &&
+  typeof v.bookId === 'string' &&
+  typeof v.day === 'string' &&
+  /^\d{4}-\d{2}-\d{2}$/.test(v.day) &&
+  (v.mode === 'read' || v.mode === 'listen') &&
+  typeof v.seconds === 'number' &&
+  Number.isFinite(v.seconds) &&
+  v.seconds > 0;
 const isBackupCollection = (v: unknown): v is BackupCollection =>
   isObject(v) && typeof v.id === 'string' && typeof v.name === 'string';
 
@@ -106,6 +120,7 @@ export function parseBackup(raw: string): BackupFile | null {
       ...c,
       bookIds: Array.isArray(c.bookIds) ? c.bookIds.filter((id): id is string => typeof id === 'string') : [],
     })),
+    stats: asArray(data.stats, isBackupStat),
     settings: isObject(data.settings) ? (portableSettings(data.settings as AppSettings) as Partial<AppSettings>) : {},
   };
 }

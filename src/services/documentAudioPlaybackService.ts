@@ -13,6 +13,8 @@ import { detectLanguage } from '../utils/languageDetect';
 import { clamp } from '../utils/math';
 import { prepareSpeechText } from '../utils/speechText';
 import { Pronunciation, applyPronunciations, cleanPronunciations, textSignature } from '../utils/pronunciation';
+import { countableSeconds, dayKey } from '../utils/readingStats';
+import { statsRepository } from '../storage/statsRepository';
 import { SynthesisChunk, buildAnchoredChunks, buildSentenceSpans, chunkIndexForChar } from '../utils/synthesisSegments';
 import { Span } from '../utils/textSpans';
 import { resolveVoice } from '../utils/voices';
@@ -74,7 +76,42 @@ function buildChunkId(documentId: string, chunk: SynthesisChunk, voiceId: string
   return `${documentId}--chunk-${chunk.startChar}-${len}--${voiceId ?? 'default'}`;
 }
 
+/** Entre dos avisos del reproductor pasa ~250 ms; más que esto es un hueco, no escucha. */
+const LISTEN_MAX_GAP_MS = 5000;
+/** Se guarda de a un minuto: escribir en la base cuatro veces por segundo no tiene sentido. */
+const LISTEN_FLUSH_SECONDS = 60;
+
 class DocumentAudioPlaybackService {
+  /**
+   * Tiempo escuchado para las estadísticas. Se cuenta ACÁ y no en el lector
+   * porque la voz sigue sonando aunque salgas del libro (o con la pantalla
+   * apagada), y es justo el uso que más importa medir.
+   */
+  private listenStats = { bookId: null as string | null, seconds: 0, lastAt: 0 };
+
+  private trackListening(playing: boolean) {
+    const now = Date.now();
+    const acc = this.listenStats;
+    const doc = this.activeDocument;
+    if (playing && doc) {
+      if (acc.bookId !== doc.id) {
+        this.flushListening();
+        acc.bookId = doc.id;
+      }
+      acc.seconds += countableSeconds(now - acc.lastAt, LISTEN_MAX_GAP_MS);
+    }
+    acc.lastAt = now;
+    if (acc.seconds >= LISTEN_FLUSH_SECONDS || (!playing && acc.seconds > 0)) this.flushListening();
+  }
+
+  private flushListening() {
+    const acc = this.listenStats;
+    if (acc.bookId && acc.seconds > 0) {
+      void statsRepository.addSeconds(acc.bookId, dayKey(new Date()), 'listen', acc.seconds).catch(() => {});
+    }
+    acc.seconds = 0;
+  }
+
   /** Diccionario de pronunciación vigente (Ajustes → Voz). */
   private pronunciations: Pronunciation[] = [];
 
@@ -209,6 +246,7 @@ class DocumentAudioPlaybackService {
   }
 
   private handlePlayerStatus = (status: AudioStatus) => {
+    this.trackListening(Boolean(status.playing));
     const activeChunk = this.getActiveChunk();
     // Sin tramo activo no se sabe dónde está la lectura: "terminó el último"
     // con la grilla vacía daba true (0 >= -1) y marcaba el libro como leído.
@@ -736,6 +774,8 @@ class DocumentAudioPlaybackService {
   }
 
   async stopAndUnload() {
+    // Lo escuchado hasta acá, antes de soltar el reproductor.
+    this.flushListening();
     let capturedError: unknown = null;
     try {
       if (this.player) {
