@@ -484,3 +484,87 @@ ofrece **Un libro** o **Una carpeta**.
 "Lectura" tenía quince filas de cosas que no tenían que ver entre sí. Quedó
 partido en **Texto** (cómo se ve el texto), **Páginas y gestos** (PDF y cómics) y
 **Pantalla y arranque**. Voz, Biblioteca, Almacenamiento y Acerca de no cambian.
+
+---
+
+## Orden de aplicación de la lista de mejoras (2026-09-23)
+
+Cowork pasó una lista de ~25 ideas con costo-beneficio (está en `docs/hub/inbox.md`). Verifiqué sus
+afirmaciones técnicas contra el código: **todas correctas**. Esto es el orden en que las aplicaría.
+
+### El criterio
+
+No es sólo "lo barato primero". Es, en este orden:
+
+1. **Nada antes de probar en el teléfono.** Todo se probó en emulador. Esta semana aparecieron ~25
+   bugs reales y **casi todos fueron de posición, progreso o sincronía de la voz** — encontrados
+   probando, no con typecheck.
+2. **Barato Y LEJOS del núcleo frágil** (offsets de voz, progreso, posiciones) antes que barato y
+   cerca.
+3. **Una tanda por build**: cada regresión de esta semana salió probando en el aparato.
+4. **Lo que come memoria, al final y con medición antes y después.**
+
+Línea de base medida (emulador, 96 libros): arranque **366 ms**, **120 MB PSS / 220 MB RSS**,
+APK **46 MB** con una ABI. El recurso escaso es la memoria, no la CPU: es por lo que Android mata
+la app en segundo plano, justo escuchando con la pantalla apagada.
+
+### Hecho
+
+- **Apagar el Auto Backup de Android.** Era el primero de los "imprescindibles". `allowBackup` está
+  en `false` desde `app.json`; verificado en el aparato (flags sin `ALLOW_BACKUP`).
+
+### Tanda 0 — El teléfono (bloquea todo lo demás, no es código)
+
+Bloque D. Sobre todo: **el pellizco del zoom** (nunca probado, el emulador no inyecta dos dedos),
+escuchar con la pantalla bloqueada, cómics CBR/CB7 sólidos de verdad, escuchar una hora seguida e
+interrupciones (llamada, auriculares).
+
+### Tanda 1 — Baratas y lejos del núcleo (todas S, cero rendimiento)
+
+Ninguna toca los offsets de la voz ni el progreso, que es donde vivieron todos los bugs:
+
+1. **Anunciar capítulos** — utterance aparte, fuera de los offsets del texto.
+2. **Velocidad y voz por libro** — una columna y leerla al abrir.
+3. **"Dónde quedaste"** — una consulta al abrir.
+4. **Botón "Marcar"** en la pantalla de voz — reusa el flujo de notas.
+5. **Buscar en todas las notas** — una consulta SQL.
+6. **Exportar notas a Markdown** — leer y compartir.
+7. **Temporizador "al terminar el capítulo"** — `ChapterInfo` ya trae `startChar`/`endChar`. Es la
+   única de la tanda que roza el bucle de la voz, así que va última y se prueba aparte.
+
+### Tanda 2 — El resguardo, que ahora hace falta más (M)
+
+**Apagar el Auto Backup dejó a Facu sin red de contención.** Antes esto era "vale la pena"; ahora
+es lo primero después de la tanda 1:
+
+8. **Exportar / importar mis datos** (JSON por el selector SAF). Sin dependencias. La huella de
+   contenido ya existente reubica los libros al restaurar.
+9. **Sagas** — las columnas ya están en la base (E2): o se completa acá, o se borran.
+10. **Biblioteca en lista además de grilla** — gratis, ya está virtualizada.
+
+### Tanda 3 — Cerca de la voz (M, riesgo real)
+
+11. **Diccionario de pronunciación.** `speechText.ts` hace reemplazo **1 a 1** a propósito: el
+    resaltado se ubica por proporción sobre el largo del tramo. Cambiar largos pide un mapa de
+    posiciones como el de `pageQuote.ts`. Va después de que la voz esté validada en el teléfono.
+12. **Pantalla "Reproduciendo"** — mucha UI, ningún riesgo.
+
+### Tanda 4 — Informar (M)
+
+13. **Barra de progreso con mapa** · 14. **Estadísticas** (tabla nueva, migración) ·
+15. **Personajes sin IA** — ojo: doblar un libro de 1,7 MB aloca otra copia entera. Hay que reusar
+el texto ya doblado, no rehacerlo. La estimación de 0,1-0,3 s es optimista para Hermes.
+
+### Tanda 5 — Visual
+
+16. **Compartir cita como imagen** · 17. **Noche cálida** (toca el tintado nativo, build) ·
+18. **"Seguir leyendo" con el color de la tapa** (calculado una vez al generar la tapa).
+
+### Con medición antes y después, o no por ahora
+
+- ⚠️ **Miniaturas de páginas**: decenas de MB y presión de memoria. No debe robarle turno a la
+  página que se lee (la cola de `pdfLocalService` es LIFO justamente por eso).
+- ⚠️ **Dos páginas en horizontal**: el doble de páginas por pantalla.
+- ⚠️ **Más fuentes**: una familia de lectura completa pesa 400-600 KB, no 100-300.
+- **Widget**: nativo + config plugin.
+- ❌ **Otra voz para los diálogos**: toca la parte que más bugs tuvo, a cambio de poco.
