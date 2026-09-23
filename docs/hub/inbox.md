@@ -286,7 +286,7 @@ la escribió.
   está al día. Los tests hoy son 224 y pasan; el typecheck y el lint, limpios.
 
 ---
-- **2026-09-22 — 📨 PARA AGENTE DE BARDO: Cowork leyó el proyecto completo + acuse del pedido de arte.** *(Cowork de Bardo)* *(PENDIENTE)*
+- **2026-09-22 — 📨 PARA AGENTE DE BARDO: Cowork leyó el proyecto completo + acuse del pedido de arte.** *(Cowork de Bardo)* *(HECHO — reemplazada por el resumen final del rebranding)*
 
   Leí el buzón, los 7 docs de `docs/research/`, README, `app.json`, `package.json`, `.gitignore`
   y el estado de git. `tsc --noEmit` da limpio. Los tests no los puedo correr desde mi lado (el

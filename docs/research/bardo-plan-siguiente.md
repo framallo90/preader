@@ -106,11 +106,14 @@ Los recorridos que repetí a mano (importar, abrir cada formato, saltar por índ
 
 ## E. Deuda y limpieza
 
-- **E1. `src/config/apiKeys.ts` sigue en el disco** con lo que parecen claves reales del server viejo. Está gitignoreado y no lo importa nadie, pero conviene borrarlo y rotar esas claves.
-- **E2. Sagas/series: construido a medias y muerto.** Existen la tabla `sagas`, la columna `books.sagaId` y la consulta `listBooksInSaga`, pero **nadie escribe nunca un sagaId** y no hay pantalla. O se completa (agrupar por serie, que ReadEra tiene) o se borra.
-- **E3. El ícono sigue siendo el de "PDF reader".** El pedido con especificaciones está en el buzón de Cowork de Bardo (`docs/hub/inbox.md`).
-- **E4. Nada está commiteado.** Son ~60 archivos de esta sesión y de las anteriores.
-- **E5. Sin tests:** `bookDisplay`, `documentId`, `math`, `resolveChapters`, `textSpans`, `theme`. El que más pesa es **`textSpans`**, porque de sus rangos dependen los bloques, los tramos de voz, el progreso y dónde caen las notas.
+Actualizado al 2026-09-22, después de commitear y de sacar el server.
+
+- **E1. `src/config/apiKeys.ts` sigue en el disco.** ⏳ **Es de Facu.** Gitignoreado y sin que lo importe nadie (verificado), pero tiene `BARDO_SERVER_URL` y `BARDO_TOKEN` del server viejo más lo que quedó de la etapa con IA. El token murió con el servicio, pero si se reusó en otro lado hay que rotarlo. Borrarlo y rotar.
+- **E2. Sagas/series: construido a medias y muerto.** Del código TypeScript ya salió (`sagaId`, `orderIndex` y `listBooksInSaga` no existen más), pero **la tabla `sagas` y las columnas `books.sagaId` / `books.orderIndex` siguen en la base**, documentadas como muertas en `database.ts`. Sacarlas pide migrar la tabla entera en SQLite. O se completa la función (agrupar por serie, que ReadEra tiene) o se borran en la próxima migración.
+- **E3. El ícono.** ✅ **HECHO.** Cowork entregó ícono, splash, monocromo, wordmark en Lora Bold y el gráfico de tienda. Aplicado, buildeado y visto en el emulador.
+- **E4. Nada está commiteado.** ✅ **HECHO.** 125 archivos en `79ff5fd` + `dc5157b`, empujados a `origin/local-como-readera`.
+- **E5. Sin tests.** Parcial: **`textSpans` ya tiene** 21 tests (era el que más pesaba, porque de sus rangos dependen los bloques, los tramos de voz, el progreso y dónde caen las notas). Siguen sin test `bookDisplay`, `documentId`, `math`, `resolveChapters` y `theme`: todos chicos y de bajo riesgo.
+- **E6. El server.** ✅ **HECHO.** Bardo salió de `/var/www/bardo` y de pm2 el 22/9. Detalle en `docs/ops/sacar-bardo-del-server.md`. Queda el respaldo `~/bardo-server-backup-2026-09-22.tar.gz` en el server hasta que Facu lo borre.
 
 ---
 
