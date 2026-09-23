@@ -17,14 +17,15 @@ type BookRow = {
   favorite: number | null;
   rating: number | null;
   review: string | null;
+  orderIndex: number | null;
 };
 
-// Las columnas `sagaId` y `orderIndex` siguen EXISTIENDO en la tabla (sacarlas
-// obliga a reconstruirla y no aporta nada), pero ya no se leen ni se escriben:
-// eran de una jerarquía saga → libro que nunca se terminó de construir. Quedan
-// en NULL / 0. Si algún día se hacen las series, se arranca de ahí.
+// `sagaId` sigue EXISTIENDO en la tabla (sacarla obliga a reconstruirla y no
+// aporta nada) pero no se lee ni se escribe: era de una jerarquía saga → libro
+// que nunca se terminó de construir. `orderIndex` era de lo mismo y ahora sí se
+// usa: guarda tu orden a mano dentro de la carpeta.
 const BOOK_COLUMNS =
-  'id, name, title, author, coverUri, summary, uri, type, importedAt, lastOpenedAt, status, favorite, rating, review';
+  'id, name, title, author, coverUri, summary, uri, type, importedAt, lastOpenedAt, status, favorite, rating, review, orderIndex';
 
 function toBookStatus(value: string | null): BookStatus {
   return value === 'to_read' || value === 'read' ? value : 'none';
@@ -46,6 +47,7 @@ function mapBookRow(row: BookRow): Book {
     favorite: row.favorite === 1,
     rating: typeof row.rating === 'number' && row.rating >= 1 && row.rating <= 5 ? row.rating : null,
     review: row.review,
+    orderIndex: typeof row.orderIndex === 'number' ? row.orderIndex : 0,
   };
 }
 
@@ -123,6 +125,24 @@ export const bookRepository = {
     const db = await getDatabase();
     const limpio = title?.trim() ?? '';
     await db.runAsync('UPDATE books SET title = ? WHERE id = ?', [limpio.length > 0 ? limpio : null, bookId]);
+  },
+
+  /**
+   * Guarda tu orden a mano de una carpeta.
+   *
+   * Los índices vienen espaciados (1000, 2000, 3000…) para que mover un libro
+   * dentro de la carpeta reescriba unas pocas filas y no la carpeta entera. El
+   * 0 queda reservado para "nunca lo ordenaste": esos van al final, así un libro
+   * que aparece en un escaneo nuevo no se cuela arriba de todo.
+   */
+  async setOrder(entries: { id: string; orderIndex: number }[]): Promise<void> {
+    if (entries.length === 0) return;
+    const db = await getDatabase();
+    await db.withTransactionAsync(async () => {
+      for (const entry of entries) {
+        await db.runAsync('UPDATE books SET orderIndex = ? WHERE id = ?', [entry.orderIndex, entry.id]);
+      }
+    });
   },
 
   async setFavorite(bookId: string, favorite: boolean): Promise<void> {

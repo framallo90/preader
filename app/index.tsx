@@ -6,6 +6,7 @@ import { ActivityIndicator, Alert, FlatList, Modal, Pressable, ScrollView, Style
 import { AppButton } from '../src/components/AppButton';
 import { BookGridItem } from '../src/components/BookGridItem';
 import { OptionPickerModal } from '../src/components/OptionPickerModal';
+import { ReorderSheet } from '../src/components/ReorderSheet';
 import { Screen } from '../src/components/Screen';
 import { Chip, Icon, IconButton, IconName } from '../src/components/ui';
 import { useAppSettings } from '../src/hooks/useAppSettings';
@@ -15,7 +16,7 @@ import {
 } from '../src/services/documentAudioPlaybackService';
 import { removeBookCover } from '../src/services/bookMetadataService';
 import { addIgnoredBook, clearIgnoredBook, getDisplayNameFromSafUri, getIgnoredBooksCount, requestLibraryFolder, restoreIgnoredBooks, scanLibraryFolders } from '../src/services/libraryScanService';
-import { compareBooksNaturally, getDisplayTitle } from '../src/utils/bookDisplay';
+import { buildOrderEntries, compareBooksManually, compareBooksNaturally, getDisplayTitle } from '../src/utils/bookDisplay';
 import { compareSubfolders, folderMatchDepth, formatSubfolderLabel, getSubfolderPath } from '../src/utils/libraryFolders';
 import { foldText } from '../src/utils/textSearch';
 import { getDocumentTypeLabel } from '../src/utils/formatters';
@@ -40,6 +41,7 @@ const SORT_OPTIONS: { value: LibrarySort; label: string; description: string; ic
   { value: 'recent', label: 'Recientes', description: 'Lo último que abriste, primero.', icon: 'time-outline' },
   { value: 'title', label: 'Título', description: 'Alfabético por título.', icon: 'text-outline' },
   { value: 'author', label: 'Autor', description: 'Agrupa la biblioteca por autor.', icon: 'person-outline' },
+  { value: 'manual', label: 'El mío', description: 'El orden que acomodaste a mano en cada carpeta.', icon: 'reorder-three-outline' },
 ];
 
 function compareByAuthor(a: Book, b: Book): number {
@@ -51,6 +53,7 @@ function compareByAuthor(a: Book, b: Book): number {
 function sortBooks(books: Book[], sort: LibrarySort): Book[] {
   if (sort === 'title') return [...books].sort(compareBooksNaturally);
   if (sort === 'author') return [...books].sort(compareByAuthor);
+  if (sort === 'manual') return [...books].sort(compareBooksManually);
   return books;
 }
 
@@ -123,6 +126,8 @@ export default function HomeScreen() {
   const [isAddPickerVisible, setIsAddPickerVisible] = useState(false);
   // Libro que se está renombrando, con el texto en edición.
   const [renaming, setRenaming] = useState<{ book: Book; value: string } | null>(null);
+  // Carpeta que se está acomodando a mano.
+  const [reordering, setReordering] = useState<{ title: string; books: Book[] } | null>(null);
   const [collections, setCollections] = useState<Collection[]>([]);
   const [collectionBookIds, setCollectionBookIds] = useState<Set<string> | null>(null);
   const hasAutoOpenedRef = useRef(false);
@@ -433,6 +438,39 @@ export default function HomeScreen() {
     await bookRepository.setStatus(book.id, status);
     setRecentDocuments((prev) => prev.map((b) => (b.id === book.id ? { ...b, status } : b)));
   }, []);
+
+  /**
+   * Abre el modo de acomodar con el tramo al que pertenece ese libro.
+   *
+   * Se acomoda la subcarpeta, no la carpeta entera: es donde el orden tiene
+   * sentido, y evita poner 95 libros en una sola lista para mover uno.
+   */
+  const abrirReordenar = useCallback((book: Book) => {
+    for (const section of librarySections.sections) {
+      for (const group of section.groups) {
+        if (!group.books.some((b) => b.id === book.id)) continue;
+        const nombre = group.path === '' ? section.name : `${section.name} / ${formatSubfolderLabel(group.path)}`;
+        setReordering({ title: nombre, books: group.books });
+        return;
+      }
+    }
+    if (librarySections.ungrouped.some((b) => b.id === book.id)) {
+      setReordering({ title: 'otros libros', books: librarySections.ungrouped });
+    }
+  }, [librarySections]);
+
+  const guardarOrden = useCallback(async (ordered: Book[]) => {
+    setReordering(null);
+    const entries = buildOrderEntries(ordered);
+    await bookRepository.setOrder(entries);
+    const porId = new Map(entries.map((e) => [e.id, e.orderIndex]));
+    setRecentDocuments((prev) => prev.map((b) => {
+      const nuevo = porId.get(b.id);
+      return nuevo === undefined ? b : { ...b, orderIndex: nuevo };
+    }));
+    // Sin el modo "El mío" activo, el trabajo que acabás de hacer no se vería.
+    if (settings.librarySort !== 'manual') await updateSettings({ librarySort: 'manual' });
+  }, [settings.librarySort, updateSettings]);
 
   const handleRename = useCallback(async () => {
     const pendiente = renaming;
@@ -916,6 +954,15 @@ export default function HomeScreen() {
         }}
       />
 
+      <ReorderSheet
+        visible={reordering !== null}
+        title={reordering?.title ?? ''}
+        books={reordering?.books ?? []}
+        colors={colors}
+        onCancel={() => setReordering(null)}
+        onSave={(ordered) => { void guardarOrden(ordered); }}
+      />
+
       {/* Renombrar: cambia el título que se ve, no el archivo. */}
       <Modal visible={renaming !== null} transparent animationType="fade" onRequestClose={() => setRenaming(null)}>
         <Pressable style={[styles.renameScrim, { backgroundColor: colors.scrim }]} onPress={() => setRenaming(null)}>
@@ -1001,6 +1048,12 @@ export default function HomeScreen() {
                 description: 'Lo guarda en el filtro "Para leer".',
               }]),
           {
+            value: 'reorder',
+            label: 'Acomodar esta carpeta',
+            icon: 'reorder-three-outline',
+            description: 'Arrastrá los libros al orden que quieras. Se guarda.',
+          },
+          {
             value: 'rename',
             label: 'Renombrar',
             icon: 'create-outline',
@@ -1053,6 +1106,11 @@ export default function HomeScreen() {
           if (value === 'rename') {
             setPendingBook(null);
             setRenaming({ book, value: book.title ?? getDisplayTitle(book) });
+            return;
+          }
+          if (value === 'reorder') {
+            setPendingBook(null);
+            abrirReordenar(book);
             return;
           }
           if (value === 'restart') {

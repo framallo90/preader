@@ -17,6 +17,9 @@ export const NEW_BOOK_DEFAULTS = {
   favorite: false,
   rating: null,
   review: null,
+  // 0 = sin ordenar a mano. Va al final de su carpeta, así un libro que aparece
+  // en un escaneo nuevo no se mete arriba del orden que vos armaste.
+  orderIndex: 0,
 };
 
 export type NoteType = 'bookmark' | 'quote' | 'note';
@@ -56,6 +59,13 @@ export type Book = {
   favorite: boolean;
   rating: number | null;     // 1-5 estrellas, null sin calificar
   review: string | null;     // reseña propia
+  /**
+   * Tu orden a mano dentro de la carpeta. 0 = nunca lo ordenaste.
+   *
+   * Se guardan espaciados (1000, 2000, 3000…) para que mover un libro reescriba
+   * un puñado de filas y no la carpeta entera.
+   */
+  orderIndex: number;
 };
 
 export type Chapter = {
@@ -126,7 +136,14 @@ export type AppSettings = {
 
 export type ReadingTheme = 'auto' | 'day' | 'sepia' | 'night';
 export type ReaderFontFamily = 'sans' | 'serif';
-export type LibrarySort = 'recent' | 'title' | 'author';
+/**
+ * Los órdenes de la biblioteca. La LISTA es la fuente de verdad y el tipo sale
+ * de ella: así el validador que lee los ajustes no puede quedar desactualizado.
+ * (Pasó: se agregó 'manual' al tipo pero no a la lista blanca del repositorio,
+ * y al reiniciar la app el orden elegido se descartaba en silencio.)
+ */
+export const LIBRARY_SORTS = ['recent', 'title', 'author', 'manual'] as const;
+export type LibrarySort = (typeof LIBRARY_SORTS)[number];
 
 /** Margen lateral del modo texto: de casi pegado al borde a una columna angosta. */
 /** Auto-scroll: de un renglón cada par de segundos a lectura rápida. */

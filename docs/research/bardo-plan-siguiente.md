@@ -568,3 +568,42 @@ el texto ya doblado, no rehacerlo. La estimación de 0,1-0,3 s es optimista para
 - ⚠️ **Más fuentes**: una familia de lectura completa pesa 400-600 KB, no 100-300.
 - **Widget**: nativo + config plugin.
 - ❌ **Otra voz para los diálogos**: toca la parte que más bugs tuvo, a cambio de poco.
+
+---
+
+## Orden a mano de la biblioteca (2026-09-23)
+
+Facu quería arrastrar las tapas para armar su orden. **No se hizo arrastrando en la grilla**, y el
+porqué importa:
+
+- La grilla **no tiene alto de fila fijo** (a propósito: el título ocupa una o dos líneas), y las
+  filas son de a tres, así que mover un libro obliga a re-armarlas todas. El arrastre ahí sale caro
+  y frágil.
+- La librería habitual (`react-native-draggable-flatlist`) arrastra **`reanimated` +
+  `gesture-handler`**: +2 MB por arquitectura y un segundo motor de JavaScript que arranca siempre,
+  se use o no. Las alternativas sin reanimated **no virtualizan**, o sea que deshacen A5.
+- Y había un choque de gestos: mantener apretado ya abre el menú del libro.
+
+**Lo que se hizo:** el menú gana "Acomodar esta carpeta" y eso abre un modo aparte con la carpeta
+en **una sola columna**, donde se arrastra desde un asa. Con alto de fila fijo, saber sobre qué
+libro estás parado es una división. Sin dependencias nuevas (`PanResponder` + `Animated`), sin
+tocar el arranque, y **el menú del libro queda exactamente como estaba**.
+
+Detalles que importan:
+
+- **`books.orderIndex` ya existía** (columna muerta de sagas, E2): cero migración.
+- Los índices se guardan **espaciados de a 1000**, así mover un libro reescribe unas pocas filas.
+- **`orderIndex` 0 = "nunca lo ordenaste", y esos van AL FINAL.** Es lo que evita que un libro que
+  aparece en un escaneo nuevo se cuele arriba del orden que armaste. Verificado en el emulador con
+  un archivo llamado `aaa-recien-llegado`: quedó último, no primero.
+- Se acomoda la **subcarpeta**, no la carpeta entera: es donde el orden tiene sentido y evita poner
+  95 libros en una lista para mover uno.
+- Al guardar, el orden de la biblioteca pasa solo a "El mío": si no, el trabajo recién hecho no se
+  vería.
+
+**Un bug encontrado probando:** el orden no sobrevivía al reinicio. `settingsRepository` valida
+`librarySort` contra una lista blanca escrita a mano que no conocía `'manual'`, así que lo
+descartaba en silencio y volvía a `'recent'`. Arreglado de raíz: la lista (`LIBRARY_SORTS`) es ahora
+la fuente de verdad y **el tipo sale de ella**, así no se pueden volver a desincronizar.
+
+13 tests nuevos en `bookDisplay` (que además era uno de los huecos de E5).
