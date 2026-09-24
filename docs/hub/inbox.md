@@ -18,8 +18,11 @@ la escribió.
 
   **La fuente, en dos lugares (usá el que puedas abrir):**
 
-  1. El documento vivo: https://claude.ai/code/artifact/2285bc69-631c-447b-96a5-46decd9e5df0
-  2. Una copia en Markdown, fuera de git: `Claude outputs/Bardo - guía para la entrevista.md`
+  1. El documento vivo, que tiene DOS pestañas ("Bardo — guía para la entrevista" y "Recorrido de
+     punta a punta"): https://claude.ai/code/artifact/2285bc69-631c-447b-96a5-46decd9e5df0
+  2. Una copia en Markdown de cada pestaña, fuera de git, en `Claude outputs/`:
+     `Bardo - guía para la entrevista.md` y `Bardo - guía para la entrevista - 2 - Recorrido de punta a punta.md`.
+     Van las dos en el mismo PDF, en ese orden, cada una como una parte con su título.
 
   **El PDF:**
 
