@@ -126,8 +126,11 @@ modules/
   bardo-keys/             volume key capture (Kotlin)
 docs/
   research/               design decisions, audits and measurements
-  brand/                  visual identity
-assets/                   icons, splash and typography
+  brand/                  visual identity and previous logos
+  screenshots/            screenshots for this README
+  ops/                    operational procedures
+  hub/                    project coordination notes
+assets/                   icons, splash and typography (Lora, OFL license)
 ```
 
 The `android/` folder is not in the repository: it is generated with `expo prebuild` from `app.json` and the modules.

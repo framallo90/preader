@@ -126,8 +126,11 @@ modules/
   bardo-keys/             captura de las teclas de volumen (Kotlin)
 docs/
   research/               decisiones de diseño, auditorías y mediciones
-  brand/                  identidad visual
-assets/                   íconos, splash y tipografía
+  brand/                  identidad visual y logos anteriores
+  screenshots/            capturas para este README
+  ops/                    procedimientos operativos
+  hub/                    notas de coordinación del proyecto
+assets/                   íconos, splash y tipografía (Lora, licencia OFL)
 ```
 
 La carpeta `android/` no está en el repositorio: se genera con `expo prebuild` a partir de `app.json` y los módulos.
