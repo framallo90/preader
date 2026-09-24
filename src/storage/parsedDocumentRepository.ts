@@ -4,7 +4,7 @@ import { ChapterInfo, ParsedDocument, PdfPageInfo, TextBlock, TocEntry } from '.
 import { makeTextBlock } from '../utils/textBlocks';
 import { getDatabase } from './database';
 
-// Acepta tanto Book como StoredDocument (ambos tienen id, name, uri)
+// Lo mínimo de un libro que hace falta para leerlo o cachearlo.
 export type DocumentRef = { id: string; name: string; uri: string };
 
 type ParsedDocumentRow = {

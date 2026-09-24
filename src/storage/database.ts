@@ -3,7 +3,7 @@ import { SQLiteDatabase, openDatabaseAsync } from 'expo-sqlite';
 // Nombre heredado de cuando la app se llamaba así: cambiarlo dejaría la biblioteca
 // del teléfono en un archivo huérfano.
 const DATABASE_NAME = 'pdf-voice-reader.db';
-const CURRENT_DB_VERSION = 9;
+const CURRENT_DB_VERSION = 10;
 let databasePromise: Promise<SQLiteDatabase> | null = null;
 
 export async function getDatabase() {
@@ -63,41 +63,19 @@ export async function initializeDatabase() {
     PRAGMA synchronous = NORMAL;
     PRAGMA foreign_keys = ON;
 
-    -- === Legacy (mantenido para compatibilidad) ===
-    CREATE TABLE IF NOT EXISTS documents (
-      id TEXT PRIMARY KEY NOT NULL,
-      name TEXT NOT NULL,
-      uri TEXT NOT NULL,
-      type TEXT,
-      importedAt TEXT NOT NULL,
-      lastOpenedAt TEXT NOT NULL
-    );
-
     -- OJO: esto vive dentro de un template literal de JavaScript, así que acá NO
     -- se pueden usar comillas invertidas.
-    -- La tabla sagas y las columnas books.sagaId / books.orderIndex son un
-    -- resto de una jerarquía saga → libro que nunca se terminó. Ya NO se leen ni
-    -- se escriben desde el código (ver bookRepository). Se dejan porque sacar una
-    -- columna en SQLite obliga a reconstruir la tabla entera, y no molestan.
-    -- Si algún día se hacen las series de libros, la base ya está.
-
-    CREATE TABLE IF NOT EXISTS sagas (
-      id TEXT PRIMARY KEY NOT NULL,
-      name TEXT NOT NULL,
-      description TEXT,
-      createdAt TEXT NOT NULL
-    );
-
+    -- Las columnas que faltan acá (title, author, coverUri, estado, etc.) las
+    -- agregan las migraciones de abajo: así una instalación nueva y una vieja
+    -- terminan con la misma tabla.
     CREATE TABLE IF NOT EXISTS books (
       id TEXT PRIMARY KEY NOT NULL,
-      sagaId TEXT,
       name TEXT NOT NULL,
       orderIndex INTEGER NOT NULL DEFAULT 0,
       uri TEXT NOT NULL,
       type TEXT NOT NULL,
       importedAt TEXT NOT NULL,
-      lastOpenedAt TEXT NOT NULL,
-      FOREIGN KEY (sagaId) REFERENCES sagas(id) ON DELETE SET NULL
+      lastOpenedAt TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS chapters (
@@ -105,8 +83,6 @@ export async function initializeDatabase() {
       bookId TEXT NOT NULL,
       orderIndex INTEGER NOT NULL,
       title TEXT NOT NULL,
-      povCharacter TEXT,
-      povNumber INTEGER,
       startChar INTEGER NOT NULL,
       endChar INTEGER NOT NULL,
       FOREIGN KEY (bookId) REFERENCES books(id) ON DELETE CASCADE
@@ -252,8 +228,97 @@ async function runMigrations(db: SQLiteDatabase) {
     await addColumnIfMissing(db, 'books', 'coverColor', 'TEXT');
   }
 
+  if (version < 10) {
+    // v10: limpieza. Se van los restos que nadie lee:
+    //  - la tabla sagas y books.sagaId (una jerarquía saga → libro que nunca se
+    //    terminó; las sagas de hoy salen de la carpeta, ver utils/series),
+    //  - chapters.povCharacter / povNumber (de la etapa con IA; el patrón de
+    //    capítulos "BRAN (1)" se sigue detectando, sólo no se guardaba para nada),
+    //  - la tabla documents (la biblioteca de antes de books; vacía).
+    await cleanUpDeadSchema(db);
+  }
+
   if (version < CURRENT_DB_VERSION) {
     await db.execAsync(`PRAGMA user_version = ${CURRENT_DB_VERSION}`);
+  }
+}
+
+async function hasColumn(db: SQLiteDatabase, table: string, column: string): Promise<boolean> {
+  const columns = await db.getAllAsync<{ name: string }>(`PRAGMA table_info(${table})`);
+  return columns.some((c) => c.name === column);
+}
+
+/**
+ * Saca columnas reconstruyendo la tabla: SQLite no deja borrar una columna que
+ * es clave foránea (books.sagaId lo era).
+ *
+ * El orden importa, y es el que pide la documentación de SQLite:
+ *  1. Claves foráneas APAGADAS antes de empezar (no se puede dentro de una
+ *     transacción). Con ellas prendidas, borrar la tabla vieja de libros borraría
+ *     EN CASCADA las notas, el progreso, los capítulos y las colecciones.
+ *  2. Todo en una transacción: si algo falla, no cambió nada y user_version no
+ *     sube, así que se reintenta en el próximo arranque.
+ *  3. Al final se vuelven a prender, pase lo que pase.
+ */
+async function cleanUpDeadSchema(db: SQLiteDatabase) {
+  await db.execAsync('PRAGMA foreign_keys = OFF');
+  try {
+    await db.withTransactionAsync(async () => {
+      if (await hasColumn(db, 'books', 'sagaId')) {
+        await db.execAsync(`
+          CREATE TABLE books_v10 (
+            id TEXT PRIMARY KEY NOT NULL,
+            name TEXT NOT NULL,
+            orderIndex INTEGER NOT NULL DEFAULT 0,
+            uri TEXT NOT NULL,
+            type TEXT NOT NULL,
+            importedAt TEXT NOT NULL,
+            lastOpenedAt TEXT NOT NULL,
+            title TEXT,
+            author TEXT,
+            coverUri TEXT,
+            status TEXT NOT NULL DEFAULT 'none',
+            favorite INTEGER NOT NULL DEFAULT 0,
+            rating INTEGER,
+            review TEXT,
+            summary TEXT,
+            rate REAL,
+            voiceId TEXT,
+            coverColor TEXT
+          );
+          INSERT INTO books_v10 (id, name, orderIndex, uri, type, importedAt, lastOpenedAt, title, author,
+                                 coverUri, status, favorite, rating, review, summary, rate, voiceId, coverColor)
+            SELECT id, name, orderIndex, uri, type, importedAt, lastOpenedAt, title, author,
+                   coverUri, status, favorite, rating, review, summary, rate, voiceId, coverColor
+            FROM books;
+          DROP TABLE books;
+          ALTER TABLE books_v10 RENAME TO books;
+        `);
+      }
+      if (await hasColumn(db, 'chapters', 'povCharacter')) {
+        await db.execAsync(`
+          CREATE TABLE chapters_v10 (
+            id TEXT PRIMARY KEY NOT NULL,
+            bookId TEXT NOT NULL,
+            orderIndex INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            startChar INTEGER NOT NULL,
+            endChar INTEGER NOT NULL,
+            FOREIGN KEY (bookId) REFERENCES books(id) ON DELETE CASCADE
+          );
+          INSERT INTO chapters_v10 (id, bookId, orderIndex, title, startChar, endChar)
+            SELECT id, bookId, orderIndex, title, startChar, endChar FROM chapters;
+          DROP TABLE chapters;
+          ALTER TABLE chapters_v10 RENAME TO chapters;
+        `);
+      }
+      await db.execAsync(`
+        DROP TABLE IF EXISTS sagas;
+        DROP TABLE IF EXISTS documents;
+      `);
+    });
+  } finally {
+    await db.execAsync('PRAGMA foreign_keys = ON');
   }
 }
 

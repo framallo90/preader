@@ -560,14 +560,34 @@ el texto ya doblado, no rehacerlo. La estimación de 0,1-0,3 s es optimista para
 16. **Compartir cita como imagen** · 17. **Noche cálida** (toca el tintado nativo, build) ·
 18. **"Seguir leyendo" con el color de la tapa** (calculado una vez al generar la tapa).
 
-### Con medición antes y después, o no por ahora
+### Quedaron afuera a propósito, y por qué (decisión de Facu, 2026-09-23)
 
-- ⚠️ **Miniaturas de páginas**: decenas de MB y presión de memoria. No debe robarle turno a la
-  página que se lee (la cola de `pdfLocalService` es LIFO justamente por eso).
-- ⚠️ **Dos páginas en horizontal**: el doble de páginas por pantalla.
-- ⚠️ **Más fuentes**: una familia de lectura completa pesa 400-600 KB, no 100-300.
-- **Widget**: nativo + config plugin.
-- ❌ **Otra voz para los diálogos**: toca la parte que más bugs tuvo, a cambio de poco.
+Si alguna vuelve a surgir, acá está el motivo por el que no entró y qué haría falta para entrarla.
+
+- **Miniaturas de páginas** (una tira de páginas chicas para saltar mirando). Por qué no: cada
+  miniatura es un bitmap más en memoria; un tomo de 400 páginas son decenas de MB, y **la memoria es
+  el recurso escaso**: es por lo que Android mata la app cuando escuchás con la pantalla apagada.
+  Además compite con el dibujo de la página que estás leyendo (la cola de `pdfLocalService` es LIFO
+  para que la página visible gane siempre). Para entrarla: miniaturas en disco y no en memoria, de a
+  una ventana de ±10, medidas con `dumpsys meminfo` antes y después con el lector narrando.
+- **Dos páginas por pantalla en horizontal.** Por qué no: duplica las páginas dibujadas por pantalla
+  (misma presión de memoria de arriba) y el ancho por página baja a la mitad, así que en un teléfono
+  el texto queda ilegible sin zoom. Tiene sentido sólo en tablet. Para entrarla: sólo cuando el
+  ancho real supera ~900 dp, y medida.
+- **Más fuentes de lectura.** Por qué no: una familia completa (regular, itálica, negrita, negrita
+  itálica) pesa 400-600 KB y va adentro del APK para siempre; hoy se embebe sólo Lora Bold para la
+  marca y el cuerpo usa la serif y la sans del sistema, que ya son buenas. Para entrarla: una sola
+  familia elegida por Facu, medida en tamaño de APK.
+- **Widget en la pantalla de inicio** ("Seguir leyendo" afuera de la app). Por qué no: es código
+  nativo (AppWidgetProvider + RemoteViews) más un config plugin de Expo, y hay que mantenerlo aparte
+  de la app; el beneficio es un toque menos. Para entrarlo: módulo nativo propio, como `bardo-keys`.
+- **Otra voz para los diálogos.** Descartada, no pospuesta: obliga a partir cada tramo de voz en
+  pedazos (narrador / diálogo) y eso toca justo el mapeo tiempo→texto, que es donde vivieron casi
+  todos los bugs de la app. Detectar diálogos por rayas y comillas falla seguido, y el resultado
+  cambia de voz a mitad de una frase. Mucho riesgo, poco valor.
+- **Selección de texto con el dedo sobre la página del PDF** (arrastrar para elegir palabras). Por
+  qué no: Bardo ya cita exacto tocando el párrafo (B6); seleccionar con asas sobre una imagen
+  dibujada pide rectángulos por carácter desde Pdfium y una capa de gestos que pelea con el zoom.
 
 ---
 
@@ -650,6 +670,25 @@ bien. La página de arranque se fija al crear el documento provisorio, no en el 
 
 **Otro de paso:** un libro marcado "Leído" a mano sin progreso decía "Leído · Sin empezar".
 
+### Limpieza de código y base v10 (2026-09-23)
+
+Pedido de Facu: "limpiá el código, hacé la migración". Se fue todo lo que nadie leía:
+
+- **Base v10:** la tabla `sagas` y `books.sagaId` (jerarquía saga → libro que nunca se terminó; las
+  sagas de hoy salen de la carpeta), `chapters.povCharacter` / `povNumber` (de la etapa con IA) y la
+  tabla `documents` (la biblioteca anterior a `books`, vacía). SQLite no deja borrar una columna que
+  es clave foránea, así que `books` y `chapters` se reconstruyen: claves foráneas apagadas antes
+  (con ellas prendidas, borrar la tabla vieja borraría en cascada notas, progreso y colecciones),
+  todo en una transacción, y prendidas de nuevo al final. Probado sobre la base real del emulador
+  (98 libros, 156 capítulos, notas, colecciones, progreso, estadísticas): las 272 filas idénticas
+  antes y después, `foreign_key_check` vacío.
+- **Código:** `isPreparingPdfText`, el tipo `StoredDocument`, `volumeKeysAvailable`,
+  `getChapterById`, `listChaptersByPov`, los campos POV en tipos, detector y repositorio (el patrón
+  "BRAN (1)" se sigue detectando como título), y el parámetro `fullText` que `buildAnchoredChunks`
+  recibía sin usar. `tsc --noUnusedLocals --noUnusedParameters` queda limpio (salvo `apiKeys.ts`,
+  que es de Facu).
+- **README** al día en los dos idiomas.
+
 ---
 
 ## Cerrar la versión (2026-09-23) — sin funciones nuevas hasta que esto esté
@@ -699,20 +738,66 @@ v7→v9 corren sobre sus datos reales.
 
 ---
 
-## Play Store — EN PAUSA (2026-09-23)
+## Publicar en Google Play — el plan (2026-09-23)
 
-Facu lo dejó para después de terminar el desarrollo. Cuando se retome:
+Cuatro fases, en orden. Cada tarea dice quién la hace: **Facu**, **agente** (yo) o **Cowork**.
+Nada de esto arranca hasta que Facu diga; lo de Cowork ya está pedido en el buzón para que esté
+listo cuando llegue el momento.
 
-- **Permisos que sobran:** `INTERNET` (no hay ninguna llamada de red), `RECORD_AUDIO` (lo mete la
-  librería `expo-audio` aunque `recordAudioAndroid` esté en `false`) y `SYSTEM_ALERT_WINDOW` (sobra
-  de la plantilla). Se sacan con `tools:node="remove"` en el manifiesto. Sin ellos, la seguridad de
-  datos se reduce a "no recopila nada".
-- **Firma:** hoy la versión final se firma con la clave de depuración, que Play rechaza. Hace falta
-  una clave propia, con respaldo: si se pierde, no se puede actualizar nunca más.
-- **Formato:** AAB (`bundleRelease`), no APK. `versionCode` es 1 y sube en cada subida.
-- **Decidir antes de la primera subida:** el identificador `com.personal.pdfvoicereader` no se
-  cambia nunca después de publicar. Cambiarlo ahora obliga a pasar los datos con exportar/importar.
-- **De Facu:** cuenta de desarrollador (pago único de 25 dólares), prueba cerrada con 12 personas
-  durante 14 días (cuentas personales nuevas), política de privacidad publicada (no en los sitios
-  del server), formularios de la ficha y declaración del servicio de voz en segundo plano.
-- **Ya está:** Android objetivo 36, `icon_512.png` y `feature_graphic.png`.
+### Fase 0 — Cerrar la app (Facu)
+
+- [ ] Probar en el teléfono lo que falta: el temporizador de sueño y los controles de la
+      notificación (pausa, ±15 s, con la pantalla bloqueada).
+- [ ] Instalar la build con la base v10 **encima** de la actual y ver que todo sigue ahí.
+- [ ] Mirar la densidad de la interfaz con todo lo nuevo (punto 5 de Cowork) y decidir si algo se
+      esconde detrás de un ajuste.
+
+### Fase 1 — Decisiones (Facu, antes de que yo toque nada)
+
+- [ ] **Identificador de la app.** Hoy es `com.personal.pdfvoicereader` y una vez publicado no se
+      cambia nunca. Opciones: dejarlo (nadie lo ve) o cambiarlo a algo como `ar.bardo.app`
+      (tu teléfono la ve como otra app: exportás, instalás, importás, borrás la vieja).
+- [ ] **Nombre público** en la tienda (30 caracteres máximo). Cowork verifica que "Bardo" no choque
+      con otra app y propone el subtítulo.
+- [ ] **Países y precio.** Gratis, sin anuncios, sin compras. ¿Todo el mundo o sólo algunos países?
+- [ ] **Dónde vive la política de privacidad.** Hace falta una URL pública. No en los sitios del
+      server. GitHub Pages sobre este mismo repo es lo más simple.
+
+### Fase 2 — Preparar el paquete (agente, una tarde)
+
+- [ ] Sacar los permisos que sobran con `tools:node="remove"`: `INTERNET` (no hay ninguna llamada
+      de red), `RECORD_AUDIO` (lo mete `expo-audio` aunque `recordAudioAndroid` esté en `false`) y
+      `SYSTEM_ALERT_WINDOW` (sobra de la plantilla). Verificar con `aapt dump permissions`.
+- [ ] Clave de firma propia (`keytool`), guardada FUERA del repo, con contraseñas en
+      `~/.gradle/gradle.properties`. **Facu guarda copia del archivo `.jks` y las contraseñas en dos
+      lugares**: si se pierde, la app no se puede actualizar nunca más. Play App Signing prendido, así
+      Google guarda la clave final y la nuestra es sólo de subida.
+- [ ] `bundleRelease` → AAB (Play no acepta APK). `versionCode` sube en cada subida (hoy 1).
+- [ ] Capturas de pantalla en el emulador: al menos 4 (Inicio, lector PDF, lector de texto de noche,
+      Reproduciendo), 1080×2400, sin datos de prueba visibles (biblioteca con libros reales).
+- [ ] Un video corto (20-30 s) de la voz sonando con la pantalla bloqueada, por si Play lo pide para
+      justificar el servicio en segundo plano.
+
+### Fase 3 — Cuenta y ficha (Facu + Cowork)
+
+- [ ] **Facu:** cuenta de desarrollador (pago único de 25 USD, verificación de identidad y teléfono).
+      Cuenta personal, no de organización.
+- [ ] **Cowork:** textos de la ficha en español e inglés (título, descripción corta de 80 caracteres,
+      descripción larga de hasta 4000), texto de la política de privacidad ("no recopila nada"), y
+      qué mostrar en cada captura.
+- [ ] **Facu con el agente al lado:** formularios de Play: categoría (Libros y referencias),
+      clasificación de contenido (cuestionario), público objetivo (adultos), anuncios (no), seguridad
+      de datos (no recopila ni comparte nada), y la declaración del servicio en primer plano (tipo
+      "reproducción de medios": leer libros en voz alta con la pantalla apagada).
+- [ ] Ya está: Android objetivo 36, `icon_512.png` (512×512, sin transparencia) y
+      `feature_graphic.png` (1024×500), verificados.
+
+### Fase 4 — Prueba cerrada y producción (Facu)
+
+- [ ] Las cuentas personales creadas después de noviembre de 2023 tienen que hacer una **prueba
+      cerrada con al menos 12 personas durante 14 días seguidos**. Juntar los 12 (amigos, familia),
+      crear la pista de prueba cerrada, subir el AAB, mandar el link de invitación.
+- [ ] Durante esos 14 días: cada bug que salga se arregla y se sube una versión nueva (el
+      `versionCode` sube, los 14 días no se reinician).
+- [ ] Pedir acceso a producción, contestar el cuestionario de Google, esperar la revisión (de horas
+      a días) y publicar.

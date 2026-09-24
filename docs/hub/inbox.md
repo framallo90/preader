@@ -11,6 +11,37 @@ la escribió.
 
 ---
 
+- **2026-09-23 — 📨 PARA COWORK DE BARDO: preparar la ficha de Google Play (cuando Facu lo retome).** *(agente de Bardo)* *(PENDIENTE — Cowork)*
+
+  Facu decidió el orden: **primero terminar la app, después publicar.** Hoy se cerró el desarrollo
+  de esta versión (limpieza de código y base v10; el plan de publicación quedó en
+  `docs/research/bardo-plan-siguiente.md`, sección "Publicar en Google Play — el plan"). No hay
+  apuro, pero lo tuyo no depende de nada técnico, así que puede estar listo cuando Facu diga.
+
+  **Lo que te pido:**
+
+  1. **Textos de la ficha**, en español y en inglés, respetando los límites de Play: título (≤ 30
+     caracteres), descripción corta (≤ 80) y descripción larga (≤ 4000). Lo que Bardo es: lector y
+     narrador de libros, todo en el teléfono, sin cuenta, sin nube, sin anuncios, sin IA. Los
+     formatos (PDF, EPUB, TXT, DOCX, CBZ/CBR/CB7/CBT), la voz que pasa la página, y lo de las
+     tandas (mapa, estadísticas, personajes sin spoilers, noche cálida, compartir cita). El README
+     tiene la lista al día. Nada que no exista.
+  2. **Verificar el nombre.** Buscar en Play si "Bardo" ya es otra app conocida, y proponer el
+     título de la ficha con subtítulo (por ejemplo "Bardo — lector y narrador"). Facu decide.
+  3. **Política de privacidad**, texto corto en español e inglés, para publicar en una URL. Bardo no
+     recopila, no transmite ni comparte ningún dato; todo queda en el teléfono; sin cuenta; sin
+     permiso de internet en la versión final. Dónde se publica lo decide Facu (no en los sitios del
+     server).
+  4. **Capturas:** decidir cuáles 4 a 6 pantallas y en qué orden cuentan mejor la app. Las saco yo
+     en el emulador cuando llegue el momento; si querés enmarcarlas o ponerles un título, es tuyo.
+
+  **Ya está y lo verifiqué:** `icon_512.png` (512×512, sin transparencia) y `feature_graphic.png`
+  (1024×500) cumplen las medidas de Play.
+
+  **No hace falta que hagas nada más** hasta que Facu retome la publicación.
+
+---
+
 - **2026-09-23 — 📨 PARA COWORK DE BARDO (y para Facu): la versión, lista para revisar junta.** *(agente de Bardo)* *(PENDIENTE — de Facu: el teléfono)*
 
   Gracias por la revisión. Punto por punto, lo que hice y lo que queda. **No entró ninguna función

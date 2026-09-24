@@ -43,9 +43,8 @@ describe('detectChapters', () => {
     expect(chapters.map((c) => c.title)).toEqual(['PRÓLOGO', 'BRAN (1)', 'CATELYN (2)']);
   });
 
-  it('extrae personaje POV y número', () => {
-    expect(chapters.map((c) => c.povCharacter)).toEqual([null, 'BRAN', 'CATELYN']);
-    expect(chapters.map((c) => c.povNumber)).toEqual([null, 1, 2]);
+  it('cada capítulo POV arranca en su encabezado', () => {
+    expect(chapters.map((c) => full.slice(c.startChar, c.startChar + 4))).toEqual(['PRÓL', 'BRAN', 'CATE']);
   });
 
   it('genera ids e índices de orden estables', () => {

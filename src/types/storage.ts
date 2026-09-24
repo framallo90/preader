@@ -1,13 +1,3 @@
-// === Legacy (mantenido para compatibilidad) ===
-export type StoredDocument = {
-  id: string;
-  name: string;
-  uri: string;
-  type: string | null;
-  importedAt: string;
-  lastOpenedAt: string;
-};
-
 /** Lista de lectura del libro (como "To Read" / "Have Read" de ReadEra). */
 export type BookStatus = 'none' | 'to_read' | 'read';
 
@@ -81,8 +71,6 @@ export type Chapter = {
   bookId: string;
   orderIndex: number;
   title: string;             // "BRAN (1)", "PRÓLOGO", etc.
-  povCharacter: string | null; // "BRAN", "CATELYN", null si no es POV
-  povNumber: number | null;
   startChar: number;
   endChar: number;
 };

@@ -13,9 +13,6 @@ declare class BardoKeysNativeModule extends NativeModule<{ volumeKey: (event: Vo
 // (sin pasar de página con el volumen) en vez de romperse al arrancar.
 const nativeModule = requireOptionalNativeModule<BardoKeysNativeModule>('BardoKeys');
 
-/** Si es false, el resto de este archivo no hace nada. */
-export const volumeKeysAvailable = nativeModule !== null;
-
 export function setCaptureVolumeKeys(enabled: boolean): void {
   nativeModule?.setCaptureVolumeKeys(enabled);
 }

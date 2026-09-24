@@ -23,10 +23,7 @@ type BookRow = {
   voiceId: string | null;
 };
 
-// `sagaId` sigue EXISTIENDO en la tabla (sacarla obliga a reconstruirla y no
-// aporta nada) pero no se lee ni se escribe: era de una jerarquía saga → libro
-// que nunca se terminó de construir. `orderIndex` era de lo mismo y ahora sí se
-// usa: guarda tu orden a mano dentro de la carpeta.
+// `orderIndex` guarda tu orden a mano dentro de la carpeta (0 = nunca lo ordenaste).
 const BOOK_COLUMNS =
   'id, name, title, author, coverUri, coverColor, summary, uri, type, importedAt, lastOpenedAt, status, favorite, rating, review, orderIndex, rate, voiceId';
 

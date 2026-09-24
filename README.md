@@ -20,7 +20,15 @@ Lector y narrador de libros para Android. Abrí un PDF, EPUB, TXT, DOCX o un có
 - **Biblioteca** — escaneo de carpetas (con subcarpetas excluidas), filtros por lista y colección, portadas reales, agrupado por carpeta y orden natural. Cada libro se identifica por una huella de su contenido, así el progreso sobrevive a renombres y movidas.
 - **Índice real** — usa los marcadores del PDF o el índice del EPUB cuando existen; si no, detecta encabezados en el texto ("Capítulo 8", "PARTE II", "Chapter 3"…). Un toque en la barra inferior del lector.
 - **Buscar en el libro** — sin distinguir tildes ni mayúsculas, con salto al resultado.
-- **Temas de lectura** — día, sepia y noche, también sobre las páginas del PDF, más un atenuador para bajar el brillo por debajo del mínimo del sistema.
+- **Temas de lectura** — día, sepia, noche y noche cálida (papel marrón y letra ámbar, sin luz azul, para leer en la cama), también sobre las páginas del PDF, más un atenuador para bajar el brillo por debajo del mínimo del sistema.
+- **Mapa del libro** — arriba del índice, una barra con los capítulos, tus notas y marcadores; tocarla salta ahí. En un PDF va por páginas.
+- **Personajes, sin spoilers** — desde Buscar: los nombres que más aparecen y cada mención, calculados sólo sobre lo que ya leíste. Sin IA.
+- **Estadísticas** — tiempo leído y escuchado por día, racha, gráfico de la semana y meta anual de libros.
+- **Voz a tu gusto** — velocidad y voz propias por libro, diccionario de pronunciación, anuncio de capítulo, temporizador "al terminar el capítulo" y pantalla "Reproduciendo".
+- **Sagas** — dentro de una carpeta con tomos numerados, al terminar uno se ofrece el siguiente.
+- **Mis notas** — todo lo guardado en todos los libros, buscable; exportar a Markdown o compartir una cita como imagen.
+- **Exportar / importar mis datos** — un JSON con progreso, notas, listas, estadísticas y ajustes; los libros se reconocen por su huella aunque estén en otra carpeta.
+- **Biblioteca en lista o en grilla**, con orden a mano por carpeta, y "Seguir leyendo" teñido con el color de la tapa.
 - **Interfaz ordenada** — barra inferior fija en el lector (Índice · Buscar · Aspecto · Voz · Pantalla), ajustes en cinco grupos, biblioteca con portadas, etiqueta de formato y progreso. Paleta "Tinta y lacre" (tinta `#3A3785` para lo accionable, lacre `#B8492E` para el avance); la página se mantiene calma. Identidad completa en `docs/brand/bardo-marca.md`. Detalle en `docs/research/bardo-ux-vs-readera.md`.
 
 ---
@@ -39,7 +47,7 @@ Lector y narrador de libros para Android. Abrí un PDF, EPUB, TXT, DOCX o un có
 | Parseo EPUB / DOCX | nativo (`bardo-archive`, con `jszip` de respaldo) / `mammoth` |
 | Tests | Vitest (funciones puras) |
 
-La app **requiere una development build** (EAS o `expo run:android`): tiene módulos nativos propios, así que no corre en Expo Go. Después de tocar algo dentro de `modules/` hay que volver a compilar la build.
+La app **requiere una build nativa** (`cd android && ./gradlew assembleRelease`, o `expo run:android`): tiene módulos nativos propios, así que no corre en Expo Go. Después de tocar algo dentro de `modules/` hay que volver a compilar la build.
 
 ---
 

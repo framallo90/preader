@@ -147,7 +147,6 @@ function packWithSchedule(spans: Span[], schedule: number[], maxChars: number): 
  * veces del mismo punto da los mismos tramos (y reutiliza el audio cacheado).
  */
 export function buildAnchoredChunks(
-  fullText: string,
   sentences: Span[],
   anchorChar: number,
   maxChars = DEFAULT_MAX_CHUNK_CHARS,

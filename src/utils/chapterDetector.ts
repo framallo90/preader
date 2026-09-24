@@ -105,12 +105,7 @@ export function detectChapters(bookId: string, fullText: string): ChapterInfo[] 
   let chapterOrderIndex = 0;
 
   // Primera pasada: encontrar posiciones de los encabezados de capítulo
-  const chapterHeaders: {
-    title: string;
-    povCharacter: string | null;
-    povNumber: number | null;
-    startChar: number;
-  }[] = [];
+  const chapterHeaders: { title: string; startChar: number }[] = [];
 
   let previousBlank = true;
   for (const line of lines) {
@@ -121,8 +116,6 @@ export function detectChapters(bookId: string, fullText: string): ChapterInfo[] 
     if (povMatch) {
       chapterHeaders.push({
         title: `${povMatch[1].trim()} (${povMatch[2]})`,
-        povCharacter: povMatch[1].trim(),
-        povNumber: parseInt(povMatch[2], 10),
         startChar: charOffset,
       });
       charOffset += lineLength;
@@ -138,8 +131,6 @@ export function detectChapters(bookId: string, fullText: string): ChapterInfo[] 
     if (specialMatch) {
       chapterHeaders.push({
         title: specialMatch[1],
-        povCharacter: null,
-        povNumber: null,
         startChar: charOffset,
       });
       charOffset += lineLength;
@@ -150,7 +141,7 @@ export function detectChapters(bookId: string, fullText: string): ChapterInfo[] 
     // Un encabezado genérico tiene que estar SOLO en su renglón (línea corta y
     // precedida por una en blanco): "capítulo 3" en medio de un párrafo no cuenta.
     if (trimmed.length <= MAX_HEADING_LENGTH && previousBlank && GENERIC_CHAPTER_PATTERN.test(trimmed)) {
-      chapterHeaders.push({ title: trimmed, povCharacter: null, povNumber: null, startChar: charOffset });
+      chapterHeaders.push({ title: trimmed, startChar: charOffset });
       charOffset += lineLength;
       previousBlank = false;
       continue;
@@ -170,8 +161,6 @@ export function detectChapters(bookId: string, fullText: string): ChapterInfo[] 
     chapters.push({
       id: `${bookId}--ch-${chapterOrderIndex}`,
       title: header.title,
-      povCharacter: header.povCharacter,
-      povNumber: header.povNumber,
       orderIndex: chapterOrderIndex,
       startChar: header.startChar,
       endChar,

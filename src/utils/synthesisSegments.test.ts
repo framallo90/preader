@@ -9,7 +9,7 @@ import {
 
 /** Los tramos que arma la app: oraciones del libro + grilla anclada en `desde`. */
 function tramos(texto: string, desde = 0) {
-  return buildAnchoredChunks(texto, buildSentenceSpans(texto), desde);
+  return buildAnchoredChunks(buildSentenceSpans(texto), desde);
 }
 
 // Texto real de un PDF: los renglones vienen cortados con saltos de línea (y a
@@ -80,7 +80,7 @@ describe('tramos anclados (arranque rápido de la voz)', () => {
 
   it('desde el ancla, el primer tramo es corto y los siguientes crecen', () => {
     const anchor = sentences[30].start + 10; // a mitad de la oración 31
-    const chunks = buildAnchoredChunks(book, sentences, anchor);
+    const chunks = buildAnchoredChunks(sentences, anchor);
     const at = chunkIndexForChar(chunks, anchor);
     expect(chunks[at].startChar).toBe(sentences[30].start); // arranca en el inicio exacto de la oración
     expect(chunks[at].endChar - chunks[at].startChar).toBeLessThanOrEqual(ANCHORED_CHUNK_SCHEDULE[0]);
@@ -89,7 +89,7 @@ describe('tramos anclados (arranque rápido de la voz)', () => {
   });
 
   it('cubre todo el libro, también delante del ancla, sin huecos de texto', () => {
-    const chunks = buildAnchoredChunks(book, sentences, sentences[30].start);
+    const chunks = buildAnchoredChunks(sentences, sentences[30].start);
     expect(chunks[0].startChar).toBe(0);
     expect(chunks[chunks.length - 1].endChar).toBe(book.length);
     for (let i = 1; i < chunks.length; i++) {
@@ -101,13 +101,13 @@ describe('tramos anclados (arranque rápido de la voz)', () => {
   });
 
   it('arrancar dos veces del mismo punto da la misma grilla (reutiliza el audio)', () => {
-    const a = buildAnchoredChunks(book, sentences, 1234);
-    const b = buildAnchoredChunks(book, sentences, 1234);
+    const a = buildAnchoredChunks(sentences, 1234);
+    const b = buildAnchoredChunks(sentences, 1234);
     expect(a.map((c) => [c.startChar, c.endChar])).toEqual(b.map((c) => [c.startChar, c.endChar]));
   });
 
   it('un ancla fuera de rango cae en el último tramo', () => {
-    const chunks = buildAnchoredChunks(book, sentences, book.length + 500);
+    const chunks = buildAnchoredChunks(sentences, book.length + 500);
     expect(chunkIndexForChar(chunks, book.length + 500)).toBe(chunks.length - 1);
     expect(chunkIndexForChar(chunks, 0)).toBe(0);
     expect(chunkIndexForChar([], 5)).toBe(-1);
@@ -126,7 +126,7 @@ describe('tope del motor de voz', () => {
 
   it('los tramos anclados tampoco lo superan y cubren todo el texto', () => {
     const spans = buildSentenceSpans(sinPuntuacion);
-    const chunks = buildAnchoredChunks(sinPuntuacion, spans, 0);
+    const chunks = buildAnchoredChunks(spans, 0);
     for (const chunk of chunks) expect(chunk.endChar - chunk.startChar).toBeLessThanOrEqual(3500);
     expect(chunks[0].startChar).toBe(0);
     expect(chunks[chunks.length - 1].endChar).toBe(sinPuntuacion.length);

@@ -18,7 +18,15 @@ A book reader and narrator for Android. Open a PDF, EPUB, TXT, DOCX or a comic (
 - **Library** — folder scanning (with excluded subfolders), filters by list and collection, real covers, grouped by folder in natural order. Each book is identified by a content fingerprint, so progress survives renames and moves.
 - **Real table of contents** — uses the PDF's own outline when present; otherwise detects chapters from the text (including POV headings like `BRAN (1)`).
 - **Search in book** — accent- and case-insensitive, jumping to the result.
-- **Reading themes** — day, sepia and night, applied to PDF pages too, plus a dimmer that goes below the system's minimum brightness.
+- **Reading themes** — day, sepia, night and warm night (brown paper and amber type, no blue light, for reading in bed), applied to PDF pages too, plus a dimmer that goes below the system's minimum brightness.
+- **Book map** — above the table of contents, a bar with chapters, your notes and bookmarks; tap it to jump. In a PDF it goes by page.
+- **Characters, spoiler-free** — from Search: the most frequent names and every mention, computed only over what you have already read. No AI.
+- **Stats** — time read and listened per day, streak, weekly chart and a yearly book goal.
+- **Voice, your way** — per-book speed and voice, a pronunciation dictionary, chapter announcements, an "end of chapter" sleep timer and a "Now playing" screen.
+- **Series** — inside a folder with numbered volumes, finishing one offers the next.
+- **My notes** — everything saved across all books, searchable; export to Markdown or share a quote as an image.
+- **Export / import my data** — one JSON with progress, notes, lists, stats and settings; books are recognised by their fingerprint even from another folder.
+- **Library as list or grid**, with manual ordering per folder, and a "Continue reading" card tinted with the cover's colour.
 
 ---
 
@@ -36,7 +44,7 @@ A book reader and narrator for Android. Open a PDF, EPUB, TXT, DOCX or a comic (
 | EPUB / DOCX parsing | `jszip` / `mammoth` |
 | Tests | Vitest (pure functions) |
 
-The app **requires a development build** (EAS or `expo run:android`): it ships its own native modules, so it does not run in Expo Go. After changing anything under `modules/` the build must be recompiled.
+The app **requires a native build** (`cd android && ./gradlew assembleRelease`, or `expo run:android`): it ships its own native modules, so it does not run in Expo Go. After changing anything under `modules/` the build must be recompiled.
 
 ---
 

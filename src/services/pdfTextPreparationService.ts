@@ -56,10 +56,6 @@ export function notifyPdfTextReady(bookId: string, document: ParsedDocument): vo
   });
 }
 
-export function isPreparingPdfText(bookId: string): boolean {
-  return running.has(bookId);
-}
-
 /**
  * Arranca la preparación (si ya está corriendo para ese libro, no hace nada).
  * `quick` es el documento provisorio con el que se abrió el libro: si el texto no

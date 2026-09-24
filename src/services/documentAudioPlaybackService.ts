@@ -234,14 +234,14 @@ class DocumentAudioPlaybackService {
       this.activeChunkIndex = 0;
     }
     if (this.activeChunks.length === 0) {
-      this.activeChunks = buildAnchoredChunks(document.fullText, this.sentences, absoluteCharIndex);
+      this.activeChunks = buildAnchoredChunks(this.sentences, absoluteCharIndex);
       return;
     }
     if (!reanchor) return;
     const current = this.activeChunks[this.activeChunkIndex];
     const insideCurrent = current && absoluteCharIndex >= current.startChar && absoluteCharIndex <= current.endChar;
     if (!insideCurrent) {
-      this.activeChunks = buildAnchoredChunks(document.fullText, this.sentences, absoluteCharIndex);
+      this.activeChunks = buildAnchoredChunks(this.sentences, absoluteCharIndex);
     }
   }
 
@@ -648,7 +648,7 @@ class DocumentAudioPlaybackService {
         this.activeChunkIndex = 0;
       }
       // La misma grilla que va a usar play() desde acá: el tramo queda cacheado por rango.
-      const chunks = buildAnchoredChunks(document.fullText, this.sentences, absoluteCharIndex);
+      const chunks = buildAnchoredChunks(this.sentences, absoluteCharIndex);
       const index = chunkIndexForChar(chunks, absoluteCharIndex);
       const chunk = chunks[index];
       if (!chunk) return;

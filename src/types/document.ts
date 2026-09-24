@@ -8,8 +8,6 @@ export type TextBlock = {
 export type ChapterInfo = {
   id: string;
   title: string;
-  povCharacter: string | null;
-  povNumber: number | null;
   orderIndex: number;
   startChar: number;
   endChar: number;

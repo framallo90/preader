@@ -7,8 +7,6 @@ type ChapterRow = {
   bookId: string;
   orderIndex: number;
   title: string;
-  povCharacter: string | null;
-  povNumber: number | null;
   startChar: number;
   endChar: number;
 };
@@ -19,8 +17,6 @@ function mapChapterRow(row: ChapterRow): Chapter {
     bookId: row.bookId,
     orderIndex: row.orderIndex,
     title: row.title,
-    povCharacter: row.povCharacter,
-    povNumber: row.povNumber,
     startChar: row.startChar,
     endChar: row.endChar,
   };
@@ -39,15 +35,13 @@ export const chapterRepository = {
 
       for (const chapter of chapters) {
         await db.runAsync(
-          `INSERT INTO chapters (id, bookId, orderIndex, title, povCharacter, povNumber, startChar, endChar)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO chapters (id, bookId, orderIndex, title, startChar, endChar)
+           VALUES (?, ?, ?, ?, ?, ?)`,
           [
             chapter.id,
             bookId,
             chapter.orderIndex,
             chapter.title,
-            chapter.povCharacter ?? null,
-            chapter.povNumber ?? null,
             chapter.startChar,
             chapter.endChar,
           ],
@@ -56,19 +50,10 @@ export const chapterRepository = {
     });
   },
 
-  async getChapterById(chapterId: string): Promise<Chapter | null> {
-    const db = await getDatabase();
-    const row = await db.getFirstAsync<ChapterRow>(
-      'SELECT id, bookId, orderIndex, title, povCharacter, povNumber, startChar, endChar FROM chapters WHERE id = ?',
-      [chapterId],
-    );
-    return row ? mapChapterRow(row) : null;
-  },
-
   async listChaptersForBook(bookId: string): Promise<Chapter[]> {
     const db = await getDatabase();
     const rows = await db.getAllAsync<ChapterRow>(
-      `SELECT id, bookId, orderIndex, title, povCharacter, povNumber, startChar, endChar
+      `SELECT id, bookId, orderIndex, title, startChar, endChar
        FROM chapters WHERE bookId = ? ORDER BY orderIndex ASC`,
       [bookId],
     );
@@ -82,7 +67,7 @@ export const chapterRepository = {
   async getChapterAtChar(bookId: string, charIndex: number): Promise<Chapter | null> {
     const db = await getDatabase();
     const row = await db.getFirstAsync<ChapterRow>(
-      `SELECT id, bookId, orderIndex, title, povCharacter, povNumber, startChar, endChar
+      `SELECT id, bookId, orderIndex, title, startChar, endChar
        FROM chapters
        WHERE bookId = ? AND startChar <= ? AND endChar >= ?
        ORDER BY orderIndex ASC
@@ -90,15 +75,5 @@ export const chapterRepository = {
       [bookId, charIndex, charIndex],
     );
     return row ? mapChapterRow(row) : null;
-  },
-
-  async listChaptersByPov(bookId: string, povCharacter: string): Promise<Chapter[]> {
-    const db = await getDatabase();
-    const rows = await db.getAllAsync<ChapterRow>(
-      `SELECT id, bookId, orderIndex, title, povCharacter, povNumber, startChar, endChar
-       FROM chapters WHERE bookId = ? AND povCharacter = ? ORDER BY orderIndex ASC`,
-      [bookId, povCharacter],
-    );
-    return rows.map(mapChapterRow);
   },
 };

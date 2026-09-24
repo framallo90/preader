@@ -35,8 +35,6 @@ export function chaptersFromToc(
   return unique.map((entry, index) => ({
     id: `${bookId}--ch-${index}`,
     title: entry.title,
-    povCharacter: null,
-    povNumber: null,
     orderIndex: index,
     startChar: entry.startChar,
     endChar: index + 1 < unique.length ? unique[index + 1].startChar : textLength,
