@@ -789,8 +789,8 @@ listo cuando llegue el momento.
       clasificación de contenido (cuestionario), público objetivo (adultos), anuncios (no), seguridad
       de datos (no recopila ni comparte nada), y la declaración del servicio en primer plano (tipo
       "reproducción de medios": leer libros en voz alta con la pantalla apagada).
-- [ ] Ya está: Android objetivo 36, `icon_512.png` (512×512, sin transparencia) y
-      `feature_graphic.png` (1024×500), verificados.
+- [ ] Ya está: Android objetivo 36, `docs/brand/store/icon_512.png` (512×512, sin transparencia) y
+      `docs/brand/store/feature_graphic.png` (1024×500), verificados.
 
 ### Fase 4 — Prueba cerrada y producción (Facu)
 

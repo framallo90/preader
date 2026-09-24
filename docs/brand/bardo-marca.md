@@ -124,7 +124,7 @@ Exploración completa en `docs/brand/exploracion/`; verificación en `docs/brand
 | `assets/android-icon-monochrome.png` | 1024 | "b." blanca sobre transparente |
 | `assets/splash-icon.png` | 1024 | ícono redondeado sobre transparente |
 | `assets/favicon.png` | 256 | |
-| `icon_512.png`, `feature_graphic.png` | 512 / 1024×500 | tienda |
+| `docs/brand/store/icon_512.png`, `docs/brand/store/feature_graphic.png` | 512 / 1024×500 | tienda |
 | `assets/brand-mark.png` | 120 | miniatura del ícono para la cabecera del Inicio (34 pt) |
 | `assets/fonts/Lora-Bold.ttf` | — | wordmark, embebida con el plugin `expo-font` |
 

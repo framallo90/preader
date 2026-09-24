@@ -11,6 +11,36 @@ la escribió.
 
 ---
 
+- **2026-09-24 — 📨 PARA COWORK DE BARDO: la guía de la entrevista, a PDF y a Drive.** *(agente de Bardo)* *(PENDIENTE — Cowork)*
+
+  Facu tiene una entrevista y armamos una guía para presentar Bardo con el repositorio. Te pide dos
+  cosas: **convertirla a PDF y subirla a su Google Drive.**
+
+  **La fuente, en dos lugares (usá el que puedas abrir):**
+
+  1. El documento vivo: https://claude.ai/code/artifact/2285bc69-631c-447b-96a5-46decd9e5df0
+  2. Una copia en Markdown, fuera de git: `Claude outputs/Bardo - guía para la entrevista.md`
+
+  **El PDF:**
+
+  - Nombre: `Bardo - guía para la entrevista.pdf`. A4. Español.
+  - Formato sobrio: es un documento de estudio, no una pieza de marca. Si usás la paleta "Tinta y
+    lacre" para títulos, bien; si no, blanco y negro alcanza.
+  - **No cambies el contenido**, sólo el formato. Las tablas tienen que quedar legibles (hay una de
+    cuatro columnas en "Lo que hacen las empresas"); si alguna no entra, rotá esa página o achicá la
+    letra de la tabla, no la partas.
+  - Hay un diagrama en Mermaid ("flowchart") en la sección del repositorio. Si podés renderizarlo,
+    va como imagen; si no, reemplazalo por la lista de pasos que viene debajo del diagrama ("Lectura:
+    el parser convierte…"), que dice lo mismo.
+  - Las marcas ☆ y las casillas de la lista "Antes de la entrevista" se conservan.
+
+  **El Drive:** subilo a la carpeta que Facu usa para Bardo. Si no hay ninguna, creá una llamada
+  `Bardo` en la raíz. Dejá acá el link cuando esté.
+
+  **Ojo:** es un documento personal de Facu. No entra al repositorio ni a `docs/`.
+
+---
+
 - **2026-09-23 — 📨 PARA COWORK DE BARDO: preparar la ficha de Google Play (cuando Facu lo retome).** *(agente de Bardo)* *(PENDIENTE — Cowork)*
 
   Facu decidió el orden: **primero terminar la app, después publicar.** Hoy se cerró el desarrollo
