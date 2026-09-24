@@ -579,7 +579,6 @@ export default function HomeScreen() {
       })
       .catch(() => {});
     return () => { vivo = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [coverColorPendingId, lastOpenedDocument?.coverUri]);
   const continueTint = useMemo(
     () => coverTint(lastOpenedDocument?.coverColor, colors, settings.darkMode),
