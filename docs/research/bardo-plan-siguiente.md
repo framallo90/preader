@@ -801,3 +801,27 @@ listo cuando llegue el momento.
       `versionCode` sube, los 14 días no se reinician).
 - [ ] Pedir acceso a producción, contestar el cuestionario de Google, esperar la revisión (de horas
       a días) y publicar.
+
+---
+
+## El resaltado de la voz en la página (2026-09-24)
+
+Facu: "no muestra por dónde va". Estaba (B10) y nunca se sacó, pero probado con un libro impreso
+de verdad ("Alas de sangre", 552 páginas) aparecieron tres cosas que en el PDF de prueba no se veían:
+
+1. **Casi invisible.** Usaba el color de resaltado del texto, que es un tono del papel: sobre una
+   página oscura (noche, noche cálida) no se distinguía. Ahora es lacre translúcido (38 %), que se ve
+   sobre los cuatro papeles y deja leer.
+2. **Las últimas palabras de cada página no se resaltaban.** La página "de la voz" va 80 caracteres
+   adelantada para pasar la hoja a tiempo; la búsqueda usaba esa página, así que el final de cada
+   página se buscaba en la siguiente y no se encontraba (7 de cada ~250 palabras en el log). Ahora la
+   palabra se busca en SU página y los rectángulos viajan con su número de página.
+3. **Corrido una letra a la derecha.** El texto de la página se plegaba sacando las marcas de acento;
+   cuando el PDF guarda una tilde como carácter aparte, el plegado queda una posición más corto que
+   el original y todas las cajas de ahí en adelante se piden corridas. Ahora el plegado lleva un mapa
+   índice plegado → índice original. De paso pliega ligaduras ("ﬁ" → "fi"), guiones blandos y el
+   guión de fin de renglón ("pala-" + salto + "bra"), que son las otras formas en que una palabra del
+   libro no se encontraba en su página.
+
+Verificado en el emulador sobre el libro real, en tema cálido y en día: la palabra que suena queda
+marcada exacta, también al final de la página.

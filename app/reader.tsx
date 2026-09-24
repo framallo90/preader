@@ -1262,7 +1262,7 @@ export default function ReaderScreen() {
   // le piden a Pdfium las COORDENADAS de esa palabra dentro de la página y se
   // pinta un rectángulo encima. Funciona igual en un PDF con texto que en uno
   // escaneado con OCR, porque las coordenadas salen del propio PDF.
-  const [speakingRects, setSpeakingRects] = useState<PageTextRect[] | null>(null);
+  const [speakingRects, setSpeakingRects] = useState<{ page: number; rects: PageTextRect[] } | null>(null);
   const speakingKeyRef = useRef('');
   // La posición al día, por ref: si entrara como dependencia, el efecto se
   // recrearía cuatro veces por segundo sin necesidad.
@@ -1283,8 +1283,13 @@ export default function ReaderScreen() {
     const word = block && range ? block.text.slice(range.start, range.end).trim() : '';
     if (word.length < 2) return;
 
+    // La página donde ESTÁ la palabra, sin el adelanto de `audioPage`: ese
+    // adelanto sirve para pasar la hoja a tiempo, pero hacía que las últimas
+    // palabras de cada página se buscaran en la siguiente y no se resaltaran.
+    const wordPage = pageForChar(absoluteCharRef.current, pageInfo.pageOffsets);
+
     // La misma palabra en la misma página no se vuelve a pedir.
-    const key = `${audioPage}:${word}:${block?.startChar ?? 0}+${range?.start ?? 0}`;
+    const key = `${wordPage}:${word}:${block?.startChar ?? 0}+${range?.start ?? 0}`;
     if (key === speakingKeyRef.current) return;
     speakingKeyRef.current = key;
 
@@ -1292,8 +1297,8 @@ export default function ReaderScreen() {
     // está unido y limpiado, así que la posición exacta no corresponde con el
     // índice crudo de la página, pero la proporción sí alcanza para elegir la
     // aparición correcta cuando la palabra se repite.
-    const pageStart = pageInfo.pageOffsets[audioPage] ?? 0;
-    const pageEnd = pageInfo.pageOffsets[audioPage + 1] ?? parsedDocument?.fullText.length ?? pageStart + 1;
+    const pageStart = pageInfo.pageOffsets[wordPage] ?? 0;
+    const pageEnd = pageInfo.pageOffsets[wordPage + 1] ?? parsedDocument?.fullText.length ?? pageStart + 1;
     const span = Math.max(pageEnd - pageStart, 1);
     const hint = Math.min(Math.max((absoluteCharRef.current - pageStart) / span, 0), 1);
 
@@ -1302,8 +1307,8 @@ export default function ReaderScreen() {
     // el pedido en vuelo lo mataba SIEMPRE antes de que llegara la respuesta —
     // el resaltado no aparecía nunca. La comparación con `speakingKeyRef`
     // alcanza: solo se aplica la respuesta de la última palabra pedida.
-    void getPageTextRects(documentRecord.uri, audioPage, word, hint).then((rects) => {
-      if (speakingKeyRef.current === key) setSpeakingRects(rects.length > 0 ? rects : null);
+    void getPageTextRects(documentRecord.uri, wordPage, word, hint).then((rects) => {
+      if (speakingKeyRef.current === key) setSpeakingRects(rects.length > 0 ? { page: wordPage, rects } : null);
     });
   }, [
     reader.isPlaying,
@@ -1620,7 +1625,8 @@ export default function ReaderScreen() {
             horizontal={settings.horizontalPages}
             onLongPressPage={handleLongPressPage}
             speakingPage={reader.isPlaying ? audioPage : null}
-            speakingRects={speakingRects}
+            speakingRects={speakingRects?.rects ?? null}
+            speakingRectsPage={speakingRects?.page ?? null}
           />
         ) : (
         <FlatList

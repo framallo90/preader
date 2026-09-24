@@ -40,6 +40,13 @@ type PdfPageListProps = {
    * en el modo texto, pero sobre la página dibujada (incluso si es un escaneo).
    */
   speakingRects?: PageTextRect[] | null;
+  /**
+   * En qué página caen esos rectángulos. Puede NO ser `speakingPage`: la
+   * página "de la voz" va unos caracteres adelantada para pasar la hoja a
+   * tiempo, y las últimas palabras de cada página quedaban buscándose en la
+   * página siguiente (y sin resaltar). Si no viene, se usa `speakingPage`.
+   */
+  speakingRectsPage?: number | null;
 };
 
 export type PdfPageListHandle = {
@@ -196,6 +203,7 @@ const PdfPageListInner = forwardRef(function PdfPageList(
     onLongPressPage,
     speakingPage,
     speakingRects,
+    speakingRectsPage,
   }: PdfPageListProps,
   ref: ForwardedRef<PdfPageListHandle>,
 ) {
@@ -462,7 +470,7 @@ const PdfPageListInner = forwardRef(function PdfPageList(
       // Las celdas de una FlatList NO se vuelven a dibujar cuando cambia algo
       // que no está en `data`. Sin esto, el resaltado de la voz (y el ícono de
       // la página que se está leyendo) se calculaban bien pero no se veían nunca.
-      extraData={`${speakingPage ?? ''}:${speakingRects?.length ?? 0}:${speakingRects?.[0]?.[1] ?? ''}:${zoomedPage ?? ''}:${zoomLevel}`}
+      extraData={`${speakingPage ?? ''}:${speakingRectsPage ?? ''}:${speakingRects?.length ?? 0}:${speakingRects?.[0]?.[1] ?? ''}:${zoomedPage ?? ''}:${zoomLevel}`}
       keyExtractor={(page) => `p-${page}`}
       initialScrollIndex={currentPageRef.current}
       getItemLayout={(_, index) => ({ length: itemLength, offset: itemLength * index, index })}
@@ -510,7 +518,7 @@ const PdfPageListInner = forwardRef(function PdfPageList(
             colorMode={colorMode}
             crop={crop}
           />
-          {speakingPage === pageIndex && speakingRects
+          {(speakingRectsPage ?? speakingPage) === pageIndex && speakingRects
             ? speakingRects.map((rect, at) => {
                 // Los rectángulos vienen en coordenadas de la PÁGINA ENTERA,
                 // pero lo que se ve puede ser la caja de contenido recortada:
@@ -524,7 +532,11 @@ const PdfPageListInner = forwardRef(function PdfPageList(
                     style={[
                       styles.speechRect,
                       {
-                        backgroundColor: colors.highlight,
+                        // Lacre translúcido, no el color de resaltado del texto:
+                        // ese es un tono del papel y sobre una página oscura
+                        // (noche, noche cálida) no se veía. El lacre se ve
+                        // sobre los cuatro papeles y sigue dejando leer.
+                        backgroundColor: colors.warm,
                         left: box[0] * pageWidth,
                         top: box[1] * pageHeight,
                         width: Math.max((box[2] - box[0]) * pageWidth, 2),
@@ -582,6 +594,7 @@ export const PdfPageList = memo(PdfPageListInner, (prev, next) =>
   // Los rectángulos de lo que la voz lee cambian palabra a palabra: sin esto el
   // memo se los comía y el resaltado no aparecía nunca.
   prev.speakingRects === next.speakingRects &&
+  (prev.speakingRectsPage ?? null) === (next.speakingRectsPage ?? null) &&
   (prev.tapEdgesTurnPage ?? false) === (next.tapEdgesTurnPage ?? false) &&
   // Sin esto, cambiar a "pasar de costado" con el libro abierto no se veía:
   // el memo dejaba la lista dibujada como estaba.
@@ -606,7 +619,7 @@ const styles = StyleSheet.create({
   // Autocontenido (oscuro + blanco): legible sobre la página en cualquier tema.
   // La página que la voz está leyendo se pinta del color primario con un altavoz.
   // Encima de la imagen de la página, translúcido: resalta sin tapar el texto.
-  speechRect: { position: 'absolute', borderRadius: 3, opacity: 0.55 },
+  speechRect: { position: 'absolute', borderRadius: 3, opacity: 0.38 },
   zoomBadge: {
     position: 'absolute',
     right: 8,

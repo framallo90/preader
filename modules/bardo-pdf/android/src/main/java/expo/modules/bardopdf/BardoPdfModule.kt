@@ -179,8 +179,9 @@ class BardoPdfModule : Module() {
             promise.resolve(emptyList<List<Double>>())
             return@execute
           }
-          val haystack = foldForMatch(textPageChars)
-          val target = foldForMatch(needle)
+          val folded = foldedPage()
+          val haystack = folded.text
+          val target = foldWithMap(needle).text
           val near = (hint.coerceIn(0.0, 1.0) * haystack.length).toInt()
           val at = findNearest(haystack, target, near)
           if (at < 0) {
@@ -223,7 +224,11 @@ class BardoPdfModule : Module() {
           }
 
           for (index in at until (at + target.length)) {
-            val box = try { textPage.textPageGetCharBox(index) } catch (_: Throwable) { null } ?: continue
+            // Del indice PLEGADO al del caracter real de la pagina: sin este
+            // mapa, una tilde guardada como acento aparte corria el resaltado
+            // una letra a la derecha en todo lo que venia despues.
+            val original = folded.map[index]
+            val box = try { textPage.textPageGetCharBox(original) } catch (_: Throwable) { null } ?: continue
             // Renglon nuevo: el alto del caracter se corrio bastante.
             if (!lineTop.isNaN() && kotlin.math.abs(box.top - lineTop) > (box.top - box.bottom).coerceAtLeast(1f)) {
               flush()
@@ -602,6 +607,7 @@ class BardoPdfModule : Module() {
     textPageOwner = null
     textPageIndex = -1
     textPageChars = ""
+    textPageFolded = null
   }
 
   private fun closeTextDocument() {
@@ -693,14 +699,55 @@ class BardoPdfModule : Module() {
   /** Donde termina una oracion: punto, exclamacion, pregunta o puntos suspensivos. */
   private fun esCierre(c: Char): Boolean = c == '.' || c == '!' || c == '?' || c == '…'
 
-  private fun foldForMatch(value: String): String {
-    val normalized = java.text.Normalizer.normalize(value, java.text.Normalizer.Form.NFD)
-    val out = StringBuilder(normalized.length)
-    for (ch in normalized) {
-      if (ch.code in 0x300..0x36F) continue // marcas de acento
-      out.append(ch.lowercaseChar())
+  /**
+   * Texto plegado para comparar, mas el indice del caracter ORIGINAL del que
+   * salio cada caracter plegado (las cajas se piden por indice original).
+   *
+   * Plegar = sin tildes ni mayusculas, ligaduras abiertas ("fi" en una sola
+   * letra pasa a dos), sin guiones blandos y sin el guion de fin de renglon:
+   * el texto del libro ya junto "pala-" y "bra" en "palabra", y en la pagina
+   * tiene que encontrarse igual.
+   */
+  private class Folded(val text: String, val map: IntArray)
+
+  private var textPageFolded: Folded? = null
+
+  /** El plegado de la pagina de texto abierta, calculado una vez por pagina. */
+  private fun foldedPage(): Folded {
+    textPageFolded?.let { return it }
+    val folded = foldWithMap(textPageChars)
+    textPageFolded = folded
+    return folded
+  }
+
+  private fun foldWithMap(value: String): Folded {
+    val out = StringBuilder(value.length)
+    val map = ArrayList<Int>(value.length)
+    var i = 0
+    while (i < value.length) {
+      val ch = value[i]
+      // Guion de fin de renglon: "pala-" + salto + "bra" es "palabra".
+      if (ch == '-' && i + 1 < value.length && (value[i + 1] == '\n' || value[i + 1] == '\r')) {
+        i += 1
+        while (i < value.length && (value[i] == '\n' || value[i] == '\r')) i += 1
+        continue
+      }
+      if (ch == '\u00AD') { i += 1; continue } // guion blando
+      if (ch.code < 0x80) {
+        out.append(ch.lowercaseChar())
+        map.add(i)
+        i += 1
+        continue
+      }
+      val decomposed = java.text.Normalizer.normalize(ch.toString(), java.text.Normalizer.Form.NFKD)
+      for (d in decomposed) {
+        if (d.code in 0x300..0x36F) continue // marcas de acento
+        out.append(d.lowercaseChar())
+        map.add(i)
+      }
+      i += 1
     }
-    return out.toString()
+    return Folded(out.toString(), map.toIntArray())
   }
 
   /** La aparicion de `needle` mas cercana a `near` (en caracteres), o -1. */
