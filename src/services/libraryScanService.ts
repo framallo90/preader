@@ -13,6 +13,7 @@
  * cada vez que se volvía al Inicio.
  */
 import * as FileSystem from 'expo-file-system/legacy';
+import { Platform } from 'react-native';
 
 import { DocumentTreeEntry, getBardoArchiveModule, isBardoArchiveAvailable } from '../../modules/bardo-archive';
 
@@ -20,7 +21,7 @@ import { getDatabase } from '../storage/database';
 import { bookRepository } from '../storage/bookRepository';
 import { Book, NEW_BOOK_DEFAULTS } from '../types/storage';
 import { isFolderExcluded } from '../utils/safPaths';
-import { createBookFingerprint } from '../utils/documentId';
+import { createBookFingerprint, legacyLargeFileFingerprint, usesContentIdForLargeFile } from '../utils/documentId';
 
 const { StorageAccessFramework } = FileSystem;
 
@@ -108,13 +109,23 @@ export async function restoreIgnoredBooks(): Promise<number> {
   return serializeIgnored(async () => {
     const ids = await getIgnoredBookIds();
     const count = ids.size;
-    if (count > 0) await saveIgnoredBookIds(new Set());
+    if (count > 0) {
+      await saveIgnoredBookIds(new Set());
+      requestScanOnNextFocus();
+    }
     return count;
   });
 }
 
-/** Pide al usuario que elija una carpeta. Devuelve su URI SAF o null. */
+/**
+ * Pide al usuario que elija una carpeta. Devuelve su URI SAF o null.
+ *
+ * Storage Access Framework es de Android. En iOS el equivalente es el selector
+ * de carpetas de Archivos con un "security-scoped bookmark", que todavía no
+ * está (ver el plan de iOS): mientras tanto, acá no hay carpeta que elegir.
+ */
 export async function requestLibraryFolder(): Promise<string | null> {
+  if (Platform.OS !== 'android') return null;
   const permission = await StorageAccessFramework.requestDirectoryPermissionsAsync();
   return permission.granted ? permission.directoryUri : null;
 }
@@ -186,6 +197,22 @@ async function listFolder(folderUri: string): Promise<DocumentTreeEntry[]> {
     });
   }
   return entries;
+}
+
+// Alguien pidió que el próximo Inicio escanee sin esperar el intervalo:
+// "Restaurar ocultos" desde Ajustes prometía que los libros "volverán a
+// aparecer al volver al inicio", pero el Inicio había escaneado hacía menos de
+// dos minutos y se lo salteaba. El Inicio consume el pedido al enfocarse.
+let scanRequested = false;
+
+export function requestScanOnNextFocus(): void {
+  scanRequested = true;
+}
+
+export function consumeScanRequest(): boolean {
+  const requested = scanRequested;
+  scanRequested = false;
+  return requested;
 }
 
 let scanInFlight: Promise<ScanResult> | null = null;
@@ -272,7 +299,13 @@ async function runScan(folderUris: string[], excludedPaths: string[]): Promise<S
 
         // Mismo contenido ya importado, o eliminado por el usuario: no duplicar.
         if (ignoredIds.has(id)) continue;
-        const existing = await bookRepository.getBookById(id);
+        let existing = await bookRepository.getBookById(id);
+        // Un archivo grande escaneado por una versión anterior tiene el id
+        // viejo (nombre+tamaño): si se movió, se lo reconoce por ese id y se
+        // relocaliza, en vez de sumar un libro nuevo sin progreso.
+        if (!existing && usesContentIdForLargeFile(fileSize)) {
+          existing = await bookRepository.getBookById(await legacyLargeFileFingerprint(entry.name, fileSize as number));
+        }
         if (existing) {
           // El mismo libro en otra carpeta o con otro nombre: si el archivo al
           // que apuntaba YA NO ESTÁ, se movió y hay que corregir la ruta (si no,
@@ -280,7 +313,7 @@ async function runScan(folderUris: string[], excludedPaths: string[]): Promise<S
           // segunda copia: se deja como estaba, porque reapuntar en cada escaneo
           // hacía que el libro fuera y viniera entre las dos rutas.
           if (existing.uri !== entry.uri && !(await uriExists(existing.uri))) {
-            await bookRepository.saveBook({ ...existing, uri: entry.uri, name: entry.name });
+            await bookRepository.relocateBook(existing.id, entry.uri, entry.name);
             knownUris.add(entry.uri);
             relocated += 1;
           }

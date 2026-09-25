@@ -207,6 +207,9 @@ export default function ReaderScreen() {
   // Salto pedido (índice, cita, marcador) que llegó con el provisorio: se aplica
   // sobre el texto real cuando está.
   const pendingJumpCharRef = useRef<number | null>(null);
+  // El mapa de páginas REAL del caché mientras el documento es el provisorio:
+  // con él un salto sabe a qué página ir aunque el texto no haya llegado.
+  const realPageOffsetsRef = useRef<number[] | null>(null);
   // Cómo se va a leer este PDF, leído al abrir (el efecto de carga no depende de
   // los ajustes: cambiar el modo no tiene que recargar el libro).
   const pdfAsTextRef = useRef(settings.pdfAsText);
@@ -254,6 +257,7 @@ export default function ReaderScreen() {
         leftOffAtRef.current = progress?.updatedAt ?? null;
         storedProgressRef.current = progress;
         pendingJumpCharRef.current = null;
+        realPageOffsetsRef.current = null;
         void bookRepository.touchBook(book.id);
         // Título disponible ya durante la carga (para el header y para saber qué se abre).
         if (isMounted) setDocumentRecord(book);
@@ -319,6 +323,7 @@ export default function ReaderScreen() {
               // texto provisorio: `textPending` avisa que todavía no es el bueno.
               pdf: { ...cachedPdf, pageOffsets: placeholders.pageOffsets, textPending: true },
             };
+            realPageOffsetsRef.current = cachedPdf.pageOffsets;
             const startAt = withPendingJump(quickDocument, progress, cachedPdf.pageOffsets);
             // La página de arranque se fija YA, no en el próximo render: si el
             // texto definitivo llega antes de ese render (con el caché caliente
@@ -336,9 +341,21 @@ export default function ReaderScreen() {
             setParsedDocument(quickDocument);
             // Y el documento completo, de fondo, por el mismo camino que usa la
             // preparación de texto: entra parado en la página que estás viendo.
-            void parsedDocumentRepository.getParsedDocument(book).then((full) => {
-              if (full) notifyPdfTextReady(book.id, full);
-            });
+            // Con plan B: si el caché quedó a medias (la app se cerró mientras
+            // se escribía), antes el libro quedaba "preparando el texto" para
+            // siempre, sin voz ni búsqueda. Se tira ese caché y se vuelve a
+            // extraer el texto de fondo, por el camino de siempre.
+            const reprocess = () => {
+              void parsedDocumentRepository.removeParsedDocument(book.id).catch(() => {});
+              preparePdfText(book, quickDocument);
+            };
+            void parsedDocumentRepository
+              .getParsedDocument(book)
+              .then((full) => {
+                if (full) notifyPdfTextReady(book.id, full);
+                else reprocess();
+              })
+              .catch(reprocess);
             return;
           }
         }
@@ -368,7 +385,9 @@ export default function ReaderScreen() {
             if (!effectiveBook.uri.startsWith('content://')) throw error;
             const localUri = await ensureLocalPdfCopy(book.id, book.uri);
             effectiveBook = { ...book, uri: localUri };
-            await bookRepository.saveBook(effectiveBook);
+            // Sólo la ruta: saveBook pisaba lastOpenedAt con el valor viejo y
+            // el libro se caía de "Seguir leyendo".
+            await bookRepository.relocateBook(book.id, localUri, book.name);
             return open(localUri);
           }
         };
@@ -421,9 +440,9 @@ export default function ReaderScreen() {
         setTimeout(() => {
           void (async () => {
             await parsedDocumentRepository.saveParsedDocument(persistBook, parsedWithChapters).catch(() => {});
-            if (parsedWithChapters.chapters.length > 0) {
-              await chapterRepository.saveChaptersForBook(book.id, parsedWithChapters.chapters).catch(() => {});
-            }
+            // Siempre, aunque no haya capítulos: si el texto cambió y ya no se
+            // detecta ninguno, los de antes quedaban con offsets viejos.
+            await chapterRepository.saveChaptersForBook(book.id, parsedWithChapters.chapters).catch(() => {});
             if (parsed.metadata) await persistBookMetadata(book.id, parsed.metadata).catch(() => {});
             if (isComic && !book.coverUri) {
               const coverUri = await renderComicCover(book.id, persistBook.uri);
@@ -454,7 +473,11 @@ export default function ReaderScreen() {
       if (bookId !== documentId) return;
       const jump = pendingJumpCharRef.current;
       pendingJumpCharRef.current = null;
-      const position = positionWhenTextReady(ready, storedProgressRef.current, currentPdfPageRef.current, jump);
+      realPageOffsetsRef.current = null;
+      // Si la voz ya estaba leyendo este libro (abriste el lector con el audio
+      // sonando o en pausa), su posición manda sobre el progreso guardado.
+      const audioAt = documentAudioPlaybackService.currentAbsoluteCharFor(bookId);
+      const position = positionWhenTextReady(ready, storedProgressRef.current, currentPdfPageRef.current, jump, audioAt);
       const page = ready.pdf
         ? pageForProgress(position.absoluteCharIndex, currentPdfPageRef.current, ready.pdf.pageOffsets, ready.fullText.length)
         : currentPdfPageRef.current;
@@ -471,6 +494,20 @@ export default function ReaderScreen() {
       });
       setParsedDocument(ready);
       setTextPrepPercent(null);
+      // Las anotaciones hechas mientras el texto no estaba (posición del
+      // provisorio) se re-ubican al principio de su página; las que ya caen en
+      // su página no se tocan.
+      if (ready.pdf) {
+        const { pageOffsets } = ready.pdf;
+        void noteRepository
+          .relocatePagedNotes(
+            bookId,
+            (page) => positionForPage(ready, page).absoluteCharIndex,
+            (page, charIndex) => pageForProgress(charIndex, page, pageOffsets, ready.fullText.length) === page,
+          )
+          .then(() => loadNotesRef.current())
+          .catch(() => {});
+      }
       // Un salto que llegó con el provisorio recién ahora tiene página cierta.
       // Después del re-render: así el aviso de página ya ve la posición nueva.
       if (jump !== null) setTimeout(() => pdfListRef.current?.scrollToPage(page), 50);
@@ -945,11 +982,32 @@ export default function ReaderScreen() {
   const jumpToChar = useCallback(
     (absoluteChar: number) => {
       if (!parsedDocument) return;
+      // Con el provisorio, el salto (medido sobre el texto real) se guarda para
+      // cuando llegue el texto; mientras tanto la vista va a su página, que el
+      // mapa de páginas del caché conoce. Antes caía en la última página y
+      // sintetizaba audio de "Página N".
+      if (parsedDocument.pdf?.textPending) {
+        pendingJumpCharRef.current = absoluteChar;
+        const offsets = realPageOffsetsRef.current;
+        if (offsets) {
+          const page = pageForChar(absoluteChar, offsets);
+          currentPdfPageRef.current = page;
+          pdfListRef.current?.scrollToPage(page);
+        }
+        return;
+      }
       const pos = getPositionFromAbsoluteChar(parsedDocument, absoluteChar);
       const r = readerRef.current;
       void r.seekToBlock(pos.blockIndex, r.isPlaying);
       if (pageInfo) {
-        pdfListRef.current?.scrollToPage(pageForChar(absoluteChar, pageInfo.pageOffsets));
+        const page = pageForChar(absoluteChar, pageInfo.pageOffsets);
+        // La posición nueva, YA, antes de mover la vista: scrollToPage avisa
+        // "cambió la página" en el acto, y ese aviso miraba la posición vieja,
+        // pisaba la exacta con el principio de la página y recién la corregía
+        // el audio segundos después (o nunca, si la voz fallaba).
+        absoluteCharRef.current = absoluteChar;
+        currentPdfPageRef.current = page;
+        pdfListRef.current?.scrollToPage(page);
       } else {
         textScrolledAtRef.current = 0;
         scrollToBlock(pos.blockIndex);
@@ -967,8 +1025,16 @@ export default function ReaderScreen() {
       if (!request) return;
       if (request.charIndex !== null) jumpToChar(request.charIndex);
       // "Escuchar" desde "Sobre este libro" con el lector ya abierto: se vuelve
-      // acá y se arranca la voz, en vez de abrir un segundo lector.
-      if (request.listen) void readerRef.current.play();
+      // acá y se arranca la voz, en vez de abrir un segundo lector. Con el
+      // texto todavía en preparación, queda pedido para cuando llegue.
+      if (request.listen) {
+        if (parsedDocument.pdf?.textPending) {
+          pendingListenRef.current = true;
+          autoListenRef.current = false;
+        } else {
+          void readerRef.current.play();
+        }
+      }
     }, [loadNotes, parsedDocument, jumpToChar]),
   );
 
@@ -1004,6 +1070,7 @@ export default function ReaderScreen() {
    */
   const handleMarkSpoken = useCallback(async () => {
     if (!documentId || !parsedDocument) return;
+    if (parsedDocument.pdf?.textPending) { showFlash('Esperá a que termine de preparar el texto'); return; }
     const span = sentenceSpanAround(parsedDocument.fullText, currentAbsoluteChar);
     const cita = parsedDocument.fullText.slice(span.start, span.end).replace(/\s+/g, ' ').trim();
     if (cita.length === 0) return;
@@ -1021,6 +1088,7 @@ export default function ReaderScreen() {
 
   const handleToggleBookmark = useCallback(async () => {
     if (!documentId) return;
+    if (parsedDocument?.pdf?.textPending) { showFlash('Esperá a que termine de preparar el texto'); return; }
     if (bookmarkHere) {
       await noteRepository.removeNote(bookmarkHere.id);
       showFlash('Marcador quitado');
@@ -1038,7 +1106,7 @@ export default function ReaderScreen() {
       showFlash('Marcador guardado');
     }
     await loadNotes();
-  }, [documentId, bookmarkHere, getCurrentTarget, loadNotes, showFlash]);
+  }, [documentId, parsedDocument, bookmarkHere, getCurrentTarget, loadNotes, showFlash]);
 
   const handleLongPressBlock = useCallback((block: TextBlock) => {
     setNoteDraft('');
@@ -1054,6 +1122,8 @@ export default function ReaderScreen() {
   const handleLongPressPage = useCallback(
     (pageIndex: number, x: number, y: number) => {
       if (!parsedDocument?.pdf) return;
+      // Sobre el provisorio la cita saldría de "Página N" y quedaría mal ubicada.
+      if (parsedDocument.pdf.textPending) { showFlash('Esperá a que termine de preparar el texto'); return; }
       const pageOffsets = parsedDocument.pdf.pageOffsets;
       const total = parsedDocument.fullText.length;
       const start = charForPage(pageIndex, pageOffsets, total);
@@ -1088,7 +1158,7 @@ export default function ReaderScreen() {
         });
       });
     },
-    [parsedDocument],
+    [parsedDocument, showFlash],
   );
 
   const handleSaveAnnotation = useCallback(

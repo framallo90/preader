@@ -44,6 +44,14 @@ describe('joinPdfPages', () => {
   });
 });
 
+describe('offsets con una página vacía en el medio', () => {
+  it('guion de fin de página + página vacía + minúscula: los offsets siguen crecientes', () => {
+    const { fullText, pageOffsets } = joinPdfPages(['pala-', '', 'bra'], identity);
+    expect(fullText).toBe('palabra');
+    expect(pageOffsets).toEqual([0, 4, 4]);
+  });
+});
+
 describe('encabezados y pies repetidos', () => {
   const pages = Array.from({ length: 12 }, (_, i) =>
     `JUEGO DE TRONOS\nTexto propio de la página ${i + 1} que no se repite.\n${i + 1}`,

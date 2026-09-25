@@ -37,3 +37,17 @@ export function getVoiceSynthesizerModule() {
   }
   return cachedModule;
 }
+
+/**
+ * ¿Existe el módulo en esta plataforma? Hoy sólo hay implementación Android;
+ * en iOS (o en una build sin el módulo) la app tiene que abrir igual, sin voz,
+ * en vez de romperse al listar voces o al sintetizar.
+ */
+export function isVoiceSynthesizerAvailable(): boolean {
+  try {
+    getVoiceSynthesizerModule();
+    return true;
+  } catch {
+    return false;
+  }
+}

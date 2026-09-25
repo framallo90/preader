@@ -1,8 +1,9 @@
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 
+import { bookRepository } from '../storage/bookRepository';
 import { Book, NEW_BOOK_DEFAULTS } from '../types/storage';
-import { createBookFingerprint, getFileExtension, safeDisplayFileName } from '../utils/documentId';
+import { createBookFingerprint, getFileExtension, legacyLargeFileFingerprint, safeDisplayFileName, usesContentIdForLargeFile } from '../utils/documentId';
 import { PICKER_MIME_TYPES, resolveBookType } from './bookTypes';
 
 function getDocumentsDirectory() {
@@ -20,10 +21,21 @@ async function ensureDocumentsDirectory() {
   }
 }
 
+/** ¿El archivo sigue ahí? Un content:// que falla se toma como que no está. */
+async function fileStillExists(uri: string): Promise<boolean> {
+  try {
+    return (await FileSystem.getInfoAsync(uri)).exists;
+  } catch {
+    return false;
+  }
+}
+
 async function copyAssetToDocuments(asset: DocumentPicker.DocumentPickerAsset): Promise<{
   documentId: string;
   documentName: string;
   destinationUri: string;
+  /** El libro ya estaba en la biblioteca con su archivo en su lugar: se abre ese. */
+  existing?: Book;
 }> {
   const sourceInfo = await FileSystem.getInfoAsync(asset.uri);
   if (!sourceInfo.exists) {
@@ -38,7 +50,22 @@ async function copyAssetToDocuments(asset: DocumentPicker.DocumentPickerAsset): 
   // lee el contenido y sin esto usaba asset.uri (ruta de caché efímera del
   // picker, cambia en cada importación) → id no determinista, 404 en modo
   // visual y progreso perdido. Coincide con lo que se manda al server.
-  const documentId = await createBookFingerprint(asset.uri, asset.size, `${documentName}:${asset.size ?? 0}`);
+  let documentId = await createBookFingerprint(asset.uri, asset.size, `${documentName}:${asset.size ?? 0}`);
+  // Un archivo grande importado por una versión anterior tiene el id viejo
+  // (nombre+tamaño): se conserva, que es el que tiene el progreso y las notas.
+  if (usesContentIdForLargeFile(asset.size) && !(await bookRepository.getBookById(documentId))) {
+    const legacyId = await legacyLargeFileFingerprint(documentName, asset.size as number);
+    if (await bookRepository.getBookById(legacyId)) documentId = legacyId;
+  }
+  // Si ese libro YA está en la biblioteca y su archivo sigue ahí (entró por una
+  // carpeta escaneada, o se importó antes), no se copia de nuevo: se abre el
+  // que está. Antes se duplicaba el archivo dentro de la app (un cómic pesa
+  // cientos de MB) y el libro se caía de su carpeta.
+  const existing = await bookRepository.getBookById(documentId);
+  if (existing && (await fileStillExists(existing.uri))) {
+    await FileSystem.deleteAsync(asset.uri, { idempotent: true }).catch(() => {});
+    return { documentId, documentName: existing.name, destinationUri: existing.uri, existing };
+  }
   const extension = getFileExtension(documentName, asset.mimeType);
   const documentsDirectory = getDocumentsDirectory();
   const destinationUri = `${documentsDirectory}/${documentId}${extension}`;
@@ -75,7 +102,8 @@ export const filePickerService = {
       await FileSystem.deleteAsync(asset.uri, { idempotent: true }).catch(() => {});
       throw new Error('Formato no soportado. Bardo abre PDF, EPUB, TXT, DOCX y cómics (CBZ, CBR, CB7, CBT).');
     }
-    const { documentId, documentName, destinationUri } = await copyAssetToDocuments(asset);
+    const { documentId, documentName, destinationUri, existing } = await copyAssetToDocuments(asset);
+    if (existing) return existing;
 
     const now = new Date().toISOString();
     const book: Book = {

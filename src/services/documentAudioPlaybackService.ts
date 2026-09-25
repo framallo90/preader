@@ -598,6 +598,24 @@ class DocumentAudioPlaybackService {
 
   getSnapshot() { return { ...this.snapshot }; }
 
+  /**
+   * Dónde va el audio de ESTE libro ahora (sonando o en pausa), en caracteres
+   * del texto que el servicio tiene; null si no es el libro cargado. Lo usa el
+   * lector cuando llega el texto real de un PDF: si la voz ya lo estaba
+   * leyendo, esa es la posición buena, no la del progreso guardado.
+   */
+  currentAbsoluteCharFor(documentId: string): number | null {
+    const doc = this.activeDocument;
+    const chunk = this.getActiveChunk();
+    const status = this.player?.currentStatus;
+    if (!doc || doc.id !== documentId || !chunk || !status?.isLoaded || !status.duration) return null;
+    return clamp(
+      chunk.startChar + Math.round((status.currentTime / status.duration) * getChunkLength(chunk)),
+      chunk.startChar,
+      chunk.endChar,
+    );
+  }
+
   async play(document: ParsedDocument, voiceId: string | null, rate: number, absoluteCharIndex: number, metadata?: AudioMetadata) {
     const sessionId = this.startPlaybackSession();
     this.pauseGeneration += 1; // pedir sonido cancela cualquier pausa anterior
@@ -666,12 +684,16 @@ class DocumentAudioPlaybackService {
 
   async pause() {
     this.pauseGeneration += 1; // corta un avance de tramo en vuelo
+    // Y también un play() en vuelo: si el temporizador de sueño paraba mientras
+    // un tramo se sintetizaba, ese play terminaba y arrancaba el sonido igual.
+    // Con la sesión invalidada, ese play se retira antes de sonar.
+    this.playbackSessionId += 1;
     if (!this.player) {
       this.updateSnapshot({ isPlaying: false, isPreparing: false });
       return;
     }
     this.player.pause();
-    this.updateSnapshot({ isPlaying: false });
+    this.updateSnapshot({ isPlaying: false, isPreparing: false });
     await this.persistProgressFromStatus(this.player.currentStatus, true);
   }
 
@@ -783,8 +805,15 @@ class DocumentAudioPlaybackService {
     try {
       if (this.player) {
         this.player.setActiveForLockScreen(false);
-        if (this.player.currentStatus.playing) await this.player.pause();
-        await this.persistProgressFromStatus(this.player.currentStatus, true);
+        // Se guarda la posición SÓLO si estaba sonando. En pausa, el punto de
+        // pausa ya se guardó en su momento y el usuario pudo haber seguido
+        // leyendo a mano: volver a escribir la posición vieja del audio pisaba
+        // esa lectura ("Detener la voz" desde el Inicio te devolvía a donde
+        // habías pausado).
+        if (this.player.currentStatus.playing) {
+          await this.player.pause();
+          await this.persistProgressFromStatus(this.player.currentStatus, true);
+        }
       }
     } catch (e) { capturedError = e; }
     finally {

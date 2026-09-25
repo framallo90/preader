@@ -8,7 +8,15 @@ let databasePromise: Promise<SQLiteDatabase> | null = null;
 
 export async function getDatabase() {
   if (!databasePromise) {
-    databasePromise = openDatabaseAsync(DATABASE_NAME).catch((error) => {
+    databasePromise = openDatabaseAsync(DATABASE_NAME)
+      .then(async (db) => {
+        // Por CONEXIÓN, no sólo al inicializar: al reabrir la base
+        // (withDatabaseRetry) la conexión nueva corría sin foreign_keys, y
+        // borrar un libro dejaba notas, capítulos y colecciones huérfanos.
+        await db.execAsync('PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;');
+        return db;
+      })
+      .catch((error) => {
       // Si abrir falló, que el próximo intento vuelva a probar en vez de quedar
       // pegado a una promesa rechazada para siempre.
       databasePromise = null;

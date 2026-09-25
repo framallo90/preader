@@ -45,7 +45,13 @@ export async function createBookFingerprint(
   // grande (o de tamaño desconocido), NO leemos nada y usamos huella por
   // nombre+tamaño: evita el OOM que cerraba la app al escanear carpetas con
   // libros enormes. La lectura parcial no es confiable en content:// de SAF.
-  const canReadContent = knownSize != null && knownSize > 0 && knownSize <= MAX_FINGERPRINT_READ_BYTES;
+  // El módulo nativo lee exactamente 256 KB por stream, sin cargar el archivo:
+  // con él, la huella de contenido vale también para los archivos grandes (un
+  // libro de 20 MB renombrado seguía siendo el mismo libro; antes se duplicaba
+  // y la copia vieja quedaba muerta). El tope de 8 MB queda para el camino en
+  // JavaScript, que sí puede leer el archivo entero.
+  const canReadContent =
+    knownSize != null && knownSize > 0 && (knownSize <= MAX_FINGERPRINT_READ_BYTES || isBardoArchiveAvailable());
 
   // Nativo: lee exactamente 256 KB y hashea ahí, sin pasar base64 por el puente.
   // Misma fórmula que abajo, así el id de un libro no cambia.
@@ -57,7 +63,7 @@ export async function createBookFingerprint(
     }
   }
 
-  if (canReadContent) {
+  if (canReadContent && (knownSize as number) <= MAX_FINGERPRINT_READ_BYTES) {
     try {
       sample = await FileSystem.readAsStringAsync(uri, {
         encoding: FileSystem.EncodingType.Base64,
@@ -78,6 +84,20 @@ export async function createBookFingerprint(
 
   const digest = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, identity);
 
+  return `bk_${digest.slice(0, 24)}`;
+}
+
+/** ¿Este archivo es de los que ANTES se identificaban por nombre+tamaño y ahora por contenido? */
+export function usesContentIdForLargeFile(size?: number | null): boolean {
+  return size != null && size > MAX_FINGERPRINT_READ_BYTES && isBardoArchiveAvailable();
+}
+
+/**
+ * El id que una versión anterior le daba a un archivo grande (sin leer su
+ * contenido): sirve para reconocer los libros ya guardados con ese id.
+ */
+export async function legacyLargeFileFingerprint(name: string, size: number): Promise<string> {
+  const digest = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, `fallback:${name}:${size}:${size}`);
   return `bk_${digest.slice(0, 24)}`;
 }
 

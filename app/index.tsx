@@ -16,7 +16,7 @@ import {
   DocumentPlaybackSnapshot,
 } from '../src/services/documentAudioPlaybackService';
 import { removeBookCover } from '../src/services/bookMetadataService';
-import { ScanResult, addIgnoredBook, clearIgnoredBook, getDisplayNameFromSafUri, getIgnoredBooksCount, requestLibraryFolder, restoreIgnoredBooks, scanLibraryFolders } from '../src/services/libraryScanService';
+import { ScanResult, addIgnoredBook, clearIgnoredBook, consumeScanRequest, getDisplayNameFromSafUri, getIgnoredBooksCount, requestLibraryFolder, restoreIgnoredBooks, scanLibraryFolders } from '../src/services/libraryScanService';
 import { buildOrderEntries, compareBooksManually, compareBooksNaturally, getDisplayTitle } from '../src/utils/bookDisplay';
 import { compareSubfolders, folderMatchDepth, formatSubfolderLabel, getSubfolderPath } from '../src/utils/libraryFolders';
 import { foldText } from '../src/utils/textSearch';
@@ -34,6 +34,7 @@ import { bookProgressRepository } from '../src/storage/bookProgressRepository';
 import { bookRepository } from '../src/storage/bookRepository';
 import { withDatabaseRetry } from '../src/storage/database';
 import { collectionRepository } from '../src/storage/collectionRepository';
+import { runtimeStateRepository } from '../src/storage/runtimeStateRepository';
 import { parsedDocumentRepository } from '../src/storage/parsedDocumentRepository';
 import { Book, BookStatus, Collection, LibrarySort } from '../src/types/storage';
 
@@ -239,7 +240,9 @@ export default function HomeScreen() {
         // intervalo se comía el escaneo, y los libros nuevos no aparecían "ni
         // borrando la carpeta y cargándola de nuevo".
         const sameFolders = scanKey === lastScanKeyRef.current;
-        if (sameFolders && Date.now() - lastScanAtRef.current < SCAN_MIN_INTERVAL_MS) return;
+        // "Restaurar ocultos" desde Ajustes pide un escaneo ya, sin intervalo.
+        const requested = consumeScanRequest();
+        if (!requested && sameFolders && Date.now() - lastScanAtRef.current < SCAN_MIN_INTERVAL_MS) return;
         await rescan();
       })();
       return () => {
@@ -317,6 +320,12 @@ export default function HomeScreen() {
     });
     return () => { mounted = false; };
   }, [libraryFilter, isCollectionFilter, recentDocuments]);
+
+  // La colección del filtro se borró (desde la ficha de un libro): volver a
+  // "Todos". Si no, la lista quedaba vacía sin ningún chip activo.
+  useEffect(() => {
+    if (isCollectionFilter && !collections.some((collection) => collection.id === libraryFilter)) setLibraryFilter('all');
+  }, [collections, isCollectionFilter, libraryFilter]);
 
   const filteredDocuments = useMemo(() => {
     let books: Book[];
@@ -451,6 +460,9 @@ export default function HomeScreen() {
     if (!areSettingsReady || hasAutoOpenedRef.current) return;
     hasAutoOpenedRef.current = true; // el arranque ya pasó: no se repite
     if (!settings.reopenLastDocumentOnLaunch) return;
+    // Si el arranque anterior se cayó cargando un libro, no se lo vuelve a
+    // abrir solo: era un bucle de cierres sin salida.
+    if (runtimeStateRepository.wasBootRecovered()) return;
     void bookRepository.getLastOpenedBook().then((book) => {
       if (book) openReader(book.id);
     });
@@ -594,7 +606,10 @@ export default function HomeScreen() {
                   await filePickerService.deleteStoredDocument(document.uri);
                   // Si el archivo sigue en una carpeta escaneada, que el
                   // próximo escaneo no lo vuelva a agregar solo.
-                  await addIgnoredBook(document.id);
+                  // Sólo si el archivo es del usuario (content://): un libro
+                  // importado a mano ya se borró del disco y no hay nada que
+                  // ignorar; contarlo dejaba "1 oculto" para siempre.
+                  if (document.uri.startsWith('content://')) await addIgnoredBook(document.id);
                   await bookRepository.removeBook(document.id);
                   await loadRecentDocuments();
                 } catch (error) {
@@ -1260,6 +1275,9 @@ export default function HomeScreen() {
                   onPress: () => {
                     setPendingBook(null);
                     void (async () => {
+                      // Si ese libro está sonando, el reproductor volvería a
+                      // guardar su posición en el próximo tick: primero se para.
+                      if (playback.documentId === book.id) await documentAudioPlaybackService.stopAndUnload();
                       await bookProgressRepository.resetProgress(book.id);
                       await loadRecentDocuments();
                     })();

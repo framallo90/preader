@@ -81,6 +81,7 @@ export default function RootLayout() {
       try {
         const guard = await runtimeStateRepository.getReaderLoadGuard();
         if (guard) {
+          runtimeStateRepository.markBootRecovered();
           try { await runtimeStateRepository.clearReaderLoadGuard(); } catch (error) {
             logBootRecoveryWarning('No se pudo limpiar readerLoadGuard', error);
           }

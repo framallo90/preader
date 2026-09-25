@@ -77,13 +77,23 @@ export const noteRepository = {
    * Re-ubica las anotaciones hechas sobre una PÁGINA (PDF, cómic) cuando cambia el
    * texto del libro: su posición en el texto sale de la página, que es lo estable.
    */
-  async relocatePagedNotes(bookId: string, charIndexForPage: (page: number) => number): Promise<void> {
+  async relocatePagedNotes(
+    bookId: string,
+    charIndexForPage: (page: number) => number,
+    isConsistent: (page: number, charIndex: number) => boolean = () => false,
+  ): Promise<void> {
     const db = await getDatabase();
-    const rows = await db.getAllAsync<{ id: string; page: number }>(
-      'SELECT id, page FROM notes WHERE bookId = ? AND page IS NOT NULL',
+    const rows = await db.getAllAsync<{ id: string; page: number; charIndex: number }>(
+      'SELECT id, page, charIndex FROM notes WHERE bookId = ? AND page IS NOT NULL',
       [bookId],
     );
     for (const row of rows) {
+      // Si la posición exacta ya cae dentro de su página con el texto nuevo, se
+      // deja: re-procesar un libro con el mismo texto (caché evictado, versión
+      // nueva) movía TODAS las citas al principio de su página. Sólo se
+      // re-ubican las inconsistentes: las hechas sobre el provisorio o sobre
+      // un texto distinto.
+      if (isConsistent(row.page, row.charIndex)) continue;
       await db.runAsync('UPDATE notes SET charIndex = ? WHERE id = ?', [charIndexForPage(row.page), row.id]);
     }
   },

@@ -7,10 +7,10 @@ import { charForPage, pageForChar, pageForProgress } from './pageMap';
 export function positionForPage(document: ParsedDocument, page: number) {
   if (!document.pdf) return getPositionFromAbsoluteChar(document, 0);
   const safePage = Math.min(Math.max(page, 0), Math.max(document.pdf.pageOffsets.length - 1, 0));
-  // Documento provisorio: el "texto" de la página es su número, así que el medio
-  // cae siempre dentro de la página. En el definitivo una página puede estar vacía
-  // (una lámina): su medio coincide con el comienzo de la siguiente, que igual
-  // pageForChar resuelve a la última página que empieza ahí.
+  // El principio de la página. En el definitivo una página puede estar vacía
+  // (una lámina): su principio coincide con el de la siguiente, y pageForChar
+  // resuelve a la última página que empieza ahí; por eso el progreso guarda
+  // también la página y pageForProgress la respeta.
   const absolute = charForPage(safePage, document.pdf.pageOffsets, document.fullText.length);
   return getPositionFromAbsoluteChar(document, absolute);
 }
@@ -52,9 +52,11 @@ export function resolveSavedPosition(document: ParsedDocument, progress: Reading
  * "vuelve, pero más adelantado". Ahora, en orden:
  *
  * 1. Un salto pedido (índice, cita, marcador) manda: se mide sobre el texto real.
- * 2. Si el progreso guardado se midió sobre este mismo texto y cae en la página
+ * 2. Si la voz ya estaba leyendo este libro (abriste el lector con el audio
+ *    sonando o en pausa), manda su posición, medida sobre el texto real.
+ * 3. Si el progreso guardado se midió sobre este mismo texto y cae en la página
  *    que se está viendo, se retoma EXACTO ahí.
- * 3. Si no (pasaste de página mientras el texto se preparaba, el progreso es del
+ * 4. Si no (pasaste de página mientras el texto se preparaba, el progreso es del
  *    provisorio, o el libro se re-procesó), se retoma por la página que se ve.
  */
 export function positionWhenTextReady(
@@ -62,8 +64,10 @@ export function positionWhenTextReady(
   stored: ReadingProgress | null,
   currentPage: number,
   jumpChar: number | null,
+  audioChar: number | null = null,
 ) {
   if (jumpChar !== null) return getPositionFromAbsoluteChar(ready, jumpChar);
+  if (audioChar !== null) return getPositionFromAbsoluteChar(ready, audioChar);
   if (stored && ready.pdf && stored.textLength === ready.fullText.length) {
     const exact = resolveSavedPosition(ready, stored);
     const page = pageForProgress(exact.absoluteCharIndex, stored.page, ready.pdf.pageOffsets, ready.fullText.length);

@@ -2,7 +2,7 @@ import { getDatabase } from '../storage/database';
 import { bookRepository } from '../storage/bookRepository';
 import { collectionRepository } from '../storage/collectionRepository';
 import { settingsRepository } from '../storage/settingsRepository';
-import { AppSettings } from '../types/storage';
+import { AppSettings, DEFAULT_SETTINGS } from '../types/storage';
 import {
   BACKUP_VERSION,
   BackupFile,
@@ -185,8 +185,14 @@ export async function applyBackup(backup: BackupFile): Promise<RestoreSummary> {
     }
   }
 
-  if (Object.keys(backup.settings).length > 0) {
-    await settingsRepository.saveSettings(backup.settings);
+  // Sólo claves de ajustes conocidas: un archivo editado a mano no puede
+  // escribir cualquier fila de la tabla settings (ocultos, versión del caché).
+  const conocidas = new Set(Object.keys(DEFAULT_SETTINGS));
+  const ajustes = Object.fromEntries(
+    Object.entries(backup.settings).filter(([key]) => conocidas.has(key)),
+  ) as Partial<AppSettings>;
+  if (Object.keys(ajustes).length > 0) {
+    await settingsRepository.saveSettings(ajustes);
   }
   return resumen;
 }

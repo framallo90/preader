@@ -75,7 +75,7 @@ npx expo prebuild --platform android
 cd android && ./gradlew assembleRelease -PreactNativeArchitectures=arm64-v8a
 ```
 
-The output is `android/app/build/outputs/apk/release/app-release.apk`. After changing anything under `modules/`, rebuild.
+The output is `android/app/build/outputs/apk/release/app-release.apk`. Without the architectures parameter the APK includes all four ABIs (32-bit tablets and Intel devices too), at twice the size. After changing anything under `modules/`, rebuild.
 
 ## Architecture
 
@@ -138,7 +138,7 @@ The `android/` folder is not in the repository: it is generated with `expo prebu
 ## Quality
 
 - Strict TypeScript and ESLint with no warnings.
-- 418 Vitest tests over pure functions: text partitioning, page mapping, progress, chapters, stats and backup. Every file in `src/utils/` has its `.test.ts` next to it.
+- 420 Vitest tests over pure functions: text partitioning, page mapping, progress, chapters, stats and backup. Every file in `src/utils/` has its `.test.ts` next to it.
 - A JVM test for the HTML-to-text converter in the `bardo-archive` module.
 - Schema migrations versioned with `PRAGMA user_version`; a failed migration does not bump the version and is retried on the next start.
 - Performance measured before and after every large change (cold start and memory with the reader narrating).

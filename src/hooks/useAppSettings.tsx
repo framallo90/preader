@@ -20,6 +20,8 @@ type AppSettingsContextValue = {
   colors: ThemeColors;
   isReady: boolean;
   updateSettings: (patch: Partial<AppSettings>) => Promise<void>;
+  /** Vuelve a leer los ajustes de la base (después de importar un respaldo). */
+  reloadSettings: () => Promise<void>;
 };
 
 const AppSettingsContext = createContext<AppSettingsContextValue | null>(null);
@@ -61,6 +63,14 @@ export function AppSettingsProvider({ children }: PropsWithChildren) {
     await settingsRepository.saveSettings(patch);
   }, []);
 
+  // Importar un respaldo escribe los ajustes directo en la base: sin esto la
+  // pantalla seguía con los valores viejos (letra, tema, orden) hasta reiniciar.
+  const reloadSettings = useCallback(async () => {
+    const loaded = await settingsRepository.loadSettings();
+    settingsRef.current = loaded;
+    setSettings(loaded);
+  }, []);
+
   const colors = useMemo(() => getThemeColors(settings.darkMode), [settings.darkMode]);
 
   useEffect(() => {
@@ -79,8 +89,9 @@ export function AppSettingsProvider({ children }: PropsWithChildren) {
       colors,
       isReady,
       updateSettings,
+      reloadSettings,
     }),
-    [colors, isReady, settings, updateSettings],
+    [colors, isReady, settings, updateSettings, reloadSettings],
   );
 
   return <AppSettingsContext.Provider value={value}>{children}</AppSettingsContext.Provider>;

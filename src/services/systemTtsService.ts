@@ -8,7 +8,7 @@
  */
 import * as FileSystem from 'expo-file-system/legacy';
 
-import { NativeVoice, getVoiceSynthesizerModule } from '../../modules/voice-synthesizer';
+import { NativeVoice, getVoiceSynthesizerModule, isVoiceSynthesizerAvailable } from '../../modules/voice-synthesizer';
 
 export type SystemVoice = NativeVoice;
 
@@ -85,6 +85,8 @@ export async function listVoices(forceRefresh = false): Promise<SystemVoice[]> {
   if (!forceRefresh && voicesCache && Date.now() - voicesCache.at < VOICES_TTL_MS) {
     return voicesCache.voices;
   }
+  // Sin módulo nativo (iOS, todavía) no hay voces: lista vacía, no un error.
+  if (!isVoiceSynthesizerAvailable()) return [];
   const voices = await getVoiceSynthesizerModule().getVoicesAsync();
   voicesCache = { at: Date.now(), voices };
   return voices;
@@ -100,6 +102,9 @@ export async function synthesizeSpeech(
   voiceId: string | null,
   language: string | null,
 ): Promise<string> {
+  if (!isVoiceSynthesizerAvailable()) {
+    throw new Error('La voz del sistema no está disponible en este dispositivo.');
+  }
   void cleanLegacyCacheOnce();
   const dir = await ensureCacheDirectory();
   const filePath = `${dir}/${sanitizeForFileName(chunkId)}.wav`;
@@ -132,6 +137,7 @@ export async function synthesizeSpeech(
 
 /** Descarta la síntesis en curso y la cola (nuevo play/seek lejos del tramo actual). */
 export async function cancelPendingSynthesis(): Promise<void> {
+  if (!isVoiceSynthesizerAvailable()) return;
   await getVoiceSynthesizerModule().cancelAllAsync().catch(() => {});
 }
 

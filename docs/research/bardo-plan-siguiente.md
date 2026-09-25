@@ -905,3 +905,170 @@ tiempos de un PDF con caché (primero el documento provisorio "Página 1, Págin
 Verificado en el emulador, build x86_64, sobre el PDF real: "Escuchar" desde el Inicio avanza sobre el
 texto real (813/123 → 817/70 en 28 s, misma página); cerrar mientras suena y reabrir con "Continuar":
 fila idéntica; retomar la voz, pausar, cerrar y reabrir: fila idéntica.
+
+---
+
+## Tablet e iOS (2026-09-24)
+
+### La tablet: por qué no se instalaba
+
+La APK que va al Escritorio se compila sólo para `arm64-v8a` (`-PreactNativeArchitectures=arm64-v8a`),
+para que pese 48 MB en vez de más del doble. Una tablet de 32 bits (`armeabi-v7a`: muchas tablets
+baratas y casi todas las de hace unos años) o una con procesador Intel (`x86`, `x86_64`) no tiene esas
+bibliotecas nativas y Android la rechaza con "No se instaló la app". No es una limitación del código:
+ninguna dependencia nativa es exclusiva de 64 bits (Pdfium `io.legere:pdfiumandroid` y
+`7-Zip-JBinding-4Android` traen las cuatro ABIs) y `android/gradle.properties` ya las lista todas.
+
+- **Solución:** una APK universal, compilada sin el flag (`./gradlew assembleRelease`), con las cuatro
+  ABIs. Va al Escritorio como `Bardo-2.0.0-universal-<fecha>.apk`, al lado de la arm64 (más chica,
+  para el teléfono). Para Google Play esto no importa: se sube un AAB y Play le da a cada dispositivo
+  sólo lo suyo.
+- **Si igual no se instala, en este orden:** Android 7.0 o más nuevo (API 24, `sdkVersion:'24'` en
+  la APK); "instalar apps desconocidas" habilitado para el explorador de archivos que abre la APK;
+  espacio libre; y si la tablet tenía una versión anterior con otra firma, desinstalarla primero.
+- **Lo que ya está bien:** la orientación es libre (`orientation: default`), así que en la tablet se
+  puede leer apaisado y la interfaz se acomoda al ancho. La APK declara `supports-screens` chico a
+  extragrande.
+- **Mejoras pendientes para tablet (no bloquean):** dos páginas por pantalla en apaisado; más
+  columnas en la grilla de la biblioteca cuando el ancho lo permite; probar con un AVD de tablet.
+
+### iOS: qué hace falta y en qué orden
+
+**Lo que ya sirve tal cual.** Todo el JavaScript: las pantallas (Expo Router), la base SQLite y sus
+migraciones, los parsers de EPUB/TXT/DOCX (el EPUB tiene respaldo en JS con `jszip` cuando no está el
+módulo nativo; DOCX usa `mammoth`), el respaldo, las estadísticas, y `expo-audio` en segundo plano con
+controles en la pantalla de bloqueo (el plugin ya pide `UIBackgroundModes: audio`).
+
+**Lo que no existe en iOS.** Los cuatro módulos nativos son Kotlin. Cada `expo-module.config.json`
+dice `platforms: ["android"]`; para iOS cada uno necesita una implementación en Swift y un `.podspec`,
+con el MISMO contrato que ya usa el JavaScript (así el resto de la app no cambia).
+
+| Módulo | Hoy (Android) | En iOS | Esfuerzo |
+| --- | --- | --- | --- |
+| `bardo-pdf` | `PdfRenderer` + Pdfium: dibujar páginas, texto por página, índice, coordenadas de la palabra, caja de contenido, color de tapa | **PDFKit** (del sistema): `PDFPage.draw(with:to:)` o `thumbnail(of:for:)` para dibujar; `PDFPage.string` para el texto; `characterBounds(at:)` y `selection(for:)` para las coordenadas; `PDFDocument.outlineRoot` para el índice; `bounds(for: .cropBox)`. Riesgo: PDFKit puede ordenar el texto distinto que Pdfium, así que los offsets del caché difieren por plataforma; no importa porque el caché es por dispositivo, pero un respaldo con progreso por caracteres se retoma por página (`resolveSavedPosition` ya lo contempla con `textLength`). | M-L: 1 a 2 semanas |
+| `voice-synthesizer` | `TextToSpeech.synthesizeToFile` → WAV | `AVSpeechSynthesizer.write(_:toBufferCallback:)` → `AVAudioFile` (CAF o WAV). Existe desde iOS 13. Hubo fallas conocidas: errores en iOS 16 y audio entrecortado en iOS 17 con ciertos formatos, así que hay que probar con las voces del sistema en un iPhone real desde el primer día. Plan B si una voz no escribe a archivo: `speak` directo (se pierde el retroceso fino y el segundo plano queda más frágil). Voces: `AVSpeechSynthesisVoice.speechVoices()`. | M: 1 semana |
+| `bardo-archive` | `java.util.zip` + 7-Zip (zip, rar, 7z, tar), listado de carpetas SAF, huella de contenido, HTML → texto | Zip: `ZIPFoundation` (Swift, MIT) o `Compression` de Apple. RAR, 7z y tar: `libarchive` (está en el SDK de iOS, sin cabeceras públicas: se compila aparte) o las fuentes C de 7-Zip. Huella: `CommonCrypto` (SHA-256 de los primeros 256 KB, misma fórmula). HTML → texto: portar `HtmlText.kt` (200 líneas) o usar el respaldo JS. | M-L |
+| `bardo-keys` | Teclas de volumen para pasar página | **No existe.** Apple rechaza las apps que reasignan los botones de volumen (guía de revisión 2.5.9). En iOS la opción se oculta. | 0 |
+| Carpetas (SAF) | `requestDirectoryPermissionsAsync` + `listDocumentTreeAsync` | No hay SAF. `UIDocumentPickerViewController` con `.folder` y un *security-scoped bookmark* guardado para volver a entrar en cada arranque (`startAccessingSecurityScopedResource`), `FileManager` para listar. `expo-document-picker` no elige carpetas: módulo propio chico en Swift. Para arrancar alcanza con importar archivos de a uno con el selector de Archivos, que ya funciona. | M |
+
+**Toolchain sin Mac.** EAS Build compila iOS en la nube desde Windows. Para instalar en un iPhone
+real hace falta la cuenta de Apple Developer (US$ 99 por año) y se distribuye por TestFlight (o ad
+hoc, con el UDID del teléfono). Los builds de simulador no sirven sin Mac; Expo ofrece simuladores
+en la nube, a evaluar. Mínimo iOS 15.1 (Expo SDK 55). Cada build de iOS es un build en EAS: se pide
+permiso antes, como con cualquier build o deploy.
+
+**Orden propuesto.**
+
+0. **Decisiones de Facu, antes de tocar nada:** ¿hay un iPhone o iPad para probar? ¿Se paga la
+   cuenta de Apple Developer? Sin las dos cosas no se puede ver nada corriendo.
+1. **Base, sin nativo (1 a 2 días):** que la app arranque en iOS con libros de texto (EPUB, TXT,
+   DOCX) y sin voz. Guardas para que ningún `requireNativeModule` tire, SAF sólo en Android, ocultar
+   las teclas de volumen, primer build EAS de iOS y TestFlight. **Hecho hoy en el código:** la voz y
+   las carpetas ya preguntan si el módulo existe antes de usarlo, y `app.json` tiene la config
+   mínima de iOS (documentos en el lugar, sin cifrado exento).
+2. **Voz** (`voice-synthesizer` en Swift): es lo que define a Bardo.
+3. **PDF** (`bardo-pdf` con PDFKit).
+4. **Carpetas con bookmarks y archivos** (cómics): `bardo-archive`.
+5. **Pulido iPad** (dos páginas apaisado) y App Store (privacidad, capturas, ficha).
+
+Fuentes consultadas: documentación de Apple de `AVSpeechSynthesizer.write`, foros de desarrolladores
+de Apple sobre `write` en iOS 16 y 17, guía de revisión de la App Store 2.5.9, documentación de Expo
+sobre builds de iOS sin Mac y el SDK 55, y la documentación de `react-native-documents` sobre
+bookmarks de carpetas en iOS.
+
+---
+
+## Pasada de bugs de la misma familia (2026-09-25)
+
+Facu: "hacé una pasada en busca de errores y bugs de este estilo". Tres revisiones de código en
+paralelo, de sólo lectura (lector y voz; biblioteca, ajustes y base; parsers, cachés y módulos
+nativos), cada hallazgo verificado después en el código antes de tocarlo. Se arreglaron 29. Todo
+pasa tipos, lint y 420 tests; lo que se pudo, se probó en el emulador.
+
+### Lector y voz
+
+- **"Detener la voz" pisaba lo que leíste a mano.** Al descargar el reproductor se guardaba la
+  posición del audio aunque estuviera en pausa hacía rato: pausabas en la página 50, leías a mano
+  hasta la 60, tocabas "Detener" en el Inicio y volvías a la 50. Ahora sólo guarda si estaba sonando.
+- **El temporizador de sueño podía no parar nunca.** Si el "parar" llegaba mientras un tramo se
+  sintetizaba, se descartaba en silencio y la voz arrancaba igual. Parar ya no espera turno, y
+  pausar invalida la sesión del play en vuelo.
+- **El lector aplicaba la posición del audio al documento provisorio** (abrir un PDF con la voz
+  sonando en segundo plano): caía en el último bloque y se guardaba "última página, 100 %". Ahora,
+  sobre el provisorio no se sincroniza, y al llegar el texto real manda la posición de la voz.
+- **`isPlaying` quedaba pegado en "sonando"** si el evento nativo de pausa llegaba después de
+  descargar el reproductor: el botón mostraba pausa y pasar páginas no guardaba progreso.
+- **Saltar desde el índice, la búsqueda o una nota pisaba la posición exacta** con el principio de la
+  página (el aviso de "cambió la página" miraba la posición vieja). La posición nueva se anota
+  antes de mover la vista.
+- **Un salto con el texto pendiente caía en la última página** y sintetizaba audio de "Página N".
+  Ahora espera al texto y mientras tanto va a la página correcta con el mapa del caché; "Escuchar"
+  pedido desde la ficha con el texto pendiente queda encolado en vez de perderse.
+- **La posición "por página" era el MEDIO de la página.** Pasabas páginas a mano y tocabas
+  Escuchar: arrancaba a mitad de oración; un PDF recién abierto arrancaba a mitad de la página 1;
+  el marcador citaba desde el medio. Ahora es el principio; las páginas vacías las resuelve la
+  página guardada junto al progreso.
+- **Anotar con el texto pendiente** (cita, marcador, mantener apretado sobre la página) dejaba la
+  nota mal ubicada para siempre: ahora avisa "esperá a que termine de preparar el texto", y las que
+  ya existan mal ubicadas se re-ubican al llegar el texto.
+
+### Cachés y parsers
+
+- **Re-procesar un PDF movía TODAS las citas al medio de su página**, aunque el texto fuera el mismo
+  (pasa solo: el caché en disco guarda 12 libros y evicta el más viejo). Sólo se re-ubican las notas
+  cuya posición no cae en su página.
+- **La vía rápida del caché no tenía plan B:** si el caché quedó a medias (la app se cerró mientras
+  se escribía), el libro abría por páginas pero el texto no llegaba nunca: sin voz ni búsqueda, para
+  siempre. Ahora se tira ese caché y se re-extrae de fondo; y el mapa de páginas se escribe al final,
+  así un corte ya no deja un huérfano.
+- **La poda del caché de páginas borraba la carpeta del libro recién abierto** (arrancaba al cerrar
+  el anterior y ordenaba por fecha): páginas en blanco. El libro activo queda excluido.
+- **Offsets de página no crecientes** con una página vacía entre una que termina en guion y otra que
+  sigue en minúscula (un carácter, pero rompía el invariante). Con test.
+- **Capítulos viejos** quedaban en la base si el texto cambiaba y ya no se detectaba ninguno.
+
+### Biblioteca, ajustes y base
+
+- **Renombrar un libro (o escribir su resumen) se perdía al re-procesarlo:** los metadatos del PDF o
+  EPUB pisaban lo tuyo. Ahora título y resumen sólo se rellenan si están vacíos.
+- **"Restaurar ocultos" desde Ajustes no los mostraba** (el Inicio había escaneado hacía menos de dos
+  minutos). Pide un escaneo inmediato.
+- **Bucle de cierres con "reabrir el último libro al iniciar":** si un libro tiraba la app al cargar
+  por el archivo (no por el caché), cada arranque lo reabría solo. Tras un arranque recuperado no se
+  reabre.
+- **Importar un respaldo dejaba los ajustes viejos en pantalla** hasta reiniciar (letra, tema, orden,
+  meta). Se recargan al terminar. Y sólo entran claves de ajustes conocidas.
+- **Las tapas que fallaban se reintentaban en cada vuelta al Inicio** (abrir cada archivo de nuevo,
+  nativamente, para nada). Las fallidas se recuerdan en la sesión.
+- **"Empezar de nuevo" se deshacía solo si ese libro estaba sonando** (el reproductor volvía a guardar
+  su posición). Primero se para.
+- **Un archivo de más de 8 MB renombrado quedaba duplicado**, con la copia vieja muerta: sobre ese
+  tamaño la huella era nombre+tamaño. Con el módulo nativo (lee 256 KB por stream, sin cargar el
+  archivo) ahora la huella es por contenido también para los grandes; los ya guardados con el id
+  viejo se reconocen por ese id al moverlos, y al importarlos de nuevo.
+- **Importar a mano un libro que ya estaba en una carpeta escaneada** lo duplicaba dentro de la app
+  (un cómic de 300 MB) y lo sacaba de su carpeta. Se abre el que está.
+- **Relocalizar un archivo movido, o abrir un content:// sin seek con copia local,** pasaba por
+  `saveBook` y pisaba `lastOpenedAt` (el libro se caía de "Seguir leyendo") y anulaba el color de
+  tapa. Ahora sólo se corrige la ruta (`relocateBook`).
+- **"N libros ocultos" para siempre** después de borrar un libro importado a mano. Sólo se ignora si el
+  archivo es del usuario.
+- **Tras reabrir la base** (`withDatabaseRetry`) la conexión nueva corría sin `foreign_keys`: borrar un
+  libro dejaba notas, capítulos y colecciones huérfanos. Los PRAGMA van por conexión.
+- **Filtro por una colección borrada** quedaba pegado con la lista vacía. Vuelve a "Todos".
+
+### Quedó anotado, sin tocar (mejoras, no bugs)
+
+- Un solo ejecutor nativo para extraer texto, resaltar y citar: el resaltado de la voz espera detrás
+  de una extracción de fondo de otro libro.
+- El filtro de color de las páginas duplica el bitmap; con zoom (4096 px) es mucha memoria.
+- `withoutText` (PDF protegido o enorme) no se cachea: cada apertura re-extrae.
+- Cambiar la voz mientras suena tira el tramo precalentado; `prewarm` usa la voz general y no la del
+  libro.
+- Pausar escribe el progreso tres o cuatro veces.
+- Durante el anuncio de capítulo, tocar el botón de reproducir descarta el salto.
+- Quitar una carpeta no saca sus libros ni libera el permiso; excluir una subcarpeta no oculta lo que
+  ya entró; no hay "quitar los libros cuyo archivo ya no está".
+- El escaneo re-hashea en cada pasada los archivos ignorados y los duplicados.
+- `updateSettings` con forma funcional para que dos toques rápidos en un Stepper no se pisen.
+- Entradas EPUB de más de 48 MB se saltean en silencio.

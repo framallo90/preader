@@ -140,6 +140,12 @@ describe('positionWhenTextReady', () => {
     const { final } = quickAndFinal();
     expect(pageOf(final, positionWhenTextReady(final, null, 2, null))).toBe(2);
   });
+
+  it('si la voz ya lee este libro, manda su posición', () => {
+    const { final } = quickAndFinal();
+    const audio = positionForPage(final, 3).absoluteCharIndex + 2;
+    expect(positionWhenTextReady(final, progressAt(final, 1), 1, null, audio).absoluteCharIndex).toBe(audio);
+  });
 });
 
 describe('joinPdfPagesAsync', () => {

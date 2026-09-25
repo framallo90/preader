@@ -37,6 +37,8 @@ const COVER_WIDTH_PX = 600;
 let renderedSinceEviction = 0;
 // Hay páginas nuevas desde la última poda: se limpia al cerrar el libro.
 let prunePending = false;
+// El libro cuyas páginas se están pidiendo ahora: la poda del caché no lo toca.
+let activeBookId: string | null = null;
 
 export function isLocalPdfAvailable(): boolean {
   return isBardoPdfAvailable();
@@ -162,6 +164,7 @@ function pumpRenderQueue() {
  */
 export function requestPdfPage(request: PdfPageRequest): PdfPageTicket {
   const { bookId, pageIndex, widthPx, colorMode, crop } = request;
+  activeBookId = bookId;
   // Un cómic se muestra con sus colores, sin recorte: una sola versión por ancho.
   const variant = request.kind === 'comic' ? 'comic' : `${colorMode}-${cropKey(crop)}`;
   const fileName = `${pageIndex}-${Math.round(widthPx)}-${variant}.jpg`;
@@ -371,9 +374,13 @@ async function enforcePageCacheLimit(): Promise<void> {
     if (total <= MAX_PAGE_CACHE_BYTES) return;
 
     entries.sort((a, b) => a.mtime - b.mtime); // menos usado primero
-    // El más reciente (el libro abierto) nunca se borra.
+    // El más reciente nunca se borra, y tampoco el libro que se está pidiendo
+    // AHORA: la poda arranca al cerrar el anterior, y si el nuevo tenía una
+    // carpeta vieja se la borraba mientras dibujaba (páginas en blanco).
+    const activeDir = activeBookId ? bookPagesDirectory(activeBookId) : null;
     for (const entry of entries.slice(0, -1)) {
       if (total <= MAX_PAGE_CACHE_BYTES) break;
+      if (entry.dir === activeDir) continue;
       await FileSystem.deleteAsync(entry.dir, { idempotent: true }).catch(() => {});
       total -= entry.size;
     }

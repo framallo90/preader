@@ -108,8 +108,13 @@ export type CoverBackfillOptions = {
  * Genera las tapas que falten, de a una. Devuelve cuántas hizo.
  * Los libros llegan en el orden en que se ven: primero los de arriba.
  */
+// Tapas que fallaron en esta sesión (EPUB sin tapa declarada, archivo que no
+// abre): no se reintentan en cada vuelta al Inicio, que volvía a abrir cada
+// archivo nativamente para nada.
+const failedCovers = new Set<string>();
+
 export async function backfillCovers(books: Book[], options: CoverBackfillOptions): Promise<number> {
-  const pending = books.filter((book) => !book.coverUri && canHaveCover(book));
+  const pending = books.filter((book) => !book.coverUri && canHaveCover(book) && !failedCovers.has(book.id));
   let done = 0;
   for (const book of pending) {
     if (options.isCancelled()) break;
@@ -120,6 +125,8 @@ export async function backfillCovers(books: Book[], options: CoverBackfillOption
       await bookRepository.updateBookMetadata(book.id, { title: null, author: null, coverUri }).catch(() => {});
       options.onCover(book.id, coverUri);
       done += 1;
+    } else {
+      failedCovers.add(book.id);
     }
     await pause(PAUSE_MS);
   }

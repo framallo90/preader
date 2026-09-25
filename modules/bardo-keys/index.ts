@@ -13,6 +13,11 @@ declare class BardoKeysNativeModule extends NativeModule<{ volumeKey: (event: Vo
 // (sin pasar de página con el volumen) en vez de romperse al arrancar.
 const nativeModule = requireOptionalNativeModule<BardoKeysNativeModule>('BardoKeys');
 
+/** ¿Se pueden capturar las teclas de volumen acá? En iOS no existe (y Apple lo rechaza). */
+export function areVolumeKeysAvailable(): boolean {
+  return nativeModule !== null;
+}
+
 export function setCaptureVolumeKeys(enabled: boolean): void {
   nativeModule?.setCaptureVolumeKeys(enabled);
 }

@@ -89,19 +89,33 @@ export const bookRepository = {
     );
   },
 
+  /**
+   * El archivo cambió de lugar (o se trabaja sobre una copia local): se corrige
+   * SÓLO la ruta y el nombre. Pasar por saveBook pisaba lastOpenedAt con el
+   * valor viejo (el libro se caía de "Seguir leyendo") y anulaba coverColor
+   * por una tapa "nueva" que era la misma.
+   */
+  async relocateBook(bookId: string, uri: string, name: string): Promise<void> {
+    const db = await getDatabase();
+    await db.runAsync('UPDATE books SET uri = ?, name = ? WHERE id = ?', [uri, name, bookId]);
+  },
+
   async updateBookMetadata(
     bookId: string,
     metadata: { title: string | null; author: string | null; coverUri: string | null; summary?: string | null },
   ): Promise<void> {
     const db = await getDatabase();
     // COALESCE en todo: pasar null significa "no lo toques", no "borralo".
+    // Título y resumen sólo se RELLENAN si están vacíos: los pone el usuario
+    // (renombrar, escribir el resumen) y re-procesar el archivo (caché
+    // evictado, versión nueva) los pisaba con los metadatos del PDF o EPUB.
     await db.runAsync(
       `UPDATE books SET
-         title = COALESCE(?, title),
+         title = COALESCE(title, ?),
          author = COALESCE(?, author),
          coverUri = COALESCE(?, coverUri),
          coverColor = CASE WHEN ? IS NULL THEN coverColor ELSE NULL END,
-         summary = COALESCE(?, summary)
+         summary = COALESCE(summary, ?)
        WHERE id = ?`,
       // Una tapa nueva (aunque sea el mismo archivo reescrito) invalida su color.
       [metadata.title, metadata.author, metadata.coverUri, metadata.coverUri, metadata.summary ?? null, bookId],

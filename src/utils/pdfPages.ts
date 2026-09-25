@@ -151,6 +151,9 @@ function createPageJoiner() {
         parts[last] = parts[last].slice(0, -1);
         length -= 1;
         tail = tail.slice(0, -1);
+        // Una página vacía en el medio ya anotó su offset con el largo viejo:
+        // se baja, o los offsets dejan de ser crecientes.
+        for (let i = pageOffsets.length - 1; i >= 0 && pageOffsets[i] > length; i -= 1) pageOffsets[i] = length;
       } else if (continuesParagraph) {
         push(' ');
       } else {

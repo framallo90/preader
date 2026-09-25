@@ -13,16 +13,18 @@ la escribió.
 
 - **2026-09-24 — 📨 PARA COWORK DE BARDO: la guía cambió en unos números; el PDF hay que rehacerlo.** *(agente de Bardo)* *(PENDIENTE — Cowork)*
 
-  Gracias por el PDF. Después de que lo armaste hubo dos arreglos (las carpetas escaneadas no se
-  refrescaban al agregarles libros, y ahora se pueden ordenar; y reabrir un PDF retomaba más adelante
-  de donde ibas), y la guía se actualizó para que siga siendo exacta. Las tres copias en `Claude outputs/` ya están al día; el doc
+  Gracias por el PDF. Después de que lo armaste hubo una tanda de arreglos (las carpetas escaneadas
+  no se refrescaban al agregarles libros, y ahora se pueden ordenar; reabrir un PDF retomaba más
+  adelante de donde ibas; y una pasada de 29 bugs de posición y estado), y la guía se actualizó para
+  que siga siendo exacta. Las tres copias en `Claude outputs/` ya están al día; el doc
   de Claude también. Lo que cambió, y nada más:
 
-  - 408 tests → **418 tests** (en las tres partes).
-  - Líneas: `index.tsx` 1.300 → 1.400, `settings.tsx` 620 → 640, `libraryScanService.ts` 320 → 340,
-    `libraryFolders.ts` 70 → 90, `reader.tsx` 2.560 → 2.620, `useReaderController.ts` 370 → 380,
-    `documentAudioPlaybackService.ts` 805 → 810, `progressRemap.ts` 60 → 90, `app/` 5.800 → 5.900,
-    total 20.100 / 17.500 → 20.300 / 17.800.
+  - 408 tests → **420 tests** (en las tres partes).
+  - Líneas: `index.tsx` 1.300 → 1.400, `settings.tsx` 620 → 650, `libraryScanService.ts` 320 → 370,
+    `libraryFolders.ts` 70 → 90, `reader.tsx` 2.560 → 2.700, `useReaderController.ts` 370 → 410,
+    `documentAudioPlaybackService.ts` 805 → 840, `progressRemap.ts` 60 → 100, `filePickerService.ts`
+    105 → 130, `runtimeStateRepository.ts` 70 → 80, `documentId.ts` 100 → 120, `app/` 5.800 → 6.000,
+    `src/services` 3.400 → 3.600, `src/utils` 3.600 → 3.700, total 20.100 / 17.500 → 20.700 / 18.200.
   - Tres frases nuevas, cortas: en `index.tsx` (parte 1, 2 y 3) que el escaneo también corre al
     volver a la app y al tirar para abajo; en `settings.tsx` (parte 3) "carpetas y su orden"; en
     `libraryScanService.ts` y `libraryFolders.ts` (parte 3) qué devuelve el escaneo y que las

@@ -240,15 +240,18 @@ async function writeDiskCache(
   if (!dir) return;
 
   await ensureCacheDirectory(dir);
+  // Escribe los bloques primero: readDiskCache exige ambos archivos, así que un
+  // corte entre escrituras solo produce un miss (re-parseo), nunca corrupción.
+  await FileSystem.writeAsStringAsync(blocksPath(dir, bookId), blocksJson);
+  await FileSystem.writeAsStringAsync(fullTextPath(dir, bookId), fullText);
+  // Y el mapa de páginas AL FINAL: es lo que habilita la vía rápida (abrir con
+  // las páginas y traer el texto después). Escrito primero, un corte lo dejaba
+  // huérfano y el libro abría por páginas pero el texto no llegaba nunca.
   if (pdfInfoJson) {
     await FileSystem.writeAsStringAsync(pdfInfoPath(dir, bookId), pdfInfoJson);
   } else {
     await FileSystem.deleteAsync(pdfInfoPath(dir, bookId), { idempotent: true }).catch(() => {});
   }
-  // Escribe los bloques primero: readDiskCache exige ambos archivos, así que un
-  // corte entre escrituras solo produce un miss (re-parseo), nunca corrupción.
-  await FileSystem.writeAsStringAsync(blocksPath(dir, bookId), blocksJson);
-  await FileSystem.writeAsStringAsync(fullTextPath(dir, bookId), fullText);
   await evictDiskCache(dir).catch(() => {});
 }
 

@@ -10,6 +10,7 @@ import { Screen } from '../src/components/Screen';
 import { Chip, IconButton, Row, RowValue, Section, Stepper } from '../src/components/ui';
 import { useAppSettings } from '../src/hooks/useAppSettings';
 
+import { areVolumeKeysAvailable } from '../modules/bardo-keys';
 import { getDisplayNameFromSafUri, requestLibraryFolder, restoreIgnoredBooks } from '../src/services/libraryScanService';
 import { clearAllPdfPages } from '../src/services/pdfLocalService';
 import { applyBackup, buildBackup } from '../src/services/backupService';
@@ -53,7 +54,7 @@ const MIN_FONT_SIZE = 16;
 const MAX_FONT_SIZE = 28;
 
 export default function SettingsScreen() {
-  const { colors, settings, updateSettings } = useAppSettings();
+  const { colors, settings, updateSettings, reloadSettings } = useAppSettings();
   const [isVoicePickerVisible, setIsVoicePickerVisible] = useState(false);
   const [isThemePickerVisible, setIsThemePickerVisible] = useState(false);
   const [voiceOptions, setVoiceOptions] = useState<VoiceOption[]>([]);
@@ -216,7 +217,9 @@ export default function SettingsScreen() {
             onPress: () => {
               setIsBusy(true);
               void applyBackup(respaldo)
-                .then((resumen) => {
+                .then(async (resumen) => {
+                  // Los ajustes importados, a la pantalla ya (antes quedaban los viejos hasta reiniciar).
+                  await reloadSettings();
                   const faltantes = resumen.skipped > 0
                     ? ` Quedaron ${countLabel(resumen.skipped, 'dato', 'datos')} de libros que todavía no están en esta biblioteca: agregá esas carpetas y volvé a importar.`
                     : '';
@@ -233,7 +236,7 @@ export default function SettingsScreen() {
     } catch (error) {
       Alert.alert('No se pudo leer el archivo', error instanceof Error ? error.message : 'Probá de nuevo.');
     }
-  }, [isBusy]);
+  }, [isBusy, reloadSettings]);
 
   const handleClearCache = useCallback(() => {
     Alert.alert(
@@ -263,7 +266,7 @@ export default function SettingsScreen() {
       Alert.alert(
         'Libros restaurados',
         count > 0
-          ? `${count} libro${count === 1 ? '' : 's'} volverán a aparecer al volver al inicio.`
+          ? `${count} libro${count === 1 ? '' : 's'} volverá${count === 1 ? '' : 'n'} a aparecer al volver al inicio.`
           : 'No había libros ocultos.',
       );
     });
@@ -381,15 +384,19 @@ export default function SettingsScreen() {
           subtitle="En PDF y cómics; el centro sigue mostrando y ocultando los controles"
           colors={colors}
           right={<Switch value={settings.tapEdgesTurnPage} onValueChange={(value) => { void updateSettings({ tapEdgesTurnPage: value }); }} {...switchColors} />}
+          last={!areVolumeKeysAvailable()}
         />
-        <Row
-          icon="volume-medium-outline"
-          title="Los botones de volumen pasan de página"
-          subtitle="Sólo con un libro abierto; arriba vuelve, abajo avanza"
-          colors={colors}
-          right={<Switch value={settings.volumeKeysTurnPage} onValueChange={(value) => { void updateSettings({ volumeKeysTurnPage: value }); }} {...switchColors} />}
-          last
-        />
+        {/* Sólo donde el módulo existe: en iOS no se pueden capturar (y Apple lo rechaza). */}
+        {areVolumeKeysAvailable() ? (
+          <Row
+            icon="volume-medium-outline"
+            title="Los botones de volumen pasan de página"
+            subtitle="Sólo con un libro abierto; arriba vuelve, abajo avanza"
+            colors={colors}
+            right={<Switch value={settings.volumeKeysTurnPage} onValueChange={(value) => { void updateSettings({ volumeKeysTurnPage: value }); }} {...switchColors} />}
+            last
+          />
+        ) : null}
       </Section>
 
       <Section title="Pantalla y arranque" colors={colors}>

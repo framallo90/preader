@@ -19,7 +19,12 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.personal.pdfvoicereader"
+      "bundleIdentifier": "com.personal.pdfvoicereader",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
+        "UISupportsDocumentBrowser": true,
+        "LSSupportsOpeningDocumentsInPlace": true
+      }
     },
     "android": {
       "package": "com.personal.pdfvoicereader",

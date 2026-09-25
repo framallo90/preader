@@ -12,6 +12,7 @@ import { chapterRepository } from '../storage/chapterRepository';
 import { noteRepository } from '../storage/noteRepository';
 import { DocumentRef, parsedDocumentRepository } from '../storage/parsedDocumentRepository';
 import { ParsedDocument } from '../types/document';
+import { pageForProgress } from '../utils/pageMap';
 import { positionForPage } from '../utils/progressRemap';
 import { resolveChapters } from '../utils/resolveChapters';
 import { persistBookMetadata } from './bookMetadataService';
@@ -81,11 +82,16 @@ export function preparePdfText(book: DocumentRef, quick: ParsedDocument): void {
       try {
         // Los marcadores y notas puestos sobre una página se re-ubican en el texto real.
         // (El progreso no hace falta tocarlo: guarda su página y se resuelve al abrir.)
-        await noteRepository.relocatePagedNotes(book.id, (page) => positionForPage(located, page).absoluteCharIndex);
+        await noteRepository.relocatePagedNotes(
+          book.id,
+          (page) => positionForPage(located, page).absoluteCharIndex,
+          (page, charIndex) =>
+            located.pdf ? pageForProgress(charIndex, page, located.pdf.pageOffsets, located.fullText.length) === page : false,
+        );
         await parsedDocumentRepository.saveParsedDocument(book, located);
-        if (located.chapters.length > 0) {
-          await chapterRepository.saveChaptersForBook(book.id, located.chapters);
-        }
+        // Siempre, aunque no haya capítulos: si el texto cambió y ya no se
+        // detecta ninguno, los de antes quedaban con offsets viejos.
+        await chapterRepository.saveChaptersForBook(book.id, located.chapters);
         if (built.metadata) await persistBookMetadata(book.id, built.metadata);
       } catch {
         // Se reintenta solo la próxima vez que se abra el libro.

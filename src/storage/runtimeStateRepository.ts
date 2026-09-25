@@ -33,7 +33,20 @@ function parseGuard(value: string): ReaderLoadGuard | null {
   }
 }
 
+// El arranque anterior encontró un guard armado: la app se cerró cargando ese
+// libro. Se recuerda en memoria para que "reabrir el último libro al iniciar"
+// no lo vuelva a abrir solo (era un bucle de cierres sin salida).
+let bootRecovered = false;
+
 export const runtimeStateRepository = {
+  markBootRecovered() {
+    bootRecovered = true;
+  },
+
+  wasBootRecovered() {
+    return bootRecovered;
+  },
+
   async getReaderLoadGuard() {
     const db = await getDatabase();
     const row = await db.getFirstAsync<SettingsRow>(

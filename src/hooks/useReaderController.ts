@@ -167,18 +167,23 @@ export function useReaderController({
       serviceSnapshot.duration > 0 &&
       serviceSnapshot.isPlaying
     ) {
-      const chunkLength = Math.max(
-        serviceSnapshot.chunkEndChar - serviceSnapshot.chunkStartChar,
-        1,
-      );
-      const serviceAbsoluteCharIndex = clamp(
-        serviceSnapshot.chunkStartChar +
-          Math.round((serviceSnapshot.currentTime / serviceSnapshot.duration) * chunkLength),
-        0,
-        document.fullText.length,
-      );
+      // Sobre el provisorio de un PDF no: la posición del audio está medida
+      // sobre el texto real, y aplicada al de relleno caía en su último bloque
+      // (se guardaba "última página, 100 %"). El texto real la toma al llegar.
+      if (!document.pdf?.textPending) {
+        const chunkLength = Math.max(
+          serviceSnapshot.chunkEndChar - serviceSnapshot.chunkStartChar,
+          1,
+        );
+        const serviceAbsoluteCharIndex = clamp(
+          serviceSnapshot.chunkStartChar +
+            Math.round((serviceSnapshot.currentTime / serviceSnapshot.duration) * chunkLength),
+          0,
+          document.fullText.length,
+        );
 
-      void persistAbsoluteChar(serviceAbsoluteCharIndex, true);
+        void persistAbsoluteChar(serviceAbsoluteCharIndex, true);
+      }
       setIsPlaying(serviceSnapshot.isPlaying);
     } else {
       setIsPlaying(false);
@@ -199,6 +204,11 @@ export function useReaderController({
       setPreparationProgress(isCurrentDocument ? snapshot.preparationProgress : 0);
 
       if (!activeDocument || !isCurrentDocument) {
+        // Otro libro (o ninguno) en el reproductor: este lector no está sonando.
+        // Antes se salía sin tocar isPlaying, y si el evento de pausa nativo
+        // llegaba después de descargar el reproductor, quedaba en "sonando":
+        // FAB en pausa y pasar páginas no guardaba progreso.
+        setIsPlaying(false);
         return;
       }
 
@@ -210,6 +220,13 @@ export function useReaderController({
       lastServiceErrorRef.current = snapshot.errorMessage;
 
       setIsPlaying(snapshot.isPlaying);
+
+      // El provisorio de un PDF no es el texto que suena: aplicarle la posición
+      // del audio (medida sobre el texto real) caía en su último bloque y se
+      // guardaba como "última página, 100 %". Se espera al texto real.
+      if (activeDocument.pdf?.textPending) {
+        return;
+      }
 
       if (!snapshot.isLoaded && !snapshot.isPlaying && snapshot.currentTime <= 0) {
         return;
@@ -284,13 +301,20 @@ export function useReaderController({
     }, 'No se pudo iniciar la lectura.');
   }, [runAction]);
 
+  // Parar NO pasa por runAction: si otra acción estaba en vuelo (un play
+  // sintetizando su primer tramo), el stop se descartaba en silencio y la voz
+  // arrancaba igual; el temporizador de sueño "no paraba nunca". pause()
+  // invalida la sesión de ese play, así que parar siempre puede.
   const stop = useCallback(async () => {
-    await runAction(async () => {
+    try {
       await documentAudioPlaybackService.pause();
       await persistAbsoluteChar(absoluteCharIndexRef.current, true);
+    } catch (error) {
+      reportError(error, 'No se pudo detener la lectura.');
+    } finally {
       setIsPlaying(false);
-    }, 'No se pudo detener la lectura.');
-  }, [persistAbsoluteChar, runAction]);
+    }
+  }, [persistAbsoluteChar, reportError]);
 
   const restartFromCurrent = useCallback(async () => {
     await play();
@@ -304,6 +328,11 @@ export function useReaderController({
           return;
         }
 
+        // Sobre el provisorio de un PDF no hay a dónde ir: sus bloques son
+        // "Página N", y el audio que se sintetizaría, también.
+        if (activeDocument.pdf?.textPending) {
+          return;
+        }
         const nextBlockIndex = clamp(blockIndex, 0, activeDocument.blocks.length - 1);
         const absoluteCharIndex = getAbsoluteCharIndex(activeDocument, nextBlockIndex, 0);
 

@@ -22,12 +22,16 @@ export function pageForChar(absoluteChar: number, pageOffsets: number[]): number
   return result;
 }
 
-/** Offset representativo (mitad) del texto de una página. */
+/** Offset donde EMPIEZA el texto de una página. */
 export function charForPage(page: number, pageOffsets: number[], totalLength: number): number {
   const safePage = Math.min(Math.max(page, 0), pageOffsets.length - 1);
-  const start = pageOffsets[safePage] ?? 0;
-  const end = safePage + 1 < pageOffsets.length ? pageOffsets[safePage + 1] : totalLength;
-  return Math.min(totalLength, Math.floor((start + Math.max(end, start)) / 2));
+  // El PRINCIPIO de la página, no el medio: al pasar páginas a mano y tocar
+  // Escuchar, la voz arrancaba a mitad de página, a mitad de oración; un PDF
+  // recién abierto arrancaba a mitad de la página 1; el marcador de página
+  // citaba desde el medio. Las páginas vacías (mismo offset que la siguiente)
+  // las desambigua pageForProgress con la página conocida, que se guarda junto
+  // al progreso.
+  return Math.min(totalLength, pageOffsets[safePage] ?? 0);
 }
 
 /**
