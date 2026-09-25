@@ -267,6 +267,12 @@ export function useReaderController({
       if (!activeDocument) {
         return;
       }
+      // El provisorio de un PDF ("Página 1", "Página 2"…) no es el libro: leerlo
+      // en voz alta corría el progreso una página por segundo.
+      if (activeDocument.pdf?.textPending) {
+        onErrorRef.current?.('El texto del libro todavía se está preparando. Probá en unos segundos.');
+        return;
+      }
 
       await documentAudioPlaybackService.play(
         activeDocument,

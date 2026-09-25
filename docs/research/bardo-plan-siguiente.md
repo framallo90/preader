@@ -869,3 +869,39 @@ Verificado en el emulador, con la build x86_64:
 - Bajar una carpeta en Ajustes: el Inicio cambia el orden de las secciones.
 
 Pendiente en el teléfono de Facu: instalar la build nueva y repetir lo mismo con su carpeta real.
+
+---
+
+## Reabrir un PDF "volvía más adelantado" (2026-09-24)
+
+Facu: "cuando se está escuchando un libro y el usuario cierra la aplicación, con o sin pausar la voz,
+al volver a abrir vuelve más adelantado". Reproducido en el emulador con "Alas de sangre" mirando la
+fila de `reading_progress` en cada paso. Eran dos fallas encadenadas, las dos en la apertura en dos
+tiempos de un PDF con caché (primero el documento provisorio "Página 1, Página 2…", después el texto):
+
+1. **"Escuchar" arrancaba sobre el provisorio.** El efecto que enciende la voz en modo "Escuchar" no
+   esperaba al texto real: la voz leía "Página 80, Página 81…" a una por segundo y el progreso se
+   guardaba con esas coordenadas (`textLength` 6514 en vez de 1.099.428). En 20 segundos la fila iba de
+   la página 80 a la 95 con la pantalla quieta en la 80. Al reabrir: página 96.
+2. **Al llegar el texto real se retomaba en el MEDIO de la página.** `positionForPage` devuelve el
+   medio de la página (a propósito, por las páginas vacías), y el lector la usaba siempre, aunque el
+   progreso guardado tuviera el carácter exacto medido sobre ese mismo texto. Cada reapertura corría
+   la lectura hasta media página, con o sin voz. Encima, durante el provisorio el guardado pisaba la
+   fila exacta con una que sólo sabía la página.
+
+### Qué se hizo
+
+- `positionWhenTextReady` (`progressRemap.ts`, con tests): al llegar el texto manda el salto pendiente
+  si lo hay; si no, la posición exacta guardada cuando cae en la página que se ve; si no, esa página.
+- El lector no guarda progreso mientras el documento es provisorio, salvo que pases a OTRA página.
+- El modo "Escuchar" espera al texto real. Guardas defensivas: el controlador no reproduce un
+  provisorio (avisa que el texto se está preparando) y el servicio de audio no guarda progreso sobre uno.
+- Al pasar de página con la voz parada, si la posición actual ya cae en esa página no se mueve al
+  medio (`scrollToPage` avisa siempre, también en un salto exacto).
+- De paso: un salto (índice, cita, marcador) que llegaba con el provisorio caía en la última página,
+  porque se medía sobre el texto de relleno. Ahora se guarda y se aplica sobre el texto real; mientras
+  tanto se abre en la página que le toca según el mapa de páginas del caché.
+
+Verificado en el emulador, build x86_64, sobre el PDF real: "Escuchar" desde el Inicio avanza sobre el
+texto real (813/123 → 817/70 en 28 s, misma página); cerrar mientras suena y reabrir con "Continuar":
+fila idéntica; retomar la voz, pausar, cerrar y reabrir: fila idéntica.

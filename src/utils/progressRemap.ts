@@ -1,7 +1,7 @@
 import { ParsedDocument } from '../types/document';
 import { ReadingProgress } from '../types/storage';
 import { getAbsoluteCharIndex, getPositionFromAbsoluteChar } from './documentProgress';
-import { charForPage, pageForChar } from './pageMap';
+import { charForPage, pageForChar, pageForProgress } from './pageMap';
 
 /** Posición (bloque, carácter, porcentaje) donde empieza una página. */
 export function positionForPage(document: ParsedDocument, page: number) {
@@ -40,6 +40,36 @@ export function resolveSavedPosition(document: ParsedDocument, progress: Reading
     return positionForPage(document, page);
   }
   return getPositionFromAbsoluteChar(document, Math.round(fraction * document.fullText.length));
+}
+
+/**
+ * Dónde queda la lectura cuando llega el texto definitivo de un PDF que se abrió
+ * con el documento provisorio ("Página 1", "Página 2"…).
+ *
+ * Antes se retomaba SIEMPRE en el medio de la página que se estaba viendo
+ * (`positionForPage`), aunque el progreso guardado tuviera la posición exacta,
+ * medida sobre este mismo texto. Cada reapertura corría la lectura media página:
+ * "vuelve, pero más adelantado". Ahora, en orden:
+ *
+ * 1. Un salto pedido (índice, cita, marcador) manda: se mide sobre el texto real.
+ * 2. Si el progreso guardado se midió sobre este mismo texto y cae en la página
+ *    que se está viendo, se retoma EXACTO ahí.
+ * 3. Si no (pasaste de página mientras el texto se preparaba, el progreso es del
+ *    provisorio, o el libro se re-procesó), se retoma por la página que se ve.
+ */
+export function positionWhenTextReady(
+  ready: ParsedDocument,
+  stored: ReadingProgress | null,
+  currentPage: number,
+  jumpChar: number | null,
+) {
+  if (jumpChar !== null) return getPositionFromAbsoluteChar(ready, jumpChar);
+  if (stored && ready.pdf && stored.textLength === ready.fullText.length) {
+    const exact = resolveSavedPosition(ready, stored);
+    const page = pageForProgress(exact.absoluteCharIndex, stored.page, ready.pdf.pageOffsets, ready.fullText.length);
+    if (page === currentPage) return exact;
+  }
+  return positionForPage(ready, currentPage);
 }
 
 /** Lo que hay que guardar junto al progreso para poder retomarlo en cualquier versión del libro. */

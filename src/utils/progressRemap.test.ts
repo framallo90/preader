@@ -5,7 +5,7 @@ import { getAbsoluteCharIndex } from './documentProgress';
 import { pageForChar } from './pageMap';
 import { buildPagePlaceholders, joinPdfPages, joinPdfPagesAsync } from './pdfPages';
 import { ReadingProgress } from '../types/storage';
-import { pagePercentage, positionForPage, progressFootprint, resolveSavedPosition } from './progressRemap';
+import { pagePercentage, positionForPage, positionWhenTextReady, progressFootprint, resolveSavedPosition } from './progressRemap';
 import { buildTextBlocks } from './textBlocks';
 
 function pagedDocument(fullText: string, pageOffsets: number[], hasText: boolean): ParsedDocument {
@@ -107,6 +107,38 @@ describe('resolveSavedPosition', () => {
   it('sin progreso: principio del libro', () => {
     const { final } = quickAndFinal();
     expect(resolveSavedPosition(final, null).absoluteCharIndex).toBe(0);
+  });
+});
+
+describe('positionWhenTextReady', () => {
+  it('mismo texto y misma página: retoma en el carácter EXACTO, no en el medio de la página', () => {
+    const { final } = quickAndFinal();
+    const saved = { ...progressAt(final, 2), charIndex: 3 };
+    const at = positionWhenTextReady(final, saved, 2, null);
+    expect(at.blockIndex).toBe(saved.blockIndex);
+    expect(at.charIndex).toBe(3);
+    expect(at.absoluteCharIndex).not.toBe(positionForPage(final, 2).absoluteCharIndex);
+  });
+
+  it('mismo texto, pero el usuario pasó a otra página mientras esperaba: retoma en la que ve', () => {
+    const { final } = quickAndFinal();
+    expect(pageOf(final, positionWhenTextReady(final, progressAt(final, 2), 4, null))).toBe(4);
+  });
+
+  it('progreso medido sobre el provisorio: retoma por la página que se ve', () => {
+    const { quick, final } = quickAndFinal();
+    expect(pageOf(final, positionWhenTextReady(final, progressAt(quick, 3), 3, null))).toBe(3);
+  });
+
+  it('un salto pendiente manda sobre el progreso guardado', () => {
+    const { final } = quickAndFinal();
+    const target = positionForPage(final, 4).absoluteCharIndex;
+    expect(positionWhenTextReady(final, progressAt(final, 1), 1, target).absoluteCharIndex).toBe(target);
+  });
+
+  it('sin progreso: la página que se ve', () => {
+    const { final } = quickAndFinal();
+    expect(pageOf(final, positionWhenTextReady(final, null, 2, null))).toBe(2);
   });
 });
 

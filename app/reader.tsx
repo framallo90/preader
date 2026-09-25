@@ -48,7 +48,7 @@ import { parsedDocumentRepository } from '../src/storage/parsedDocumentRepositor
 import { runtimeStateRepository } from '../src/storage/runtimeStateRepository';
 import { AUTO_SCROLL_SPEEDS, Book, BookNote, MAX_TEXT_MARGIN, MIN_TEXT_MARGIN, NoteType, ReadingProgress, ReadingTheme, TEXT_MARGIN_STEP } from '../src/types/storage';
 import { ParsedDocument, TextBlock } from '../src/types/document';
-import { pagePercentage, positionForPage, resolveSavedPosition } from '../src/utils/progressRemap';
+import { pagePercentage, positionForPage, positionWhenTextReady, resolveSavedPosition } from '../src/utils/progressRemap';
 import { buildPagePlaceholders } from '../src/utils/pdfPages';
 import { buildTextBlocks } from '../src/utils/textBlocks';
 import { resolveChapters } from '../src/utils/resolveChapters';
@@ -199,6 +199,14 @@ export default function ReaderScreen() {
   // "Escuchar" pedido desde afuera (ficha del libro) cuando el lector todavía
   // no estaba montado: se arranca la voz apenas el documento esté listo.
   const pendingListenRef = useRef(false);
+  // El progreso tal como estaba en la base al abrir, medido sobre el texto real.
+  // Un PDF abre con un documento PROVISORIO ("Página 1", "Página 2"…): esa
+  // posición exacta se retoma recién cuando llega el texto definitivo, y
+  // mientras tanto no se pisa.
+  const storedProgressRef = useRef<ReadingProgress | null>(null);
+  // Salto pedido (índice, cita, marcador) que llegó con el provisorio: se aplica
+  // sobre el texto real cuando está.
+  const pendingJumpCharRef = useRef<number | null>(null);
   // Cómo se va a leer este PDF, leído al abrir (el efecto de carga no depende de
   // los ajustes: cambiar el modo no tiene que recargar el libro).
   const pdfAsTextRef = useRef(settings.pdfAsText);
@@ -244,6 +252,8 @@ export default function ReaderScreen() {
         // guardar progreso: si se leyera después, siempre diría "recién", y el
         // recordatorio de "dónde quedaste" no aparecería nunca.
         leftOffAtRef.current = progress?.updatedAt ?? null;
+        storedProgressRef.current = progress;
+        pendingJumpCharRef.current = null;
         void bookRepository.touchBook(book.id);
         // Título disponible ya durante la carga (para el header y para saber qué se abre).
         if (isMounted) setDocumentRecord(book);
@@ -253,7 +263,7 @@ export default function ReaderScreen() {
         // el progreso guardado.
         // El pedido pendiente trae posición y, a veces, "arrancá escuchando".
         // Se consume UNA sola vez (consumirlo dos veces perdía el segundo dato).
-        const withPendingJump = (doc: ParsedDocument, stored: ReadingProgress | null): ReadingProgress | null => {
+        const withPendingJump = (doc: ParsedDocument, stored: ReadingProgress | null, realPageOffsets?: number[]): ReadingProgress | null => {
           const request = readerJumpStore.consumeRequest(book.id);
           if (request?.listen) pendingListenRef.current = true;
           const jump = request?.charIndex ?? null;
@@ -264,14 +274,21 @@ export default function ReaderScreen() {
             const resumed = resolveSavedPosition(doc, stored);
             return { ...stored, blockIndex: resumed.blockIndex, charIndex: resumed.charIndex, percentage: resumed.percentage };
           }
-          const pos = getPositionFromAbsoluteChar(doc, jump);
+          // El salto se mide sobre el texto REAL. En el provisorio sus offsets no
+          // sirven (caía en la última página): se guarda para aplicarlo cuando
+          // llegue el texto y, mientras tanto, se abre en la página que le toca,
+          // que el mapa de páginas del caché ya conoce.
+          const provisional = Boolean(doc.pdf?.textPending);
+          if (provisional) pendingJumpCharRef.current = jump;
+          const jumpPage = provisional && realPageOffsets ? pageForChar(jump, realPageOffsets) : null;
+          const pos = jumpPage !== null ? positionForPage(doc, jumpPage) : getPositionFromAbsoluteChar(doc, jump);
           return {
             bookId: book.id,
             chapterId: null,
             blockIndex: pos.blockIndex,
             charIndex: pos.charIndex,
             percentage: pos.percentage,
-            page: null,
+            page: jumpPage,
             textLength: doc.fullText.length,
             updatedAt: new Date().toISOString(),
           };
@@ -302,7 +319,7 @@ export default function ReaderScreen() {
               // texto provisorio: `textPending` avisa que todavía no es el bueno.
               pdf: { ...cachedPdf, pageOffsets: placeholders.pageOffsets, textPending: true },
             };
-            const startAt = withPendingJump(quickDocument, progress);
+            const startAt = withPendingJump(quickDocument, progress, cachedPdf.pageOffsets);
             // La página de arranque se fija YA, no en el próximo render: si el
             // texto definitivo llega antes de ese render (con el caché caliente
             // pasa), su aviso pregunta "¿en qué página estás?" y la respuesta
@@ -426,25 +443,37 @@ export default function ReaderScreen() {
     return () => { isMounted = false; };
   }, [documentId]);
 
-  // El texto del PDF terminó de prepararse: entra el documento definitivo, parado
-  // en la MISMA página que se está leyendo (los offsets del provisorio no sirven).
+  // El texto del PDF terminó de prepararse: entra el documento definitivo. Dónde
+  // queda parado lo decide positionWhenTextReady: el salto pendiente si lo hay;
+  // si no, la posición EXACTA guardada cuando cae en la página que se está
+  // viendo; si no, esa página. Antes era siempre el medio de la página que se
+  // veía, y cada reapertura corría la lectura media página adelante.
   useEffect(() => {
     if (!documentId) return undefined;
     const offReady = subscribePdfTextReady((bookId, ready) => {
       if (bookId !== documentId) return;
-      const position = positionForPage(ready, currentPdfPageRef.current);
+      const jump = pendingJumpCharRef.current;
+      pendingJumpCharRef.current = null;
+      const position = positionWhenTextReady(ready, storedProgressRef.current, currentPdfPageRef.current, jump);
+      const page = ready.pdf
+        ? pageForProgress(position.absoluteCharIndex, currentPdfPageRef.current, ready.pdf.pageOffsets, ready.fullText.length)
+        : currentPdfPageRef.current;
+      currentPdfPageRef.current = page;
       setSavedProgress({
         bookId,
         chapterId: null,
         blockIndex: position.blockIndex,
         charIndex: position.charIndex,
         percentage: position.percentage,
-        page: currentPdfPageRef.current,
+        page,
         textLength: ready.fullText.length,
         updatedAt: new Date().toISOString(),
       });
       setParsedDocument(ready);
       setTextPrepPercent(null);
+      // Un salto que llegó con el provisorio recién ahora tiene página cierta.
+      // Después del re-render: así el aviso de página ya ve la posición nueva.
+      if (jump !== null) setTimeout(() => pdfListRef.current?.scrollToPage(page), 50);
       void loadNotesRef.current();
     });
     const offProgress = subscribePdfTextProgress(({ bookId, done, total }) => {
@@ -466,9 +495,31 @@ export default function ReaderScreen() {
       textLength: number;
     }) => {
       if (!documentId) return;
+      const current = parsedDocumentRef.current;
+      if (current?.pdf?.textPending) {
+        // Documento provisorio: sus offsets no son los del libro. Guardar acá
+        // pisaba la posición exacta que ya estaba en la base con una que sólo
+        // sabe la página, y al reabrir se retomaba en el medio de esa página
+        // ("vuelve más adelantado"). Se guarda sólo si pasaste a OTRA página
+        // mientras el texto se prepara: ahí la página nueva es lo que vale.
+        const page = pageForProgress(snapshot.absoluteCharIndex, currentPdfPageRef.current, current.pdf.pageOffsets, current.fullText.length);
+        if (page === (storedProgressRef.current?.page ?? null)) return;
+        const moved: ReadingProgress = {
+          bookId: documentId,
+          chapterId: null,
+          blockIndex: snapshot.blockIndex,
+          charIndex: snapshot.charIndex,
+          percentage: pagePercentage(page, current.pdf.pageCount),
+          page,
+          textLength: snapshot.textLength,
+          updatedAt: new Date().toISOString(),
+        };
+        storedProgressRef.current = moved;
+        await bookProgressRepository.saveProgress(moved);
+        return;
+      }
       // En un libro por páginas se guarda la página que se está VIENDO (si es
       // compatible con la posición): el texto solo no distingue páginas sin texto.
-      const current = parsedDocumentRef.current;
       const page =
         current?.pdf && current.fullText.length === snapshot.textLength
           ? pageForProgress(snapshot.absoluteCharIndex, currentPdfPageRef.current, current.pdf.pageOffsets, current.fullText.length)
@@ -562,15 +613,17 @@ export default function ReaderScreen() {
 
 
   // "Escuchar" desde el Home: arranca la voz solo (una vez, al estar cargado).
+  // Con el documento provisorio de un PDF se ESPERA al texto real: si no, la voz
+  // leía "Página 80, Página 81…" y el progreso se iba páginas adelante.
   const autoListenRef = useRef(false);
   useEffect(() => {
     const wantsListen = mode === 'listen' || pendingListenRef.current;
-    if (!wantsListen || autoListenRef.current || !parsedDocument || isLoading || !canNarrate) return;
+    if (!wantsListen || autoListenRef.current || !parsedDocument || isLoading || !canNarrate || isTextPending) return;
     pendingListenRef.current = false;
     autoListenRef.current = true;
     void reader.play();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [mode, parsedDocument, isLoading]);
+  }, [mode, parsedDocument, isLoading, isTextPending]);
 
   // Página inicial: donde quedó la lectura (mapeo exacto por pageOffsets).
   const initialPdfPage = useMemo(() => {
@@ -620,6 +673,11 @@ export default function ReaderScreen() {
       setPdfPageForUi(pageIndex);
       if (isPlayingRef.current) return;
       if (!parsedDocument || !pageInfo || pageInfo.pageCount <= 0) return;
+      // Si la posición actual YA cae en esta página, no se toca: el aviso viene
+      // de acomodarse o de un salto exacto (scrollToPage avisa siempre), no de
+      // pasar de página. Moverla al medio de la página perdía el carácter
+      // exacto, y al reabrir "volvía más adelantado".
+      if (pageForProgress(absoluteCharRef.current, pageIndex, pageInfo.pageOffsets, parsedDocument.fullText.length) === pageIndex) return;
       const abs = charForPage(pageIndex, pageInfo.pageOffsets, parsedDocument.fullText.length);
       const pos = getPositionFromAbsoluteChar(parsedDocument, abs);
       void readerRef.current.syncPosition(pos.blockIndex, pos.charIndex);

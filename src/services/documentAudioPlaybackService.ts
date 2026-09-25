@@ -291,6 +291,9 @@ class DocumentAudioPlaybackService {
     const chunk = this.getActiveChunk();
 
     if (!doc || !chunk || !status.isLoaded || !status.duration || doc.fullText.length === 0) return;
+    // Sobre el provisorio de un PDF no hay progreso que valga: sus offsets no
+    // son los del libro y pisarían la posición real guardada.
+    if (doc.pdf?.textPending) return;
 
     const absoluteCharIndex = status.didJustFinish
       ? this.activeChunkIndex >= this.activeChunks.length - 1
