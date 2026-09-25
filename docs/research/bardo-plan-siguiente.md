@@ -1161,6 +1161,11 @@ lo delató `apkanalyzer dex code --class expo.modules.audio.service.AudioControl
 `"expo": {"autolinking": {"android": {"buildFromSource": ["expo-audio"]}}}` en `package.json`, y ahora
 está.
 
+Verificado en el emulador con la build parcheada: temporizador de 10 minutos con la pantalla apagada
+(`KEYCODE_SLEEP`): a los 10,5 minutos el reproductor está en pausa y la posición dejó de avanzar;
+deslizar la app de recientes mientras suena: la tarea desaparece y la voz sigue; cerrar la app del
+todo, reabrir y mandar PLAY de auricular (`input keyevent 126`): reproduce.
+
 ### Regresiones de lo cambiado el 24 y el 25 (corregidas)
 
 - La posición del audio en pausa pisaba la lectura manual al reabrir un PDF con caché: ahora el audio
