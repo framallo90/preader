@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { compareSubfolders, folderMatchDepth, formatSubfolderLabel, getSubfolderPath } from './libraryFolders';
+import { compareSubfolders, folderMatchDepth, formatSubfolderLabel, getSubfolderPath, moveLibraryFolder } from './libraryFolders';
 
 const tree = (ruta: string) => `content://com.android.externalstorage.documents/tree/${encodeURIComponent(`primary:${ruta}`)}`;
 const docEn = (raiz: string, ruta: string) =>
@@ -113,5 +113,31 @@ describe('compareSubfolders', () => {
 
   it('no distingue tildes ni mayúsculas', () => {
     expect(compareSubfolders('árbol', 'Arbol')).toBe(0);
+  });
+});
+
+describe('moveLibraryFolder', () => {
+  const carpetas = ['a', 'b', 'c'];
+
+  it('sube una carpeta un lugar', () => {
+    expect(moveLibraryFolder(carpetas, 'b', -1)).toEqual(['b', 'a', 'c']);
+  });
+
+  it('baja una carpeta un lugar', () => {
+    expect(moveLibraryFolder(carpetas, 'b', 1)).toEqual(['a', 'c', 'b']);
+  });
+
+  it('la primera no sube ni la última baja: devuelve la misma lista', () => {
+    expect(moveLibraryFolder(carpetas, 'a', -1)).toBe(carpetas);
+    expect(moveLibraryFolder(carpetas, 'c', 1)).toBe(carpetas);
+  });
+
+  it('una carpeta que no está no cambia nada', () => {
+    expect(moveLibraryFolder(carpetas, 'x', 1)).toBe(carpetas);
+  });
+
+  it('no toca la lista original', () => {
+    moveLibraryFolder(carpetas, 'a', 1);
+    expect(carpetas).toEqual(['a', 'b', 'c']);
   });
 });

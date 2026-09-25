@@ -825,3 +825,47 @@ de verdad ("Alas de sangre", 552 páginas) aparecieron tres cosas que en el PDF 
 
 Verificado en el emulador sobre el libro real, en tema cálido y en día: la palabra que suena queda
 marcada exacta, también al final de la página.
+
+---
+
+## Las carpetas escaneadas: refresco y orden (2026-09-24)
+
+Facu, desde el teléfono: "cuando se carga una carpeta y se le agregan libros, la carpeta no se
+actualiza en la app; ni borrándola y cargándola de nuevo se ven los libros", y "falta poder organizar
+las carpetas una vez cargadas".
+
+### Por qué no aparecían
+
+1. **El escaneo automático corría sólo al volver al Inicio, y como mucho cada dos minutos.** Copiás
+   libros a la carpeta con el explorador de archivos, volvés a Bardo, y el Inicio no mira la carpeta:
+   nada le avisa que hay archivos nuevos. Reproducido en el emulador: archivo nuevo en la carpeta,
+   volver a la app, "100 libros"; aparecía recién al cerrar la app del todo.
+2. **Quitar la única carpeta y volver a agregarla tampoco escaneaba.** Con la lista vacía el Inicio
+   salía antes de anotar la clave de "qué carpetas escaneé"; al volver a agregar la misma carpeta la
+   clave era la de siempre y el intervalo se comía el escaneo. Es exactamente el "ni borrándola y
+   cargándola de nuevo".
+3. **No había forma manual de escanear**, ni aviso cuando una carpeta autorizada no se podía leer
+   (permiso perdido, tarjeta que no está): el escaneo lo mandaba al log y nada más.
+
+### Qué se hizo
+
+- **Volver a la app desde otra escanea siempre** (`AppState`). Es el caso de todos los días: copiar
+  libros y volver. Barato: una consulta nativa por carpeta, y los archivos conocidos se saltean por URI.
+- **Tirar para abajo en la biblioteca escanea a pedido y dice qué pasó:** "1 libro nuevo o movido",
+  "Sin novedades", o "No se pudo leer <carpeta>. Quitala en Ajustes y volvé a agregarla".
+  `scanLibraryFolders` ahora devuelve `{ changed, unreadable }` en vez de un número.
+- **La clave de carpetas se anota siempre**, también con la lista vacía: quitar y volver a agregar
+  escanea ya.
+- **Ajustes: flechas para subir y bajar cada carpeta.** El Inicio muestra las secciones en ese orden
+  (ya lo hacía: `librarySections` recorre `settings.libraryFolders`). `moveLibraryFolder` en
+  `libraryFolders.ts`, con tests. Las flechas sólo aparecen con más de una carpeta.
+
+Verificado en el emulador, con la build x86_64:
+
+- Archivo nuevo en la carpeta + volver del fondo: aparece al instante (100 → 101).
+- Tirar para abajo con un archivo nuevo: aviso "1 libro nuevo o movido." y 102; tirar de nuevo:
+  "Sin novedades".
+- Una sola carpeta: quitarla, agregar un archivo, volver a agregar la MISMA carpeta: aparece (103 → 104).
+- Bajar una carpeta en Ajustes: el Inicio cambia el orden de las secciones.
+
+Pendiente en el teléfono de Facu: instalar la build nueva y repetir lo mismo con su carpeta real.

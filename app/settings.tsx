@@ -21,6 +21,7 @@ import { documentAudioPlaybackService } from '../src/services/documentAudioPlayb
 import { clampRounded } from '../src/utils/math';
 import { MAX_RATE, MIN_RATE, decreaseRate, formatRate, increaseRate } from '../src/utils/playbackRate';
 import { MAX_TEXT_MARGIN, MIN_TEXT_MARGIN, ReadingTheme, TEXT_MARGIN_STEP } from '../src/types/storage';
+import { moveLibraryFolder } from '../src/utils/libraryFolders';
 import { getSafFolderPath } from '../src/utils/safPaths';
 import { countLabel } from '../src/utils/formatters';
 import { VoiceOption, buildVoiceOptions, primaryLanguage } from '../src/utils/voices';
@@ -112,6 +113,15 @@ export default function SettingsScreen() {
       await updateSettings({
         libraryFolders: settings.libraryFolders.filter((item) => item !== folderUri),
       });
+    },
+    [settings.libraryFolders, updateSettings],
+  );
+
+  // Subir o bajar una carpeta: el Inicio las muestra en este mismo orden.
+  const handleMoveLibraryFolder = useCallback(
+    async (folderUri: string, delta: -1 | 1) => {
+      const moved = moveLibraryFolder(settings.libraryFolders, folderUri, delta);
+      if (moved !== settings.libraryFolders) await updateSettings({ libraryFolders: moved });
     },
     [settings.libraryFolders, updateSettings],
   );
@@ -471,7 +481,7 @@ export default function SettingsScreen() {
       <Section
         title="Biblioteca"
         colors={colors}
-        hint="Los libros de las carpetas elegidas aparecen solos en el Inicio, sin copiarlos."
+        hint="Los libros de las carpetas elegidas aparecen solos en el Inicio, en este mismo orden, sin copiarlos. Si agregaste libros y no aparecen, tirá para abajo en el Inicio."
       >
         <Row
           icon="folder-open-outline"
@@ -480,12 +490,23 @@ export default function SettingsScreen() {
           colors={colors}
           right={<AppButton label="Agregar" icon="add" onPress={() => { void handleAddLibraryFolder(); }} variant="secondary" colors={colors} compact />}
         />
-        {settings.libraryFolders.map((folderUri) => (
+        {settings.libraryFolders.map((folderUri, index) => (
           <Row
             key={folderUri}
             title={getSafFolderPath(folderUri)?.replace(/^primary:/, '') ?? getDisplayNameFromSafUri(folderUri)}
             colors={colors}
-            right={<IconButton name="close-circle-outline" label="Quitar carpeta" onPress={() => { void handleRemoveLibraryFolder(folderUri); }} colors={colors} />}
+            right={
+              <View style={styles.rowActions}>
+                {/* Las flechas sólo tienen sentido con más de una carpeta. */}
+                {settings.libraryFolders.length > 1 ? (
+                  <>
+                    <IconButton name="chevron-up-outline" label="Subir carpeta" onPress={() => { void handleMoveLibraryFolder(folderUri, -1); }} disabled={index === 0} colors={colors} />
+                    <IconButton name="chevron-down-outline" label="Bajar carpeta" onPress={() => { void handleMoveLibraryFolder(folderUri, 1); }} disabled={index === settings.libraryFolders.length - 1} colors={colors} />
+                  </>
+                ) : null}
+                <IconButton name="close-circle-outline" label="Quitar carpeta" onPress={() => { void handleRemoveLibraryFolder(folderUri); }} colors={colors} />
+              </View>
+            }
           />
         ))}
         <Row
@@ -617,4 +638,5 @@ const styles = StyleSheet.create({
     gap: 22,
   },
   chipRow: { flexDirection: 'row', gap: 6 },
+  rowActions: { flexDirection: 'row', alignItems: 'center' },
 });

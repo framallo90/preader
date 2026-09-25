@@ -1,6 +1,22 @@
 import { getSafFolderPath } from './safPaths';
 
 /**
+ * Sube (-1) o baja (+1) una carpeta un lugar en la lista de carpetas
+ * escaneadas. El Inicio muestra las carpetas en este mismo orden, así que esto
+ * es lo que las acomoda. Si no se puede mover (ya está en la punta, o no está
+ * en la lista) devuelve la MISMA lista, para que quien llama no guarde de más.
+ */
+export function moveLibraryFolder(folders: string[], folderUri: string, delta: -1 | 1): string[] {
+  const from = folders.indexOf(folderUri);
+  const to = from + delta;
+  if (from < 0 || to < 0 || to >= folders.length) return folders;
+  const moved = [...folders];
+  moved.splice(from, 1);
+  moved.splice(to, 0, folderUri);
+  return moved;
+}
+
+/**
  * En qué subcarpeta cae un libro, dentro de la carpeta que escaneaste.
  *
  * El escaneo entra en las subcarpetas pero guarda sólo el nombre del archivo,

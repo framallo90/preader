@@ -1,7 +1,7 @@
 import { Stack, router, useFocusEffect } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Image } from 'expo-image';
-import { ActivityIndicator, Alert, FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, AppState, FlatList, Modal, Pressable, RefreshControl, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { AppButton } from '../src/components/AppButton';
 import { BookGridItem } from '../src/components/BookGridItem';
@@ -16,7 +16,7 @@ import {
   DocumentPlaybackSnapshot,
 } from '../src/services/documentAudioPlaybackService';
 import { removeBookCover } from '../src/services/bookMetadataService';
-import { addIgnoredBook, clearIgnoredBook, getDisplayNameFromSafUri, getIgnoredBooksCount, requestLibraryFolder, restoreIgnoredBooks, scanLibraryFolders } from '../src/services/libraryScanService';
+import { ScanResult, addIgnoredBook, clearIgnoredBook, getDisplayNameFromSafUri, getIgnoredBooksCount, requestLibraryFolder, restoreIgnoredBooks, scanLibraryFolders } from '../src/services/libraryScanService';
 import { buildOrderEntries, compareBooksManually, compareBooksNaturally, getDisplayTitle } from '../src/utils/bookDisplay';
 import { compareSubfolders, folderMatchDepth, formatSubfolderLabel, getSubfolderPath } from '../src/utils/libraryFolders';
 import { foldText } from '../src/utils/textSearch';
@@ -37,8 +37,23 @@ import { collectionRepository } from '../src/storage/collectionRepository';
 import { parsedDocumentRepository } from '../src/storage/parsedDocumentRepository';
 import { Book, BookStatus, Collection, LibrarySort } from '../src/types/storage';
 
-// Un escaneo automático como mucho cada tanto; "Restaurar ocultos" fuerza uno.
+// Al volver al Inicio se escanea como mucho cada tanto. Volver a la app desde
+// otra, tirar para abajo, cambiar las carpetas y "Restaurar ocultos" escanean
+// siempre, sin esperar.
 const SCAN_MIN_INTERVAL_MS = 2 * 60 * 1000;
+// Cuánto queda a la vista el resultado de tirar para abajo.
+const SCAN_NOTICE_MS = 5000;
+
+/** Qué decir después de escanear a pedido. */
+function describeScan(result: ScanResult | null): string {
+  if (!result) return 'No se pudo escanear. Probá de nuevo.';
+  if (result.unreadable.length > 0) {
+    const nombres = result.unreadable.map(getDisplayNameFromSafUri).join(', ');
+    return `No se pudo leer ${nombres}. Quitala en Ajustes y volvé a agregarla.`;
+  }
+  if (result.changed === 0) return 'Sin novedades: no hay libros nuevos en las carpetas.';
+  return result.changed === 1 ? '1 libro nuevo o movido.' : `${result.changed} libros nuevos o movidos.`;
+}
 
 const SORT_OPTIONS: { value: LibrarySort; label: string; description: string; icon: IconName }[] = [
   { value: 'recent', label: 'Recientes', description: 'Lo último que abriste, primero.', icon: 'time-outline' },
@@ -118,6 +133,10 @@ export default function HomeScreen() {
   const [isLoading, setIsLoading] = useState(true);
   const [isImporting, setIsImporting] = useState(false);
   const [ignoredCount, setIgnoredCount] = useState(0);
+  // Tirar para abajo: el spinner del sistema y, al terminar, una línea con lo
+  // que pasó (cuántos libros nuevos, o qué carpeta no se pudo leer).
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [scanNotice, setScanNotice] = useState<string | null>(null);
   // Carpetas de biblioteca como secciones expandibles + selector Leer/Escuchar.
   const [expandedFolders, setExpandedFolders] = useState<Record<string, boolean>>({});
   const [pendingBook, setPendingBook] = useState<Book | null>(null);
@@ -189,29 +208,79 @@ export default function HomeScreen() {
   // agregar una en Ajustes), el escaneo NO espera el intervalo: si no, la
   // carpeta nueva no mostraba un solo libro hasta dos minutos después.
   const lastScanKeyRef = useRef('');
+  const scanKey = `${settings.libraryFolders.join('|')}##${settings.excludedFolders.join('|')}`;
+
+  // Escanea AHORA, sin esperar el intervalo, y recarga la lista si algo cambió.
+  // Devuelve el resultado para quien quiera contarlo (tirar para abajo); null
+  // si no hay carpetas o el escaneo falló. El escaneo nunca debe romper el Home.
+  const rescan = useCallback(async (): Promise<ScanResult | null> => {
+    lastScanAtRef.current = Date.now();
+    lastScanKeyRef.current = scanKey;
+    if (settings.libraryFolders.length === 0) return null;
+    try {
+      const result = await scanLibraryFolders(settings.libraryFolders, settings.excludedFolders);
+      if (result.changed > 0) await loadRecentDocuments();
+      return result;
+    } catch {
+      return null;
+    }
+  }, [scanKey, settings.libraryFolders, settings.excludedFolders, loadRecentDocuments]);
+
   useFocusEffect(
     useCallback(() => {
       let active = true;
       void (async () => {
         await loadRecentDocuments();
-        if (!active || settings.libraryFolders.length === 0) return;
-        const scanKey = `${settings.libraryFolders.join('|')}##${settings.excludedFolders.join('|')}`;
+        if (!active) return;
+        // Con las mismas carpetas de la última vez se respeta el intervalo. Si
+        // cambiaron, se escanea ya, y eso incluye haberse quedado SIN carpetas:
+        // antes, con la lista vacía se salía sin anotar la clave, y al quitar
+        // la única carpeta y volver a agregarla la clave era la de siempre, el
+        // intervalo se comía el escaneo, y los libros nuevos no aparecían "ni
+        // borrando la carpeta y cargándola de nuevo".
         const sameFolders = scanKey === lastScanKeyRef.current;
         if (sameFolders && Date.now() - lastScanAtRef.current < SCAN_MIN_INTERVAL_MS) return;
-        lastScanAtRef.current = Date.now();
-        lastScanKeyRef.current = scanKey;
-        try {
-          const cambios = await scanLibraryFolders(settings.libraryFolders, settings.excludedFolders);
-          if (active && cambios > 0) await loadRecentDocuments();
-        } catch {
-          // El escaneo nunca debe romper el Home.
-        }
+        await rescan();
       })();
       return () => {
         active = false;
       };
-    }, [loadRecentDocuments, settings.libraryFolders, settings.excludedFolders]),
+    }, [loadRecentDocuments, scanKey, rescan]),
   );
+
+  // Volver a Bardo desde otra app escanea siempre. Es el caso de todos los días:
+  // copiás libros a la carpeta con el explorador de archivos y volvés; el Inicio
+  // no se entera solo de que hay archivos nuevos, hay que mirar la carpeta. Es
+  // barato: una consulta nativa por carpeta, y los archivos ya conocidos se
+  // saltean por URI.
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active') void rescan();
+    });
+    return () => subscription.remove();
+  }, [rescan]);
+
+  // Tirar para abajo: escanear a pedido y decir qué pasó. Es la salida a mano
+  // cuando "no aparecen" los libros que acabás de agregar.
+  const handleRefresh = useCallback(async () => {
+    setIsRefreshing(true);
+    try {
+      if (settings.libraryFolders.length === 0) {
+        await loadRecentDocuments();
+        setScanNotice('No hay carpetas para escanear. Agregá una con el botón +.');
+        return;
+      }
+      setScanNotice(describeScan(await rescan()));
+    } finally {
+      setIsRefreshing(false);
+    }
+  }, [settings.libraryFolders.length, loadRecentDocuments, rescan]);
+
+  useEffect(() => {
+    if (!scanNotice) return;
+    const timer = setTimeout(() => setScanNotice(null), SCAN_NOTICE_MS);
+    return () => clearTimeout(timer);
+  }, [scanNotice]);
 
   const openReader = useCallback((documentId: string, replace = false, mode?: 'read' | 'listen') => {
     console.log('[home] openReader', documentId.slice(0, 12), mode ?? '(sin modo)');
@@ -227,16 +296,13 @@ export default function HomeScreen() {
   // no serviría de nada.
   const handleOpenBook = useCallback((book: Book) => openReader(book.id), [openReader]);
 
-  // Restaurar ocultos + re-escanear + refrescar, todo de una.
+  // Restaurar ocultos + re-escanear + refrescar, todo de una. Se recarga aunque
+  // el escaneo no haya cambiado nada: el contador de ocultos sí cambió.
   const handleRestoreHidden = useCallback(async () => {
     await restoreIgnoredBooks();
-    lastScanAtRef.current = Date.now();
-    lastScanKeyRef.current = `${settings.libraryFolders.join('|')}##${settings.excludedFolders.join('|')}`;
-    if (settings.libraryFolders.length > 0) {
-      try { await scanLibraryFolders(settings.libraryFolders, settings.excludedFolders); } catch { /* no romper el Home */ }
-    }
+    await rescan();
     await loadRecentDocuments();
-  }, [settings.libraryFolders, settings.excludedFolders, loadRecentDocuments]);
+  }, [rescan, loadRecentDocuments]);
 
   // Filtro por colección: los ids de sus libros se cargan al elegirla.
   const isCollectionFilter = !BASE_FILTERS.some((filter) => filter.value === libraryFilter);
@@ -772,6 +838,15 @@ export default function HomeScreen() {
         showsVerticalScrollIndicator={false}
         keyboardShouldPersistTaps="handled"
         contentContainerStyle={styles.listContent}
+        refreshControl={
+          <RefreshControl
+            refreshing={isRefreshing}
+            onRefresh={() => { void handleRefresh(); }}
+            colors={[colors.primary]}
+            progressBackgroundColor={colors.surface}
+            tintColor={colors.primary}
+          />
+        }
         // Sin getItemLayout a propósito: el título ocupa una o dos líneas, así
         // que la altura de una fila no es fija. La virtualización igual funciona;
         // lo único que se pierde es saltar a un índice, que acá no se usa.
@@ -949,6 +1024,13 @@ export default function HomeScreen() {
                     ? 'Probá con otra palabra del título, el autor o el nombre del archivo.'
                     : 'Mantené apretado un libro y elegí "Sobre este libro" para sumarlo.'}
                 </Text>
+              </View>
+            ) : null}
+
+            {scanNotice ? (
+              <View style={[styles.noticeBanner, { backgroundColor: colors.surfaceMuted, borderColor: colors.border }]}>
+                <Icon name="refresh-outline" size={18} color={colors.textMuted} />
+                <Text style={[styles.hiddenBannerText, { color: colors.textMuted }]}>{scanNotice}</Text>
               </View>
             ) : null}
 
@@ -1276,6 +1358,7 @@ const styles = StyleSheet.create({
   grid: { flexDirection: 'row', flexWrap: 'wrap', gap: 12, rowGap: 16 },
   hiddenBanner: { flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderRadius: radius.md, paddingLeft: 14, paddingRight: 6, paddingVertical: 6 },
   hiddenBannerText: { flex: 1, fontSize: 13 },
+  noticeBanner: { flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderRadius: radius.md, paddingHorizontal: 14, paddingVertical: 10 },
   folderHeader: { flexDirection: 'row', alignItems: 'center', gap: 10, borderWidth: 1, borderRadius: radius.md, paddingHorizontal: 14, paddingVertical: 12 },
   folderName: { flex: 1, fontSize: 15, fontWeight: '700' },
   // La subcarpeta va un escalón más abajo que la carpeta: sin recuadro, con

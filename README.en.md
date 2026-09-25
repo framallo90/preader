@@ -138,7 +138,7 @@ The `android/` folder is not in the repository: it is generated with `expo prebu
 ## Quality
 
 - Strict TypeScript and ESLint with no warnings.
-- 408 Vitest tests over pure functions: text partitioning, page mapping, progress, chapters, stats and backup. Every file in `src/utils/` has its `.test.ts` next to it.
+- 413 Vitest tests over pure functions: text partitioning, page mapping, progress, chapters, stats and backup. Every file in `src/utils/` has its `.test.ts` next to it.
 - A JVM test for the HTML-to-text converter in the `bardo-archive` module.
 - Schema migrations versioned with `PRAGMA user_version`; a failed migration does not bump the version and is retried on the next start.
 - Performance measured before and after every large change (cold start and memory with the reader narrating).

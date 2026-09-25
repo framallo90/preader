@@ -188,16 +188,29 @@ async function listFolder(folderUri: string): Promise<DocumentTreeEntry[]> {
   return entries;
 }
 
-let scanInFlight: Promise<number> | null = null;
+let scanInFlight: Promise<ScanResult> | null = null;
 let scanInFlightKey = '';
 
-/**
- * Escanea las carpetas y devuelve CUÁNTO CAMBIÓ: libros nuevos más libros que
- * cambiaron de ruta porque los moviste. Quien llama recarga la lista si esto es
- * mayor que cero; contando solo los nuevos, mover un archivo de carpeta dejaba
- * la pantalla con la ruta vieja.
- */
-export async function scanLibraryFolders(folderUris: string[], excludedPaths: string[] = []): Promise<number> {
+/** Qué dejó un escaneo. */
+export type ScanResult = {
+  /**
+   * CUÁNTO CAMBIÓ: libros nuevos más libros que cambiaron de ruta porque los
+   * moviste. Quien llama recarga la lista si esto es mayor que cero; contando
+   * solo los nuevos, mover un archivo de carpeta dejaba la pantalla con la ruta
+   * vieja.
+   */
+  changed: number;
+  /**
+   * Carpetas autorizadas que no se pudieron leer (el permiso se perdió, la
+   * carpeta se borró o está en una tarjeta que no está). Antes esto sólo quedaba
+   * en el log: la carpeta figuraba en Ajustes y "no aparecían" los libros sin
+   * que nada dijera por qué.
+   */
+  unreadable: string[];
+};
+
+/** Escanea las carpetas autorizadas y devuelve qué cambió y qué no se pudo leer. */
+export async function scanLibraryFolders(folderUris: string[], excludedPaths: string[] = []): Promise<ScanResult> {
   // Dos pantallas pidiendo EL MISMO escaneo a la vez comparten el mismo trabajo.
   // Si las carpetas cambiaron (recién agregaste una), es otro pedido y se encola:
   // antes devolvía el resultado del escaneo viejo y la carpeta nueva no aparecía.
@@ -219,8 +232,9 @@ export async function scanLibraryFolders(folderUris: string[], excludedPaths: st
   return run;
 }
 
-async function runScan(folderUris: string[], excludedPaths: string[]): Promise<number> {
+async function runScan(folderUris: string[], excludedPaths: string[]): Promise<ScanResult> {
   const ignoredIds = await getIgnoredBookIds();
+  const unreadable: string[] = [];
   // URIs ya conocidos, de una sola consulta: el escaneo solo mira lo nuevo.
   const knownUris = new Set(await bookRepository.listBookUris());
   let added = 0;
@@ -235,6 +249,9 @@ async function runScan(folderUris: string[], excludedPaths: string[]): Promise<n
       entries = await listFolder(folderUri);
     } catch (error) {
       console.warn('[scan] no se pudo leer la carpeta:', error instanceof Error ? error.message : error);
+      // Sólo las carpetas que autorizaste: una subcarpeta ilegible no es algo
+      // que puedas arreglar desde la app.
+      if (depth === 0) unreadable.push(folderUri);
       return; // permiso revocado / carpeta borrada
     }
 
@@ -290,7 +307,7 @@ async function runScan(folderUris: string[], excludedPaths: string[]): Promise<n
     await scanFolder(folderUri, 0);
   }
 
-  return added + relocated;
+  return { changed: added + relocated, unreadable };
 }
 
 /**

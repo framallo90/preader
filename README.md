@@ -138,7 +138,7 @@ La carpeta `android/` no está en el repositorio: se genera con `expo prebuild` 
 ## Calidad
 
 - TypeScript estricto y ESLint sin advertencias.
-- 408 tests con Vitest sobre funciones puras: partición del texto, mapeo de páginas, progreso, capítulos, estadísticas y respaldo. Cada archivo de `src/utils/` tiene su `.test.ts` al lado.
+- 413 tests con Vitest sobre funciones puras: partición del texto, mapeo de páginas, progreso, capítulos, estadísticas y respaldo. Cada archivo de `src/utils/` tiene su `.test.ts` al lado.
 - Un test JVM para el conversor HTML a texto del módulo `bardo-archive`.
 - Migraciones de esquema versionadas con `PRAGMA user_version`; una migración que falla no sube la versión y se reintenta al siguiente arranque.
 - Rendimiento medido antes y después de cada cambio grande (arranque en frío y memoria con el lector narrando).
