@@ -1,6 +1,8 @@
 import * as DocumentPicker from 'expo-document-picker';
 import * as FileSystem from 'expo-file-system/legacy';
 
+import { dayKey } from '../utils/readingStats';
+
 const { StorageAccessFramework } = FileSystem;
 
 /**
@@ -30,7 +32,8 @@ export function safeFileName(base: string, extension: string): string {
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 60);
-  const fecha = new Date().toISOString().slice(0, 10);
+  // Fecha LOCAL: con toISOString, exportar de noche en Argentina ponía la de mañana.
+  const fecha = dayKey(new Date());
   return `${limpio.length > 0 ? limpio : 'bardo'} ${fecha}.${extension}`;
 }
 

@@ -42,7 +42,7 @@ function BookMapBarComponent({ progress, markers, colors, onTap }: Props) {
           if (width > 0) onTap(event.nativeEvent.locationX / width);
         }}
         style={styles.hit}
-        accessibilityRole="adjustable"
+        accessibilityRole="button"
         accessibilityLabel={`Mapa del libro, vas por el ${Math.round(pct)} por ciento`}
       >
         <View style={[styles.track, { backgroundColor: colors.surfaceMuted }]}>

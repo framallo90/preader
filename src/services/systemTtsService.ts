@@ -87,7 +87,18 @@ export async function listVoices(forceRefresh = false): Promise<SystemVoice[]> {
   }
   // Sin módulo nativo (iOS, todavía) no hay voces: lista vacía, no un error.
   if (!isVoiceSynthesizerAvailable()) return [];
-  const voices = await getVoiceSynthesizerModule().getVoicesAsync();
+  // Con tope: en frío el motor de texto a voz puede tardar en arrancar, y el
+  // play esperaba esto sin dar señales de vida.
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error('El motor de voz tardó demasiado en responder.')), 10000);
+  });
+  let voices: SystemVoice[];
+  try {
+    voices = await Promise.race([getVoiceSynthesizerModule().getVoicesAsync(), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
   voicesCache = { at: Date.now(), voices };
   return voices;
 }

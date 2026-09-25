@@ -323,7 +323,14 @@ export default function BookScreen() {
         <View style={styles.padded}>
           <View style={styles.stars}>
             {[1, 2, 3, 4, 5].map((star) => (
-              <Pressable key={star} onPress={() => { void handleRating(star); }} hitSlop={6} accessibilityRole="button" accessibilityLabel={`${star} estrellas`}>
+              <Pressable
+                key={star}
+                onPress={() => { void handleRating(star); }}
+                hitSlop={6}
+                accessibilityRole="button"
+                accessibilityLabel={star === 1 ? '1 estrella' : `${star} estrellas`}
+                accessibilityState={{ selected: (book.rating ?? 0) >= star }}
+              >
                 <Icon name={(book.rating ?? 0) >= star ? 'star' : 'star-outline'} size={30} color={(book.rating ?? 0) >= star ? colors.warm : colors.border} />
               </Pressable>
             ))}

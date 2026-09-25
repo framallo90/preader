@@ -52,8 +52,8 @@ export function resolveSavedPosition(document: ParsedDocument, progress: Reading
  * "vuelve, pero más adelantado". Ahora, en orden:
  *
  * 1. Un salto pedido (índice, cita, marcador) manda: se mide sobre el texto real.
- * 2. Si la voz ya estaba leyendo este libro (abriste el lector con el audio
- *    sonando o en pausa), manda su posición, medida sobre el texto real.
+ * 2. Si la voz está sonando este libro (abriste el lector con el audio
+ *    andando), manda su posición, medida sobre el texto real.
  * 3. Si el progreso guardado se midió sobre este mismo texto y cae en la página
  *    que se está viendo, se retoma EXACTO ahí.
  * 4. Si no (pasaste de página mientras el texto se preparaba, el progreso es del

@@ -41,6 +41,13 @@ class BardoKeysModule : Module() {
 
     Events("volumeKey")
 
+    // ¿Hay música de otra app sonando? Lo usa la restauración de la escucha al
+    // arrancar: si hay, los botones de medios son de esa app, no nuestros.
+    Function("isMusicActive") {
+      val audioManager = appContext.reactContext?.getSystemService(android.content.Context.AUDIO_SERVICE) as? android.media.AudioManager
+      audioManager?.isMusicActive ?: false
+    }
+
     Function("setCaptureVolumeKeys") { enabled: Boolean ->
       val activity = appContext.activityProvider?.currentActivity ?: return@Function
       activity.runOnUiThread {

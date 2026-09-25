@@ -16,6 +16,7 @@ import {
   DocumentPlaybackSnapshot,
 } from '../src/services/documentAudioPlaybackService';
 import { removeBookCover } from '../src/services/bookMetadataService';
+import { restoreAudioSessionIfAny } from '../src/services/audioSessionRestore';
 import { ScanResult, addIgnoredBook, clearIgnoredBook, consumeScanRequest, getDisplayNameFromSafUri, getIgnoredBooksCount, requestLibraryFolder, restoreIgnoredBooks, scanLibraryFolders } from '../src/services/libraryScanService';
 import { buildOrderEntries, compareBooksManually, compareBooksNaturally, getDisplayTitle } from '../src/utils/bookDisplay';
 import { compareSubfolders, folderMatchDepth, formatSubfolderLabel, getSubfolderPath } from '../src/utils/libraryFolders';
@@ -102,18 +103,24 @@ type LibraryRow =
   | { kind: 'books'; key: string; books: Book[] }
   | { kind: 'subtitle'; key: string; text: string };
 /** Lo único que el Inicio necesita saber del reproductor. */
-type PlaybackBadge = { documentId: string | null; isPlaying: boolean; isPreparing: boolean };
+type PlaybackBadge = { documentId: string | null; isPlaying: boolean; isPreparing: boolean; isLoaded: boolean };
 
 function toPlaybackBadge(snapshot: DocumentPlaybackSnapshot): PlaybackBadge {
   return {
     documentId: snapshot.documentId,
     isPlaying: snapshot.isPlaying,
     isPreparing: snapshot.isPreparing,
+    isLoaded: snapshot.isLoaded,
   };
 }
 
 function samePlaybackBadge(a: PlaybackBadge, b: PlaybackBadge): boolean {
-  return a.documentId === b.documentId && a.isPlaying === b.isPlaying && a.isPreparing === b.isPreparing;
+  return (
+    a.documentId === b.documentId &&
+    a.isPlaying === b.isPlaying &&
+    a.isPreparing === b.isPreparing &&
+    a.isLoaded === b.isLoaded
+  );
 }
 
 export default function HomeScreen() {
@@ -469,6 +476,20 @@ export default function HomeScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [areSettingsReady]);
 
+  // Si la app se cerró mientras se escuchaba un libro, se lo vuelve a dejar
+  // cargado en pausa con la sesión de medios armada (audioSessionRestore): el
+  // play de la notificación, del auricular o de la tarjeta de arriba vuelve a
+  // funcionar. Después de que el Inicio ya se mostró: abrir es instantáneo.
+  const hasRestoredAudioRef = useRef(false);
+  useEffect(() => {
+    if (!areSettingsReady || hasRestoredAudioRef.current) return;
+    hasRestoredAudioRef.current = true;
+    setTimeout(() => {
+      void restoreAudioSessionIfAny(settings).catch(() => {});
+    }, 2000);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [areSettingsReady]);
+
   useEffect(() => {
     let isMounted = true;
     let requestId = 0;
@@ -568,12 +589,14 @@ export default function HomeScreen() {
   const handleOpenDocument = useCallback(async () => {
     setIsImporting(true);
     try {
-      const selectedDocument = await filePickerService.pickDocument();
-      if (!selectedDocument) return;
+      const picked = await filePickerService.pickDocument();
+      if (!picked) return;
       // Importarlo a mano anula un borrado previo del mismo contenido.
-      await clearIgnoredBook(selectedDocument.id);
-      await bookRepository.saveBook(selectedDocument);
-      openReader(selectedDocument.id);
+      await clearIgnoredBook(picked.book.id);
+      // Un libro que ya estaba no se vuelve a guardar: pisaba lastOpenedAt y
+      // anulaba el color de tapa.
+      if (!picked.alreadyInLibrary) await bookRepository.saveBook(picked.book);
+      openReader(picked.book.id);
     } catch (error) {
       Alert.alert(
         'No se pudo abrir el archivo',
@@ -629,8 +652,10 @@ export default function HomeScreen() {
 
   const pendingProgress = pendingBook ? (progressMap.get(pendingBook.id) ?? 0) : 0;
 
+  // También con el libro cargado en pausa ("Listo para seguir"): después de un
+  // reinicio la escucha se restaura así, y desde acá se reanuda con un toque.
   const playbackCardVisible = Boolean(
-    activePlaybackDocument && (playback.isPlaying || playback.isPreparing),
+    activePlaybackDocument && (playback.isPlaying || playback.isPreparing || playback.isLoaded),
   );
 
   const playbackStatusLabel = useMemo(() => {
@@ -931,6 +956,19 @@ export default function HomeScreen() {
                     {getDisplayTitle(activePlaybackDocument)}
                   </Text>
                 </View>
+                {!playback.isPreparing ? (
+                  <Pressable
+                    onPress={() => {
+                      void (playback.isPlaying ? documentAudioPlaybackService.pause() : documentAudioPlaybackService.resume()).catch(() => {});
+                    }}
+                    hitSlop={10}
+                    accessibilityRole="button"
+                    accessibilityLabel={playback.isPlaying ? 'Pausar la voz' : 'Seguir escuchando'}
+                    style={styles.nowPlayingStop}
+                  >
+                    <Icon name={playback.isPlaying ? 'pause' : 'play'} size={20} color={colors.primaryText} />
+                  </Pressable>
+                ) : null}
                 <Pressable
                   onPress={() => { void documentAudioPlaybackService.stopAndUnload().catch(() => {}); }}
                   hitSlop={10}

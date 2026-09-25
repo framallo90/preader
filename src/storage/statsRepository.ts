@@ -48,7 +48,7 @@ export const statsRepository = {
 export async function countFinishedSince(fromIso: string): Promise<number> {
   const db = await getDatabase();
   const row = await db.getFirstAsync<{ total: number }>(
-    'SELECT COUNT(*) AS total FROM reading_progress WHERE percentage >= 99.5 AND updatedAt >= ?',
+    'SELECT COUNT(*) AS total FROM reading_progress WHERE finishedAt >= ?',
     [fromIso],
   );
   return row?.total ?? 0;

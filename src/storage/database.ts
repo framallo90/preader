@@ -3,7 +3,7 @@ import { SQLiteDatabase, openDatabaseAsync } from 'expo-sqlite';
 // Nombre heredado de cuando la app se llamaba así: cambiarlo dejaría la biblioteca
 // del teléfono en un archivo huérfano.
 const DATABASE_NAME = 'pdf-voice-reader.db';
-const CURRENT_DB_VERSION = 10;
+const CURRENT_DB_VERSION = 11;
 let databasePromise: Promise<SQLiteDatabase> | null = null;
 
 export async function getDatabase() {
@@ -244,6 +244,14 @@ async function runMigrations(db: SQLiteDatabase) {
     //    capítulos "BRAN (1)" se sigue detectando, sólo no se guardaba para nada),
     //  - la tabla documents (la biblioteca de antes de books; vacía).
     await cleanUpDeadSchema(db);
+  }
+
+  if (version < 11) {
+    // v11: cuándo se TERMINÓ cada libro. La meta del año contaba por updatedAt,
+    // que cambia en cada guardado: un libro terminado el año pasado sumaba de
+    // nuevo al abrirlo, y releer uno terminado lo restaba.
+    await addColumnIfMissing(db, 'reading_progress', 'finishedAt', 'TEXT');
+    await db.execAsync('UPDATE reading_progress SET finishedAt = updatedAt WHERE finishedAt IS NULL AND percentage >= 99.5');
   }
 
   if (version < CURRENT_DB_VERSION) {

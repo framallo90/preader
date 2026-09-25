@@ -1,0 +1,65 @@
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt
+index 72a6e9e..f0c838a 100644
+--- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt
+@@ -435,6 +435,9 @@ class AudioModule : Module() {
+ 
+       Function("pause") { player: AudioPlayer ->
+         runOnMain {
++          // Bardo (patch): una pausa pedida por el usuario no se deshace sola
++          // cuando vuelve el foco de audio (después de una llamada).
++          player.isPaused = false
+           player.ref.pause()
+         }
+       }
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
+index f7c4364..975af06 100644
+--- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
+@@ -52,6 +52,8 @@ class AudioPlayer(
+     .setAudioAttributes(AudioAttributes.DEFAULT, false)
+     .setSeekForwardIncrementMs(SEEK_JUMP_INTERVAL_MS)
+     .setSeekBackIncrementMs(SEEK_JUMP_INTERVAL_MS)
++    // Bardo (patch): al desenchufar los auriculares se pausa, en vez de seguir por el parlante.
++    .setHandleAudioBecomingNoisy(true)
+     .apply {
+       if (bufferDurationMs > 0) {
+         setLoadControl(
+diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
+index 1d9eea1..83b582e 100644
+--- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
++++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
+@@ -65,9 +65,15 @@ class AudioControlsService : MediaSessionService() {
+     context.mainQueue.launch {
+       when (intent?.action) {
+         ACTION_PLAY -> currentPlayerRef.play()
+-        ACTION_PAUSE -> currentPlayerRef.pause()
++        // Bardo (patch): una pausa pedida por el usuario no se deshace sola
++        // cuando vuelve el foco de audio (después de una llamada).
++        ACTION_PAUSE -> {
++          currentPlayer?.isPaused = false
++          currentPlayerRef.pause()
++        }
+         ACTION_TOGGLE ->
+           if (currentPlayerRef.isPlaying) {
++            currentPlayer?.isPaused = false
+             currentPlayerRef.pause()
+           } else {
+             currentPlayerRef.play()
+@@ -82,6 +88,16 @@ class AudioControlsService : MediaSessionService() {
+     return super.onStartCommand(intent, flags, startId)
+   }
+ 
++  // Bardo (patch): deslizar la app de "recientes" NO pausa la narración.
++  // MediaSessionService.onTaskRemoved pausa y para el servicio cuando cree que
++  // la reproducción "no está en curso": expo-audio arma su propia notificación
++  // y media3 nunca se entera de que está en primer plano. Si está sonando, se
++  // deja seguir; si no, se para el servicio como hacía media3.
++  override fun onTaskRemoved(rootIntent: Intent?) {
++    if (currentPlayer?.ref?.isPlaying == true) return
++    stopSelf()
++  }
++
+   override fun onCreate() {
+     super.onCreate()
+     createNotificationChannelIfNeeded()

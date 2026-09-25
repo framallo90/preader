@@ -2,7 +2,7 @@ import { createAudioPlayer } from 'expo-audio';
 import { Stack, router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Constants from 'expo-constants';
-import { Alert, Linking, StyleSheet, Switch, View } from 'react-native';
+import { Alert, AppState, Linking, StyleSheet, Switch, View } from 'react-native';
 
 import { AppButton } from '../src/components/AppButton';
 import { OptionPickerModal } from '../src/components/OptionPickerModal';
@@ -147,15 +147,30 @@ export default function SettingsScreen() {
       samplePlayerRef.current?.release();
       const player = createAudioPlayer({ uri });
       samplePlayerRef.current = player;
+      // Con la velocidad elegida, como promete la fila.
+      player.setPlaybackRate(settings.defaultRate);
       player.play();
     } catch (error) {
       Alert.alert('No se pudo probar la voz', error instanceof Error ? error.message : 'El motor de voz no respondió.');
     } finally {
       setIsTestingVoice(false);
     }
-  }, [isTestingVoice, selectedVoiceOption, voiceLanguages]);
+  }, [isTestingVoice, selectedVoiceOption, voiceLanguages, settings.defaultRate]);
+
+  // Al volver de los ajustes de voz del sistema se vuelven a listar las voces:
+  // la lista se cachea 15 minutos y una voz recién instalada no aparecía.
+  const cameFromTtsSettingsRef = useRef(false);
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active' || !cameFromTtsSettingsRef.current) return;
+      cameFromTtsSettingsRef.current = false;
+      void loadVoices(true);
+    });
+    return () => subscription.remove();
+  }, [loadVoices]);
 
   const handleOpenTtsSettings = useCallback(() => {
+    cameFromTtsSettingsRef.current = true;
     Linking.sendIntent('com.android.settings.TTS_SETTINGS').catch(() => {
       Alert.alert('Ajustes de voz', 'Abrí Ajustes del teléfono → Accesibilidad → Salida de texto a voz.');
     });

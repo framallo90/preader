@@ -451,6 +451,9 @@ export default function ReaderScreen() {
           })();
         }, 600);
       } catch (error) {
+        // Un salto pedido para un libro que no abre no debe quedar armado para
+        // la próxima vez que se abra desde el Inicio.
+        if (documentId) readerJumpStore.consumeRequest(documentId);
         if (!isMounted) return;
         setParseError(getFriendlyParseErrorMessage(error));
       } finally {
@@ -474,9 +477,12 @@ export default function ReaderScreen() {
       const jump = pendingJumpCharRef.current;
       pendingJumpCharRef.current = null;
       realPageOffsetsRef.current = null;
-      // Si la voz ya estaba leyendo este libro (abriste el lector con el audio
-      // sonando o en pausa), su posición manda sobre el progreso guardado.
-      const audioAt = documentAudioPlaybackService.currentAbsoluteCharFor(bookId);
+      // Si la voz está SONANDO este libro (abriste el lector con el audio
+      // andando), su posición manda sobre el progreso guardado. En pausa no:
+      // un audio pausado hace rato no debe pisar lo que leíste a mano después.
+      const audioAt = documentAudioPlaybackService.getSnapshot().isPlaying
+        ? documentAudioPlaybackService.currentAbsoluteCharFor(bookId)
+        : null;
       const position = positionWhenTextReady(ready, storedProgressRef.current, currentPdfPageRef.current, jump, audioAt);
       const page = ready.pdf
         ? pageForProgress(position.absoluteCharIndex, currentPdfPageRef.current, ready.pdf.pageOffsets, ready.fullText.length)
@@ -714,7 +720,16 @@ export default function ReaderScreen() {
       // de acomodarse o de un salto exacto (scrollToPage avisa siempre), no de
       // pasar de página. Moverla al medio de la página perdía el carácter
       // exacto, y al reabrir "volvía más adelantado".
-      if (pageForProgress(absoluteCharRef.current, pageIndex, pageInfo.pageOffsets, parsedDocument.fullText.length) === pageIndex) return;
+      // Pertenencia ESTRICTA: el final de la página N es el principio de la N+1
+      // y no cuenta como "adentro de N". Si no, pasar a N+1 y volver a N dejaba
+      // la posición en el principio de N+1, y Escuchar arrancaba en la página
+      // equivocada. Una página vacía (mismo offset que la siguiente) sí cuenta
+      // por su principio.
+      const at = absoluteCharRef.current;
+      const inside =
+        pageForChar(at, pageInfo.pageOffsets) === pageIndex ||
+        charForPage(pageIndex, pageInfo.pageOffsets, parsedDocument.fullText.length) === at;
+      if (inside) return;
       const abs = charForPage(pageIndex, pageInfo.pageOffsets, parsedDocument.fullText.length);
       const pos = getPositionFromAbsoluteChar(parsedDocument, abs);
       void readerRef.current.syncPosition(pos.blockIndex, pos.charIndex);
@@ -1510,6 +1525,22 @@ export default function ReaderScreen() {
     }, 1000);
     return () => clearInterval(interval);
   }, [sleepDeadlineAt]);
+
+  // La decisión de parar vive TAMBIÉN en el servicio de audio: con la pantalla
+  // apagada Android congela los timers de JavaScript y el interval de arriba no
+  // corría hasta volver a prenderla (la voz seguía toda la noche). El servicio
+  // mira el reloj y la posición en cada aviso del reproductor, que sí llega en
+  // segundo plano. En el primer render no se manda nada: un temporizador
+  // puesto antes de salir y volver al lector tiene que seguir vivo.
+  const stopSyncReadyRef = useRef(false);
+  useEffect(() => {
+    if (!stopSyncReadyRef.current) {
+      stopSyncReadyRef.current = true;
+      return;
+    }
+    documentAudioPlaybackService.setStopAt(sleepDeadlineAt);
+    documentAudioPlaybackService.setStopAtChar(stopAtChar);
+  }, [sleepDeadlineAt, stopAtChar]);
 
   // Frenar al llegar al final del capítulo marcado. Va aparte del temporizador
   // de minutos porque no depende del reloj sino de la posición de la voz.

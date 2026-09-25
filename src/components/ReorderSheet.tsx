@@ -62,6 +62,12 @@ export function ReorderSheet({ visible, title, books, colors, onCancel, onSave }
   const scrollRef = useRef<ScrollView>(null);
   const scrollYRef = useRef(0);
   const viewportRef = useRef(0);
+  // Dónde empieza la lista EN LA PANTALLA (el dedo se mide en pageY) y cuánto
+  // contenido hay: sin esto la zona de abajo se disparaba un tercio antes del
+  // borde, y contra el final la fila "se iba volando" porque el scroll seguía
+  // sumando aunque la lista ya no se moviera.
+  const viewportTopRef = useRef(0);
+  const contentHeightRef = useRef(0);
   const autoscrollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Al abrirse para otra carpeta, se arranca de su orden actual.
@@ -117,12 +123,13 @@ export function ReorderSheet({ visible, title, books, colors, onCancel, onSave }
           recolocar();
 
           // Contra el borde, la lista se corre sola para poder llegar lejos.
-          const arriba = drag.fingerY < EDGE * 2;
-          const abajo = viewportRef.current > 0 && drag.fingerY > viewportRef.current - EDGE;
+          const arriba = drag.fingerY < viewportTopRef.current + EDGE;
+          const abajo = viewportRef.current > 0 && drag.fingerY > viewportTopRef.current + viewportRef.current - EDGE;
           if ((arriba || abajo) && !autoscrollRef.current) {
             autoscrollRef.current = setInterval(() => {
-              const paso = drag.fingerY < EDGE * 2 ? -AUTOSCROLL_STEP : AUTOSCROLL_STEP;
-              const siguiente = Math.max(scrollYRef.current + paso, 0);
+              const paso = drag.fingerY < viewportTopRef.current + EDGE ? -AUTOSCROLL_STEP : AUTOSCROLL_STEP;
+              const tope = Math.max(contentHeightRef.current - viewportRef.current, 0);
+              const siguiente = Math.min(Math.max(scrollYRef.current + paso, 0), tope);
               scrollRef.current?.scrollTo({ y: siguiente, animated: false });
               scrollYRef.current = siguiente;
               recolocar();
@@ -171,7 +178,14 @@ export function ReorderSheet({ visible, title, books, colors, onCancel, onSave }
           scrollEnabled={dragId === null}
           scrollEventThrottle={16}
           onScroll={(event) => { scrollYRef.current = event.nativeEvent.contentOffset.y; }}
-          onLayout={(event) => { viewportRef.current = event.nativeEvent.layout.height; }}
+          onLayout={(event) => {
+            viewportRef.current = event.nativeEvent.layout.height;
+            const node = scrollRef.current?.getNativeScrollRef?.() as
+              | { measureInWindow?: (cb: (x: number, y: number, w: number, h: number) => void) => void }
+              | undefined;
+            node?.measureInWindow?.((_x, y) => { viewportTopRef.current = y; });
+          }}
+          onContentSizeChange={(_w, h) => { contentHeightRef.current = h; }}
         >
           {order.map((book, index) => {
             const arrastrando = book.id === dragId;

@@ -96,9 +96,22 @@ export function usesContentIdForLargeFile(size?: number | null): boolean {
  * El id que una versión anterior le daba a un archivo grande (sin leer su
  * contenido): sirve para reconocer los libros ya guardados con ese id.
  */
-export async function legacyLargeFileFingerprint(name: string, size: number): Promise<string> {
-  const digest = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, `fallback:${name}:${size}:${size}`);
+export async function legacyLargeFileFingerprint(name: string, size: number, listedSize: number = size): Promise<string> {
+  // La clave de respaldo llevaba el tamaño que informó el LISTADO (0 si no
+  // lo informaba) y después el tamaño real: se reproduce tal cual.
+  const digest = await Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, `fallback:${name}:${listedSize}:${size}`);
   return `bk_${digest.slice(0, 24)}`;
+}
+
+/** Tamaño del archivo: el que informó el proveedor, o se le pregunta al sistema. */
+export async function resolveFileSize(uri: string, size?: number | null): Promise<number | null> {
+  if (size != null && size > 0) return size;
+  try {
+    const info = await FileSystem.getInfoAsync(uri);
+    return info.exists && typeof info.size === 'number' && info.size > 0 ? info.size : null;
+  } catch {
+    return null;
+  }
 }
 
 export function safeDisplayFileName(name: string) {

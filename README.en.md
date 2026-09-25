@@ -131,6 +131,7 @@ docs/
   ops/                    operational procedures
   hub/                    project coordination notes
 assets/                   icons, splash and typography (Lora, OFL license)
+patches/                  patch to expo-audio (patch-package, applied on npm install)
 ```
 
 The `android/` folder is not in the repository: it is generated with `expo prebuild` from `app.json` and the modules.

@@ -21,7 +21,7 @@ import { getDatabase } from '../storage/database';
 import { bookRepository } from '../storage/bookRepository';
 import { Book, NEW_BOOK_DEFAULTS } from '../types/storage';
 import { isFolderExcluded } from '../utils/safPaths';
-import { createBookFingerprint, legacyLargeFileFingerprint, usesContentIdForLargeFile } from '../utils/documentId';
+import { createBookFingerprint, legacyLargeFileFingerprint, resolveFileSize, usesContentIdForLargeFile } from '../utils/documentId';
 
 const { StorageAccessFramework } = FileSystem;
 
@@ -294,8 +294,10 @@ async function runScan(folderUris: string[], excludedPaths: string[]): Promise<S
         if (!mimeType) continue;
         if (knownUris.has(entry.uri)) continue;
 
-        const fileSize = entry.size ?? undefined;
-        const id = await createBookFingerprint(entry.uri, fileSize, `${entry.name}:${fileSize ?? 0}`);
+        // El tamaño se resuelve UNA vez (algunos proveedores no lo informan en
+        // el listado): la huella y la búsqueda del id viejo lo usan igual.
+        const fileSize = (await resolveFileSize(entry.uri, entry.size)) ?? undefined;
+        const id = await createBookFingerprint(entry.uri, fileSize, `${entry.name}:${entry.size ?? 0}`);
 
         // Mismo contenido ya importado, o eliminado por el usuario: no duplicar.
         if (ignoredIds.has(id)) continue;
@@ -304,7 +306,7 @@ async function runScan(folderUris: string[], excludedPaths: string[]): Promise<S
         // viejo (nombre+tamaño): si se movió, se lo reconoce por ese id y se
         // relocaliza, en vez de sumar un libro nuevo sin progreso.
         if (!existing && usesContentIdForLargeFile(fileSize)) {
-          existing = await bookRepository.getBookById(await legacyLargeFileFingerprint(entry.name, fileSize as number));
+          existing = await bookRepository.getBookById(await legacyLargeFileFingerprint(entry.name, fileSize as number, entry.size ?? 0));
         }
         if (existing) {
           // El mismo libro en otra carpeta o con otro nombre: si el archivo al

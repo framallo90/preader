@@ -131,6 +131,7 @@ docs/
   ops/                    procedimientos operativos
   hub/                    notas de coordinación del proyecto
 assets/                   íconos, splash y tipografía (Lora, licencia OFL)
+patches/                  parche a expo-audio (patch-package, se aplica en npm install)
 ```
 
 La carpeta `android/` no está en el repositorio: se genera con `expo prebuild` a partir de `app.json` y los módulos.

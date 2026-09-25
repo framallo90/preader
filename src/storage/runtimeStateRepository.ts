@@ -11,6 +11,7 @@ type SettingsRow = {
 };
 
 const READER_LOAD_GUARD_KEY = 'runtime.readerLoadGuard';
+const AUDIO_SESSION_KEY = 'runtime.audioSessionBookId';
 
 function parseGuard(value: string): ReaderLoadGuard | null {
   try {
@@ -45,6 +46,31 @@ export const runtimeStateRepository = {
 
   wasBootRecovered() {
     return bootRecovered;
+  },
+
+  /**
+   * Qué libro se estaba escuchando (sonando o en pausa) cuando la app se cerró.
+   * Al arrancar de nuevo se lo vuelve a dejar cargado en pausa con la sesión de
+   * medios armada, así el play de la notificación, de la pantalla de bloqueo o
+   * del auricular tiene a quién mandarle la orden. Sin esto, después de reabrir
+   * la app el play externo no hacía nada hasta tocar "Escuchar".
+   */
+  async getAudioSessionBookId(): Promise<string | null> {
+    const db = await getDatabase();
+    const row = await db.getFirstAsync<SettingsRow>('SELECT key, value FROM settings WHERE key = ?', [AUDIO_SESSION_KEY]);
+    return row?.value || null;
+  },
+
+  async setAudioSessionBookId(bookId: string | null): Promise<void> {
+    const db = await getDatabase();
+    if (bookId === null) {
+      await db.runAsync('DELETE FROM settings WHERE key = ?', [AUDIO_SESSION_KEY]);
+      return;
+    }
+    await db.runAsync(
+      'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+      [AUDIO_SESSION_KEY, bookId],
+    );
   },
 
   async getReaderLoadGuard() {

@@ -156,7 +156,7 @@ export function Row({ icon, title, subtitle, right, onPress, colors, last = fals
   const rowStyle = [styles.row, last ? null : { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border }];
   if (onPress) {
     return (
-      <Pressable onPress={onPress} style={({ pressed }) => [rowStyle, { opacity: pressed ? 0.7 : 1 }]}>
+      <Pressable onPress={onPress} accessibilityRole="button" style={({ pressed }) => [rowStyle, { opacity: pressed ? 0.7 : 1 }]}>
         {content}
       </Pressable>
     );

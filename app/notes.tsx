@@ -1,5 +1,5 @@
 import { Stack, router, useFocusEffect } from 'expo-router';
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, FlatList, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 
 import { AppButton } from '../src/components/AppButton';
@@ -38,14 +38,19 @@ export default function NotesScreen() {
   const [isExporting, setIsExporting] = useState(false);
   const [sharing, setSharing] = useState<ShareableQuote | null>(null);
 
+  // Cada tecla dispara una búsqueda; gana la ÚLTIMA pedida, no la última en
+  // llegar (la de "A" trae más filas y podía llegar después que la de "Ar").
+  const requestRef = useRef(0);
   const load = useCallback(async (texto: string) => {
+    const requestId = ++requestRef.current;
     try {
       const encontradas = await withDatabaseRetry(() => noteRepository.searchAll(texto));
+      if (requestId !== requestRef.current) return;
       setNotes(encontradas);
     } catch {
-      setNotes([]);
+      if (requestId === requestRef.current) setNotes([]);
     } finally {
-      setIsLoading(false);
+      if (requestId === requestRef.current) setIsLoading(false);
     }
   }, []);
 
@@ -80,6 +85,11 @@ export default function NotesScreen() {
 
   const openNote = useCallback((note: NoteWithBook) => {
     readerJumpStore.request(note.bookId, note.charIndex);
+    // Nunca apilar un lector sobre otro: Mis notas se puede abrir desde el
+    // lector (vía Ajustes), y dos lectores escriben progreso en paralelo y el
+    // de arriba, al cerrarse, cierra el PDF del de abajo. Se vuelve al Inicio
+    // y se abre uno solo.
+    router.dismissAll();
     router.push({ pathname: '/reader', params: { documentId: note.bookId } });
   }, []);
 

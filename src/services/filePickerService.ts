@@ -3,7 +3,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 
 import { bookRepository } from '../storage/bookRepository';
 import { Book, NEW_BOOK_DEFAULTS } from '../types/storage';
-import { createBookFingerprint, getFileExtension, legacyLargeFileFingerprint, safeDisplayFileName, usesContentIdForLargeFile } from '../utils/documentId';
+import { createBookFingerprint, getFileExtension, legacyLargeFileFingerprint, resolveFileSize, safeDisplayFileName, usesContentIdForLargeFile } from '../utils/documentId';
 import { PICKER_MIME_TYPES, resolveBookType } from './bookTypes';
 
 function getDocumentsDirectory() {
@@ -50,11 +50,14 @@ async function copyAssetToDocuments(asset: DocumentPicker.DocumentPickerAsset): 
   // lee el contenido y sin esto usaba asset.uri (ruta de caché efímera del
   // picker, cambia en cada importación) → id no determinista, 404 en modo
   // visual y progreso perdido. Coincide con lo que se manda al server.
-  let documentId = await createBookFingerprint(asset.uri, asset.size, `${documentName}:${asset.size ?? 0}`);
+  // El tamaño se resuelve UNA vez (el selector no siempre lo informa): la
+  // huella y la búsqueda del id viejo lo usan igual.
+  const size = await resolveFileSize(asset.uri, asset.size);
+  let documentId = await createBookFingerprint(asset.uri, size, `${documentName}:${asset.size ?? 0}`);
   // Un archivo grande importado por una versión anterior tiene el id viejo
   // (nombre+tamaño): se conserva, que es el que tiene el progreso y las notas.
-  if (usesContentIdForLargeFile(asset.size) && !(await bookRepository.getBookById(documentId))) {
-    const legacyId = await legacyLargeFileFingerprint(documentName, asset.size as number);
+  if (usesContentIdForLargeFile(size) && !(await bookRepository.getBookById(documentId))) {
+    const legacyId = await legacyLargeFileFingerprint(documentName, size as number, asset.size ?? 0);
     if (await bookRepository.getBookById(legacyId)) documentId = legacyId;
   }
   // Si ese libro YA está en la biblioteca y su archivo sigue ahí (entró por una
@@ -85,7 +88,7 @@ async function copyAssetToDocuments(asset: DocumentPicker.DocumentPickerAsset): 
 }
 
 export const filePickerService = {
-  async pickDocument(): Promise<Book | null> {
+  async pickDocument(): Promise<{ book: Book; alreadyInLibrary: boolean } | null> {
     const result = await DocumentPicker.getDocumentAsync({
       type: [...PICKER_MIME_TYPES],
       copyToCacheDirectory: true,
@@ -103,7 +106,7 @@ export const filePickerService = {
       throw new Error('Formato no soportado. Bardo abre PDF, EPUB, TXT, DOCX y cómics (CBZ, CBR, CB7, CBT).');
     }
     const { documentId, documentName, destinationUri, existing } = await copyAssetToDocuments(asset);
-    if (existing) return existing;
+    if (existing) return { book: existing, alreadyInLibrary: true };
 
     const now = new Date().toISOString();
     const book: Book = {
@@ -120,7 +123,7 @@ export const filePickerService = {
       ...NEW_BOOK_DEFAULTS,
     };
 
-    return book;
+    return { book, alreadyInLibrary: false };
   },
 
   async deleteStoredDocument(uri: string): Promise<void> {

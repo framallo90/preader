@@ -20,11 +20,10 @@ la escribió.
   de Claude también. Lo que cambió, y nada más:
 
   - 408 tests → **420 tests** (en las tres partes).
-  - Líneas: `index.tsx` 1.300 → 1.400, `settings.tsx` 620 → 650, `libraryScanService.ts` 320 → 370,
-    `libraryFolders.ts` 70 → 90, `reader.tsx` 2.560 → 2.700, `useReaderController.ts` 370 → 410,
-    `documentAudioPlaybackService.ts` 805 → 840, `progressRemap.ts` 60 → 100, `filePickerService.ts`
-    105 → 130, `runtimeStateRepository.ts` 70 → 80, `documentId.ts` 100 → 120, `app/` 5.800 → 6.000,
-    `src/services` 3.400 → 3.600, `src/utils` 3.600 → 3.700, total 20.100 / 17.500 → 20.700 / 18.200.
+  - Conteos de líneas por archivo y por carpeta al día (los más movidos: `reader.tsx` 2.560 → 2.700,
+    `documentAudioPlaybackService.ts` 805 → 1.100, `app/` 5.800 → 6.100, `src/services` 3.400 →
+    3.900, total 20.100 / 17.500 → 21.200 / 18.700).
+  - Dos filas nuevas en la parte 3: `audioSessionRestore.ts` (servicios) y `patches/` (raíz).
   - Tres frases nuevas, cortas: en `index.tsx` (parte 1, 2 y 3) que el escaneo también corre al
     volver a la app y al tirar para abajo; en `settings.tsx` (parte 3) "carpetas y su orden"; en
     `libraryScanService.ts` y `libraryFolders.ts` (parte 3) qué devuelve el escaneo y que las

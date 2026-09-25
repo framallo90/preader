@@ -7,6 +7,8 @@ type VolumeKeyEvent = { key: VolumeKey };
 declare class BardoKeysNativeModule extends NativeModule<{ volumeKey: (event: VolumeKeyEvent) => void }> {
   /** Prende o apaga la captura de los botones de volumen. */
   setCaptureVolumeKeys(enabled: boolean): void;
+  /** ¿Hay música de otra app sonando ahora? */
+  isMusicActive(): boolean;
 }
 
 // Opcional: una build vieja no tiene el módulo, y la app tiene que abrir igual
@@ -16,6 +18,15 @@ const nativeModule = requireOptionalNativeModule<BardoKeysNativeModule>('BardoKe
 /** ¿Se pueden capturar las teclas de volumen acá? En iOS no existe (y Apple lo rechaza). */
 export function areVolumeKeysAvailable(): boolean {
   return nativeModule !== null;
+}
+
+/** ¿Hay música de otra app sonando? Sin módulo (iOS, build vieja), no. */
+export function isMusicActive(): boolean {
+  try {
+    return nativeModule?.isMusicActive() ?? false;
+  } catch {
+    return false;
+  }
 }
 
 export function setCaptureVolumeKeys(enabled: boolean): void {

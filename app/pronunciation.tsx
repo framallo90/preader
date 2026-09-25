@@ -8,7 +8,7 @@ import { Screen } from '../src/components/Screen';
 import { IconButton, Row, Section } from '../src/components/ui';
 import { useAppSettings } from '../src/hooks/useAppSettings';
 import { synthesizeSpeech } from '../src/services/systemTtsService';
-import { applyPronunciations, cleanPronunciations } from '../src/utils/pronunciation';
+import { applyPronunciations, cleanPronunciations, textSignature } from '../src/utils/pronunciation';
 import { radius } from '../src/utils/theme';
 
 /**
@@ -38,7 +38,8 @@ export default function PronunciationScreen() {
     if (isTesting) return;
     setIsTesting(true);
     try {
-      const uri = await synthesizeSpeech(`pron--${frase.slice(0, 40)}`, frase, settings.defaultVoiceId, 'es');
+      // Con la voz y la frase exacta: antes sonaba audio viejo de otra voz, y "Corín" y "Corón" compartían archivo.
+      const uri = await synthesizeSpeech(`pron--${settings.defaultVoiceId ?? 'auto'}--${textSignature(frase)}`, frase, settings.defaultVoiceId, 'es');
       if (!montadoRef.current) return; // saliste mientras sintetizaba
       playerRef.current?.release();
       const player = createAudioPlayer({ uri });

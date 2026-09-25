@@ -124,14 +124,15 @@ export async function applyBackup(backup: BackupFile): Promise<RestoreSummary> {
     );
     if (!shouldReplaceProgress(actual, entry)) continue;
     await db.runAsync(
-      `INSERT INTO reading_progress (bookId, chapterId, blockIndex, charIndex, percentage, page, textLength, updatedAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO reading_progress (bookId, chapterId, blockIndex, charIndex, percentage, page, textLength, updatedAt, finishedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? >= 99.5 THEN ? ELSE NULL END)
        ON CONFLICT(bookId) DO UPDATE SET
          chapterId = excluded.chapterId, blockIndex = excluded.blockIndex,
          charIndex = excluded.charIndex, percentage = excluded.percentage,
-         page = excluded.page, textLength = excluded.textLength, updatedAt = excluded.updatedAt`,
+         page = excluded.page, textLength = excluded.textLength, updatedAt = excluded.updatedAt,
+         finishedAt = CASE WHEN excluded.percentage >= 99.5 AND finishedAt IS NULL THEN excluded.updatedAt ELSE finishedAt END`,
       [entry.bookId, entry.chapterId, entry.blockIndex, entry.charIndex, entry.percentage,
-        entry.page ?? null, entry.textLength ?? null, entry.updatedAt],
+        entry.page ?? null, entry.textLength ?? null, entry.updatedAt, entry.percentage, entry.updatedAt],
     );
     resumen.progress += 1;
   }

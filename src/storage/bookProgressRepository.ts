@@ -61,9 +61,12 @@ export const bookProgressRepository = {
   }): Promise<void> {
     await serializeByBook(progress.bookId, async () => {
       const db = await getDatabase();
+      const now = new Date().toISOString();
+      // finishedAt: la PRIMERA vez que el progreso llega al final. Es lo que
+      // cuenta la meta del año; no se pisa aunque el libro se relea.
       await db.runAsync(
-        `INSERT INTO reading_progress (bookId, chapterId, blockIndex, charIndex, percentage, page, textLength, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO reading_progress (bookId, chapterId, blockIndex, charIndex, percentage, page, textLength, updatedAt, finishedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? >= 99.5 THEN ? ELSE NULL END)
          ON CONFLICT(bookId) DO UPDATE SET
            chapterId = excluded.chapterId,
            blockIndex = excluded.blockIndex,
@@ -71,7 +74,8 @@ export const bookProgressRepository = {
            percentage = excluded.percentage,
            page = excluded.page,
            textLength = excluded.textLength,
-           updatedAt = excluded.updatedAt`,
+           updatedAt = excluded.updatedAt,
+           finishedAt = CASE WHEN excluded.percentage >= 99.5 AND finishedAt IS NULL THEN excluded.updatedAt ELSE finishedAt END`,
         [
           progress.bookId,
           progress.chapterId ?? null,
@@ -80,7 +84,9 @@ export const bookProgressRepository = {
           progress.percentage,
           progress.page ?? null,
           progress.textLength ?? null,
-          new Date().toISOString(),
+          now,
+          progress.percentage,
+          now,
         ],
       );
     });
@@ -89,6 +95,11 @@ export const bookProgressRepository = {
   /** Borra el progreso del libro: la próxima apertura arranca desde el principio. */
   async resetProgress(bookId: string): Promise<void> {
     const db = await getDatabase();
-    await db.runAsync('DELETE FROM reading_progress WHERE bookId = ?', [bookId]);
+    // Se vuelve al principio pero se CONSERVA finishedAt: releer un libro
+    // terminado no lo saca de la meta del año.
+    await db.runAsync(
+      'UPDATE reading_progress SET chapterId = NULL, blockIndex = 0, charIndex = 0, percentage = 0, page = NULL, updatedAt = ? WHERE bookId = ?',
+      [new Date().toISOString(), bookId],
+    );
   },
 };

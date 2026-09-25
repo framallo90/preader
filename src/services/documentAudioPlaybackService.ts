@@ -5,7 +5,10 @@ import {
   createAudioPlayer,
 } from 'expo-audio';
 
+import { AppState } from 'react-native';
+
 import { bookProgressRepository } from '../storage/bookProgressRepository';
+import { runtimeStateRepository } from '../storage/runtimeStateRepository';
 import { ParsedDocument } from '../types/document';
 import { getAbsoluteCharIndex, getPositionFromAbsoluteChar } from '../utils/documentProgress';
 import { pagePercentage, progressFootprint } from '../utils/progressRemap';
@@ -20,6 +23,7 @@ import { Span } from '../utils/textSpans';
 import { resolveVoice } from '../utils/voices';
 import { audioSessionService } from './audioSessionService';
 import { cancelPendingSynthesis, listVoices, synthesizeSpeech } from './systemTtsService';
+import { isMusicActive } from '../../modules/bardo-keys';
 
 // Cuántos tramos se sintetizan por adelantado. Los tramos son cortos (arranque
 // rápido), así que con dos de colchón la voz no espera al motor entre tramos.
@@ -170,6 +174,28 @@ class DocumentAudioPlaybackService {
   private lastPersistedAt = 0;
   private lastPersistedAbsoluteCharIndex = -1;
   private lastObservedIsPlaying = false;
+  // Mientras vale, no se guarda progreso: el instante de reproducción en
+  // silencio de restoreSession no debe mover la posición guardada.
+  private suppressPersistUntil = 0;
+  // Parar solo: por reloj (temporizador de sueño) o al llegar a una posición
+  // (fin del capítulo). Vive ACÁ y no en el lector porque con la pantalla
+  // apagada Android congela los timers de JavaScript, y el temporizador no
+  // paraba nada hasta volver a prender la pantalla; los avisos del reproductor
+  // sí siguen llegando en segundo plano.
+  private stopAtTime: number | null = null;
+  private stopAtChar: number | null = null;
+  // El usuario ya pidió sonido en este proceso: la restauración del arranque
+  // no tiene que meterse.
+  private hasUserPlayed = false;
+  // Restaurando la escucha al arrancar: los avisos del reproductor no se
+  // publican (nada de "Preparando" ni de posiciones a medias en pantalla).
+  private isRestoring = false;
+  // Foco de audio pedido para esta tanda de sonido. El play desde la
+  // notificación, la pantalla de bloqueo o el auricular va directo al
+  // reproductor nativo SIN pedir foco (expo-audio sólo lo pide en el play de
+  // JavaScript): sonaba encima de la música de otra app y una llamada no lo
+  // pausaba. Un play() de JavaScript, idempotente, lo pide.
+  private focusClaimedWhilePlaying = false;
   private advancingPromise: Promise<void> | null = null;
   private chunkPreparationPromises = new Map<string, Promise<string | null>>();
 
@@ -246,12 +272,36 @@ class DocumentAudioPlaybackService {
   }
 
   private handlePlayerStatus = (status: AudioStatus) => {
+    if (this.isRestoring) return;
     this.trackListening(Boolean(status.playing));
     const activeChunk = this.getActiveChunk();
+    if (status.playing && !this.focusClaimedWhilePlaying) {
+      this.focusClaimedWhilePlaying = true;
+      try {
+        this.player?.play();
+      } catch {
+        // sin foco se sigue igual
+      }
+    }
+    if (!status.playing) this.focusClaimedWhilePlaying = false;
+    // Parar solo: por reloj o por posición. La pausa guarda la posición.
+    if (status.playing && activeChunk && status.duration) {
+      const at = activeChunk.startChar + Math.round((status.currentTime / status.duration) * getChunkLength(activeChunk));
+      const byTime = this.stopAtTime !== null && Date.now() >= this.stopAtTime;
+      const byChar = this.stopAtChar !== null && at >= this.stopAtChar;
+      if (byTime || byChar) {
+        this.stopAtTime = null;
+        this.stopAtChar = null;
+        void this.pause();
+        return;
+      }
+    }
     // Sin tramo activo no se sabe dónde está la lectura: "terminó el último"
     // con la grilla vacía daba true (0 >= -1) y marcaba el libro como leído.
     const isLastChunk = Boolean(activeChunk) && this.activeChunkIndex >= this.activeChunks.length - 1;
     const didFinishDocument = Boolean(status.didJustFinish && isLastChunk);
+    // Libro terminado: ya no hay escucha que restaurar en el próximo arranque.
+    if (didFinishDocument) void runtimeStateRepository.setAudioSessionBookId(null).catch(() => {});
 
     this.updateSnapshot({
       currentTime: status.currentTime,
@@ -294,6 +344,7 @@ class DocumentAudioPlaybackService {
     // Sobre el provisorio de un PDF no hay progreso que valga: sus offsets no
     // son los del libro y pisarían la posición real guardada.
     if (doc.pdf?.textPending) return;
+    if (Date.now() < this.suppressPersistUntil) return;
 
     const absoluteCharIndex = status.didJustFinish
       ? this.activeChunkIndex >= this.activeChunks.length - 1
@@ -557,6 +608,14 @@ class DocumentAudioPlaybackService {
         this.updateSnapshot({ isPlaying: false, isPreparing: false });
         return;
       }
+      // El temporizador de sueño venció mientras se preparaba este tramo.
+      if (this.stopAtTime !== null && Date.now() >= this.stopAtTime) {
+        this.stopAtTime = null;
+        this.stopAtChar = null;
+        this.updateSnapshot({ isPlaying: false, isPreparing: false });
+        return;
+      }
+      this.focusClaimedWhilePlaying = true;
       this.player.play();
     })();
 
@@ -588,6 +647,91 @@ class DocumentAudioPlaybackService {
     await player.seekTo(Math.min(seconds, Math.max(0, duration - 0.75)));
   }
 
+  /**
+   * Registra (o vuelve a registrar) los controles de la notificación y la
+   * pantalla de bloqueo. Nunca tira: si el servicio nativo está en un estado
+   * raro, la voz tiene que sonar igual.
+   */
+  private armLockScreen(metadata?: AudioMetadata) {
+    try {
+      this.player?.setActiveForLockScreen(
+        true,
+        metadata ?? this.activeMetadata ?? { title: this.activeDocument?.fileName ?? 'Bardo', artist: 'Bardo' },
+      );
+    } catch (error) {
+      console.warn('[audio] no se pudieron armar los controles de la notificación:', error instanceof Error ? error.message : error);
+    }
+  }
+
+  /**
+   * ¿Empezó a sonar? Espera hasta 1,5 s a que el reproductor diga que sí. Se
+   * escucha el aviso del reproductor y no un timer: con la pantalla apagada
+   * los timers de JavaScript se congelan, y si el usuario bloqueaba el
+   * teléfono justo después de tocar play, la espera quedaba colgada.
+   */
+  private startedPlaying(sessionId: number): Promise<boolean> {
+    const player = this.player;
+    if (!player) return Promise.resolve(false);
+    if (player.currentStatus.playing) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (value: boolean) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        subscription.remove();
+        resolve(value);
+      };
+      const subscription = player.addListener('playbackStatusUpdate', (status) => {
+        // Otro pedido tomó el control: no es un fallo de este.
+        if (!this.isSessionActive(sessionId) || status.playing) finish(true);
+      });
+      const timer = setTimeout(() => finish(Boolean(player.currentStatus.playing)), 1500);
+    });
+  }
+
+  /** Tira el reproductor nativo; el próximo ensureChunkLoaded crea otro y recarga el tramo. */
+  private recreatePlayer() {
+    this.playerSubscription?.remove();
+    this.playerSubscription = null;
+    try {
+      this.player?.release();
+    } catch {
+      // ya estaba liberado
+    }
+    this.player = null;
+    this.activeSourceKey = null;
+    this.lastObservedIsPlaying = false;
+  }
+
+  /**
+   * Android manda las teclas de medios (auricular, notificación, pantalla de
+   * bloqueo) a la última sesión que REPRODUJO: una sesión recién armada en
+   * pausa no las recibe (verificado con `input keyevent 126`: nada hasta que
+   * el libro suena una vez). Un instante de reproducción en silencio la deja
+   * como "la sesión de los botones", y se vuelve a la posición exacta sin
+   * guardar nada en el medio.
+   */
+  private async claimMediaButtons(absoluteCharIndex: number, sessionId: number) {
+    const player = this.player;
+    if (!player || !player.currentStatus.isLoaded || !this.isSessionActive(sessionId)) return;
+    const volume = player.volume;
+    try {
+      player.volume = 0;
+      this.focusClaimedWhilePlaying = true;
+      player.play();
+      await new Promise((resolve) => setTimeout(resolve, 300));
+      // Si en el medio el usuario pidió sonido, es SU reproducción: no se pausa.
+      if (!this.isSessionActive(sessionId)) return;
+      player.pause();
+      await this.seekWithinActiveChunk(absoluteCharIndex);
+    } catch (error) {
+      console.warn('[audio] no se pudieron reclamar los botones de medios:', error instanceof Error ? error.message : error);
+    } finally {
+      player.volume = volume;
+    }
+  }
+
   // ─── Public API ────────────────────────────────────────────────────────────
 
   subscribe(listener: PlaybackListener) {
@@ -597,6 +741,106 @@ class DocumentAudioPlaybackService {
   }
 
   getSnapshot() { return { ...this.snapshot }; }
+
+  /**
+   * Vuelve a dejar un libro cargado EN PAUSA en su posición, con la sesión de
+   * medios armada, después de que la app se reinició mientras se lo escuchaba.
+   * No suena nada: queda todo listo para que el play de la notificación, de la
+   * pantalla de bloqueo, del auricular o de la tarjeta del Inicio funcione.
+   * Si ya hay un libro cargado, no hace nada.
+   */
+  async restoreSession(
+    document: ParsedDocument,
+    blockIndex: number,
+    charIndex: number,
+    voiceId: string | null,
+    rate: number,
+    metadata?: AudioMetadata,
+  ) {
+    if (this.activeDocument || this.hasUserPlayed) return;
+    const absolute = getAbsoluteCharIndex(document, blockIndex, charIndex);
+    this.isRestoring = true;
+    // Nada de lo que pase acá adentro se guarda como progreso: la base ya
+    // tiene la posición exacta, y el primer aviso tras cargar el tramo
+    // apuntaba al principio de la oración.
+    this.suppressPersistUntil = Date.now() + 20000;
+    try {
+      // Primero el WAV, en silencio y sin tocar la sesión (sin "Preparando…"
+      // ni "Error de voz" en pantalla al arrancar): si la voz no está o el
+      // motor falla, no se restaura y listo.
+      const ready = await this.prewarm(document, voiceId, blockIndex, charIndex);
+      if (!ready || this.hasUserPlayed || this.activeDocument) return;
+      const sessionId = this.startPlaybackSession();
+      this.activePlaybackRate = rate;
+      this.activeMetadata = metadata;
+      this.preferredVoiceId = voiceId;
+      const resolved = await this.resolveVoiceFor(document, voiceId);
+      // Si el usuario pidió sonido mientras tanto, es su sesión: no se toca.
+      if (!this.isSessionActive(sessionId) || this.hasUserPlayed) return;
+      this.activeVoiceId = resolved.voiceId;
+      this.activeLanguage = resolved.language;
+      const loaded = await this.ensureChunkLoaded(document, resolved.voiceId, absolute, sessionId).catch(() => null);
+      if (!loaded || !this.isSessionActive(sessionId) || this.hasUserPlayed || !this.player) return;
+      await this.seekWithinActiveChunk(absolute);
+      this.player.pause();
+      this.player.setPlaybackRate(rate);
+      this.armLockScreen(metadata);
+      // Los botones de medios sólo si no hay otra app sonando: si la hay, el
+      // play del auricular es de ella, no nuestro.
+      if (!isMusicActive()) await this.claimMediaButtons(absolute, sessionId);
+    } catch (error) {
+      console.warn('[audio] no se pudo restaurar la escucha:', error instanceof Error ? error.message : error);
+    } finally {
+      this.isRestoring = false;
+      this.suppressPersistUntil = Date.now() + 1000;
+      // Recién ahora el resto se entera: cargado, en pausa, en su posición.
+      if (this.player && this.snapshot.documentId === document.id) this.handlePlayerStatus(this.player.currentStatus);
+    }
+  }
+
+  /** ¿Se está restaurando la escucha del arranque? Mientras tanto no se publica nada. */
+  isRestoringSession(): boolean {
+    return this.isRestoring;
+  }
+
+  /** Parar solo cuando el reloj llegue a `time` (ms desde época); null lo cancela. */
+  setStopAt(time: number | null) {
+    this.stopAtTime = time;
+  }
+
+  /** Parar solo al llegar a esta posición del texto (fin del capítulo); null lo cancela. */
+  setStopAtChar(char: number | null) {
+    this.stopAtChar = char;
+  }
+
+  /** Reanuda el libro cargado (en pausa) desde donde está: el play de la tarjeta del Inicio. */
+  async resume() {
+    const doc = this.activeDocument;
+    if (!doc || !this.player || !this.player.currentStatus.isLoaded) return;
+    const at = this.currentAbsoluteCharFor(doc.id);
+    const sessionId = this.startPlaybackSession();
+    this.pauseGeneration += 1;
+    this.hasUserPlayed = true;
+    this.armLockScreen(this.activeMetadata ?? { title: doc.fileName, artist: 'Bardo' });
+    this.player.setPlaybackRate(this.activePlaybackRate);
+    this.focusClaimedWhilePlaying = true;
+    this.player.play();
+    if (await this.startedPlaying(sessionId)) return;
+    if (!this.isSessionActive(sessionId)) return;
+    // El nativo no arrancó: el camino completo de play() lo recrea y reintenta.
+    this.recreatePlayer();
+    await this.play(doc, this.preferredVoiceId, this.activePlaybackRate, at ?? 0, this.activeMetadata);
+  }
+
+  /**
+   * Al volver a la app, si hay un libro cargado se vuelven a registrar los
+   * controles: si Android mató el servicio de la notificación (o el usuario
+   * la cerró), la sesión de medios vuelve sin que haya que tocar nada.
+   */
+  rearmLockScreen() {
+    if (!this.activeDocument || !this.player?.currentStatus.isLoaded) return;
+    this.armLockScreen(this.activeMetadata);
+  }
 
   /**
    * Dónde va el audio de ESTE libro ahora (sonando o en pausa), en caracteres
@@ -619,9 +863,17 @@ class DocumentAudioPlaybackService {
   async play(document: ParsedDocument, voiceId: string | null, rate: number, absoluteCharIndex: number, metadata?: AudioMetadata) {
     const sessionId = this.startPlaybackSession();
     this.pauseGeneration += 1; // pedir sonido cancela cualquier pausa anterior
+    this.hasUserPlayed = true;
     this.activePlaybackRate = rate;
     this.activeMetadata = metadata;
     this.preferredVoiceId = voiceId;
+    // Señal de vida YA: resolver la voz puede tardar segundos en frío (el motor
+    // de texto a voz arranca), y sin esto el botón no mostraba nada y parecía
+    // roto; el usuario lo tocaba de nuevo y el segundo toque se descartaba.
+    this.updateSnapshot({ documentId: document.id, isPreparing: true, errorMessage: null });
+    // Se anota qué libro se escucha: si la app se cierra, el próximo arranque
+    // lo vuelve a dejar cargado en pausa con la sesión de medios armada.
+    void runtimeStateRepository.setAudioSessionBookId(document.id).catch(() => {});
 
     const resolved = await this.resolveVoiceFor(document, voiceId);
     if (!this.isSessionActive(sessionId)) return;
@@ -634,6 +886,7 @@ class DocumentAudioPlaybackService {
     } catch (error) {
       // Una sesión reemplazada por otro play/seek no debe mostrar su error.
       if (!this.isSessionActive(sessionId)) return;
+      this.updateSnapshot({ isPreparing: false });
       throw error;
     }
     // Si el tramo no cargó (síntesis falló / sesión cambió), NO seguimos a
@@ -644,7 +897,23 @@ class DocumentAudioPlaybackService {
     if (!this.isSessionActive(sessionId) || !this.player) return;
 
     this.player.setPlaybackRate(rate);
-    this.player.setActiveForLockScreen(true, metadata ?? { title: document.fileName, artist: 'Bardo' });
+    this.armLockScreen(metadata ?? { title: document.fileName, artist: 'Bardo' });
+    await this.seekWithinActiveChunk(absoluteCharIndex);
+    if (!this.isSessionActive(sessionId)) return;
+    this.focusClaimedWhilePlaying = true;
+    this.player.play();
+    // Si el reproductor no arranca (el nativo quedó inutilizable después de que
+    // Android matara el servicio de la notificación, o el proceso volvió de un
+    // cierre raro), se recrea y se intenta UNA vez más, en vez de dejar al
+    // usuario tocando play sin que pase nada.
+    if (await this.startedPlaying(sessionId)) return;
+    if (!this.isSessionActive(sessionId)) return;
+    console.warn('[audio] el reproductor no arrancó: se recrea y se reintenta');
+    this.recreatePlayer();
+    loaded = await this.ensureChunkLoaded(document, resolved.voiceId, absoluteCharIndex, sessionId).catch(() => null);
+    if (!loaded || !this.isSessionActive(sessionId) || !this.player) return;
+    this.player.setPlaybackRate(rate);
+    this.armLockScreen(metadata ?? { title: document.fileName, artist: 'Bardo' });
     await this.seekWithinActiveChunk(absoluteCharIndex);
     if (!this.isSessionActive(sessionId)) return;
     this.player.play();
@@ -655,10 +924,10 @@ class DocumentAudioPlaybackService {
    * abrir el libro, así el play suena al instante. No toca la sesión activa: si
    * hay algo sonando (este u otro libro) no hace nada.
    */
-  async prewarm(document: ParsedDocument, voiceId: string | null, blockIndex: number, charIndex: number) {
-    if (this.snapshot.isPlaying || this.snapshot.isPreparing) return;
+  async prewarm(document: ParsedDocument, voiceId: string | null, blockIndex: number, charIndex: number): Promise<boolean> {
+    if (this.snapshot.isPlaying || this.snapshot.isPreparing) return false;
     // Otro libro cargado (en pausa): no se le pisa el idioma ni la grilla.
-    if (this.activeDocument && this.activeDocument.id !== document.id) return;
+    if (this.activeDocument && this.activeDocument.id !== document.id) return false;
     try {
       const absoluteCharIndex = getAbsoluteCharIndex(document, blockIndex, charIndex);
       if (this.sentencesDocId !== document.id || this.sentencesLen !== document.fullText.length) {
@@ -672,13 +941,15 @@ class DocumentAudioPlaybackService {
       const chunks = buildAnchoredChunks(this.sentences, absoluteCharIndex);
       const index = chunkIndexForChar(chunks, absoluteCharIndex);
       const chunk = chunks[index];
-      if (!chunk) return;
+      if (!chunk) return false;
       const resolved = await this.resolveVoiceFor(document, voiceId);
-      if (this.snapshot.isPlaying || this.snapshot.isPreparing) return;
+      if (this.snapshot.isPlaying || this.snapshot.isPreparing) return false;
       this.activeLanguage = resolved.language;
-      await this.prepareChunk(document, chunk, resolved.voiceId, this.playbackSessionId, true);
+      const uri = await this.prepareChunk(document, chunk, resolved.voiceId, this.playbackSessionId, true);
+      return Boolean(uri);
     } catch {
       // Precalentar es opcional: si falla, play() lo sintetiza como siempre.
+      return false;
     }
   }
 
@@ -824,6 +1095,10 @@ class DocumentAudioPlaybackService {
 
   unload() {
     this.playbackSessionId += 1;
+    this.stopAtTime = null;
+    this.stopAtChar = null;
+    // Parar del todo: ya no hay escucha que restaurar en el próximo arranque.
+    void runtimeStateRepository.setAudioSessionBookId(null).catch(() => {});
     this.playerSubscription?.remove();
     this.playerSubscription = null;
     this.player?.release();
@@ -834,4 +1109,12 @@ class DocumentAudioPlaybackService {
 }
 
 export const documentAudioPlaybackService = new DocumentAudioPlaybackService();
+
+// Al volver a la app (desde la pantalla de bloqueo, otra app, o después de que
+// el usuario cerrara la notificación), los controles se vuelven a registrar si
+// hay un libro cargado: si Android había matado el servicio de la notificación,
+// la sesión de medios vuelve sin que haya que tocar nada.
+AppState.addEventListener('change', (state) => {
+  if (state === 'active') documentAudioPlaybackService.rearmLockScreen();
+});
 export type DocumentPlaybackSnapshot = PlaybackSnapshot;

@@ -1072,3 +1072,130 @@ pasa tipos, lint y 420 tests; lo que se pudo, se probó en el emulador.
 - El escaneo re-hashea en cada pasada los archivos ignorados y los duplicados.
 - `updateSettings` con forma funcional para que dos toques rápidos en un Stepper no se pisen.
 - Entradas EPUB de más de 48 MB se saltean en silencio.
+
+---
+
+## El play externo no reproducía después de reabrir la app (2026-09-25)
+
+Facu: "si se cierra la app y se cierra el widget de la barra de tareas, cuando se vuelve a abrir la
+app y se pone play no vuelve a reproducir a menos que se clickee el botón Escuchar".
+
+### Qué pasaba
+
+Reproducido en el emulador mandando la tecla PLAY como la manda un auricular o la notificación
+(`adb shell input keyevent 126`):
+
+- Con la app viva y en pausa, PLAY reanuda. Incluso si Android mató el servicio de la notificación,
+  la sesión de medios sigue viva y PLAY reanuda.
+- Con la app cerrada del todo y vuelta a abrir, PLAY no hace nada: no existe ninguna sesión de
+  medios hasta que se toca "Escuchar" adentro de la app. Eso es lo que Facu veía: la notificación,
+  la pantalla de bloqueo, el auricular o el control del auto no tienen a quién mandarle la orden.
+
+### Qué se hizo
+
+- **La escucha se recuerda.** Al empezar a escuchar se anota qué libro es (`runtime.audioSessionBookId`
+  en la tabla settings); se borra al parar del todo o al terminar el libro. Pausar no lo borra.
+- **Al arrancar se restaura.** Dos segundos después de mostrar el Inicio (abrir sigue siendo
+  instantáneo), si había una escucha anotada y no hay nada cargado, `restoreAudioSessionIfAny`
+  carga el libro desde el caché, lo deja en pausa en su posición exacta y arma la sesión de medios y
+  la notificación (`restoreSession` en el servicio de audio). El play de la notificación, de la
+  pantalla de bloqueo o del auricular vuelve a funcionar sin tocar la app. Si el texto del libro no
+  está en caché no se extrae en el arranque: se reintenta la próxima vez.
+- **La tarjeta del Inicio muestra el libro cargado también en pausa** ("Listo para seguir"), con un
+  botón de play/pausa (`resume()`) además de detener. Antes sólo aparecía mientras sonaba.
+- **Al volver a la app se rearma la sesión** (`AppState`): si el usuario había cerrado la
+  notificación, vuelve.
+- **Reintento si el reproductor nativo no arranca:** `play()` y `resume()` esperan hasta 1,5 s a
+  que el reproductor diga que suena; si no, lo recrean y lo intentan una vez más. Registrar los
+  controles de la notificación ya no puede tirar el play: va en `try/catch`.
+
+Verificado en el emulador: escuchar, cerrar la app del todo, reabrir, y PLAY por el sistema
+reproduce; la tarjeta del Inicio aparece con "Listo para seguir" y su play funciona; "Detener la
+voz" borra la anotación y el próximo arranque no restaura nada.
+
+---
+
+## Segunda pasada completa (2026-09-25)
+
+Facu: "arreglalo y hacé otra pasada completa en busca de bugs". Tres revisiones más, de sólo lectura:
+ciclo de vida y sesión de medios (con las fuentes de expo-audio 55 y media3 1.8), las pantallas que
+la primera pasada no había cubierto (ficha, notas, estadísticas, pronunciación, ajustes y componentes),
+y una revisión adversarial de regresiones sobre todo lo cambiado el 24 y el 25. Cada hallazgo se
+verificó en el código antes de tocarlo. Todo pasa tipos, lint y 420 tests.
+
+### Ciclo de vida y sesión de medios (lo más grave)
+
+- **El temporizador de sueño no corría con la pantalla apagada.** Era un `setInterval` de JavaScript,
+  y Android congela los timers de JavaScript cuando la Activity se pausa: "apagar en 30 minutos",
+  bloqueás el teléfono, y la voz seguía toda la noche; recién al prender la pantalla el timer atrasado
+  paraba. Ahora la decisión de parar vive en el servicio de audio (`setStopAt`, `setStopAtChar`), que
+  mira el reloj y la posición en cada aviso del reproductor, y esos avisos sí llegan en segundo plano.
+  Lo mismo para "parar al terminar el capítulo". El interval del lector queda sólo para la cuenta
+  regresiva en pantalla.
+- **Deslizar Bardo de "recientes" pausaba la narración.** `MediaSessionService.onTaskRemoved` de
+  media3 pausa y para el servicio cuando cree que la reproducción "no está en curso", y como
+  expo-audio arma su propia notificación, media3 nunca se entera de que está en primer plano. Parche
+  a expo-audio (`patches/expo-audio+55.0.9.patch`, aplicado por `patch-package` en `postinstall`):
+  si está sonando, se deja seguir.
+- **El play desde la notificación, la pantalla de bloqueo o el auricular sonaba sin foco de audio.**
+  expo-audio sólo pide foco en el play de JavaScript; los botones nativos van directo al reproductor.
+  Bardo hablaba encima de la música de otra app y una llamada no lo pausaba. Ahora, cuando el
+  reproductor pasa a sonar sin que JavaScript lo haya pedido, se hace un `play()` idempotente que pide
+  el foco.
+- **Después de una llamada la voz se reanudaba aunque hubieras pausado durante la llamada** (expo-audio
+  dejaba la marca de "pausado por pérdida de foco"). En el parche: pausar limpia esa marca.
+- **Desenchufar los auriculares seguía por el parlante.** En el parche: `setHandleAudioBecomingNoisy`.
+- **Dar play en frío no daba señal de vida.** Resolver la voz puede tardar segundos si el motor de
+  texto a voz arranca, y el botón no mostraba nada; el usuario lo tocaba de nuevo y el segundo toque se
+  descartaba. Es la explicación más probable del "no reproduce a menos que toque Escuchar". Ahora
+  `play()` publica "Preparando" en el acto, y listar voces tiene un tope de 10 segundos.
+- **La restauración de la escucha al arrancar** (de hoy) se hizo silenciosa y sin robar la sesión: si
+  el usuario ya pidió sonido no se mete, no publica "Preparando" ni errores de voz, no guarda ninguna
+  posición intermedia, y sólo reclama los botones de medios si no hay otra app sonando
+  (`isMusicActive` en el módulo de teclas). Android manda esas teclas a la última sesión que
+  reprodujo: sin el instante de reproducción en silencio, el play del auricular seguía sin llegar.
+
+**Trampa del parche.** Expo SDK 55 no compila expo-audio desde `node_modules`: usa un artefacto
+precompilado (el módulo declara una `publication`). El parche compiló dos veces sin entrar a la APK;
+lo delató `apkanalyzer dex code --class expo.modules.audio.service.AudioControlsService`. Hace falta
+`"expo": {"autolinking": {"android": {"buildFromSource": ["expo-audio"]}}}` en `package.json`, y ahora
+está.
+
+### Regresiones de lo cambiado el 24 y el 25 (corregidas)
+
+- La posición del audio en pausa pisaba la lectura manual al reabrir un PDF con caché: ahora el audio
+  manda sólo si está sonando.
+- Pasar a la página siguiente y volver dejaba la posición en el principio de la siguiente (el final de
+  una página es el principio de la otra): pertenencia estricta al decidir si la posición ya está en la
+  página.
+- Importar un libro que ya estaba lo volvía a guardar y anulaba el color de tapa: ya no se guarda.
+- Un proveedor que no informa el tamaño en el listado saltaba la búsqueda del id viejo de los libros
+  grandes: el tamaño se resuelve una vez y se usa en los dos lados.
+
+### Pantallas y componentes
+
+- **Se apilaban dos lectores** del mismo libro (lector → Ajustes → Mis notas → nota): el de arriba, al
+  cerrarse, le cerraba el PDF al de abajo. Mis notas vuelve al Inicio y abre uno solo.
+- **La meta del año** contaba por `updatedAt`: un libro terminado el año pasado sumaba de nuevo al
+  abrirlo, y releer uno terminado lo restaba. Base v11: `finishedAt`, la primera vez que se llega al
+  final; "Empezar de nuevo" lo conserva; el respaldo lo restaura.
+- **El zoom con los dedos** no mostraba nada hasta soltar, y agrandaba "la página actual" y no la
+  pellizcada. Ahora agranda en vivo la que tocaste.
+- **Acomodar libros:** la zona de autoscroll de abajo estaba medida contra la lista y no contra la
+  pantalla, y contra el final la fila "se iba volando". Se mide en pantalla y hay tope.
+- Un salto pedido para un libro que no abre ya no queda armado; "Probar la voz" respeta la velocidad;
+  escuchar una pronunciación no reproduce audio viejo de otra voz; las voces recién instaladas
+  aparecen al volver de los ajustes del sistema; la fecha del archivo exportado es la local; la
+  búsqueda de notas descarta respuestas viejas; accesibilidad (mapa, estrellas, filas).
+
+### Quedó anotado, sin tocar
+
+- Pausar desde la notificación en el hueco entre tramos se pierde (el reproductor está en "terminado";
+  media3 lo toma como play). La salida limpia es pasar los tramos a la lista de reproducción de
+  expo-audio (sin huecos), que además evitaría que la música de otra app "parpadee" entre tramos.
+- El servicio de la notificación queda "started" tras parar; si Android mata el proceso lo resucita sin
+  JavaScript (inofensivo, pero sucio). Un `stopSelf` al desregistrar iría en el mismo parche.
+- Hasta 59 segundos de lectura pueden caer en el día siguiente (el día se toma al guardar, cada
+  minuto). Sólo afecta la racha en el borde de la medianoche.
+- Iconos de favorito sin etiqueta para el lector de pantalla; los steppers de Ajustes dicen "Menos" y
+  "Más" sin decir de qué.

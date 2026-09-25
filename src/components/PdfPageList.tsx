@@ -251,6 +251,12 @@ const PdfPageListInner = forwardRef(function PdfPageList(
   const translateX = useRef(new Animated.Value(0)).current;
   const translateY = useRef(new Animated.Value(0)).current;
   const gesture = useRef({ scale: 1, x: 0, y: 0, startDistance: 0, startScale: 1, startX: 0, startY: 0 }).current;
+  // Qué página tocó el dedo por última vez: es la que se agranda, no "la
+  // actual" (con dos páginas a la vista podía agrandarse la otra), y se
+  // agranda EN VIVO desde el pellizco, no recién al soltar.
+  const touchedPageRef = useRef(0);
+  const zoomedPageRef = useRef<number | null>(null);
+  zoomedPageRef.current = zoomedPage;
 
   const resetZoom = useCallback(() => {
     gesture.scale = 1;
@@ -277,6 +283,9 @@ const PdfPageListInner = forwardRef(function PdfPageList(
           gesture.startX = gesture.x;
           gesture.startY = gesture.y;
           gesture.startDistance = touchDistance(event.nativeEvent.touches);
+          if (event.nativeEvent.touches.length === 2 && zoomedPageRef.current === null) {
+            setZoomedPage(touchedPageRef.current);
+          }
         },
         onPanResponderMove: (event, state) => {
           const touches = event.nativeEvent.touches;
@@ -307,7 +316,7 @@ const PdfPageListInner = forwardRef(function PdfPageList(
           }
           // Al soltar, se recentra dentro de los límites y se pide la página a
           // más resolución si hace falta.
-          setZoomedPage(currentPageRef.current);
+          setZoomedPage(zoomedPageRef.current ?? touchedPageRef.current);
           setZoomLevel(gesture.scale);
         },
       }),
@@ -487,6 +496,7 @@ const PdfPageListInner = forwardRef(function PdfPageList(
             ? (event) => handleLongPress(pageIndex, event.nativeEvent.locationX, event.nativeEvent.locationY)
             : undefined}
           delayLongPress={350}
+          onTouchStart={() => { touchedPageRef.current = pageIndex; }}
           style={[
             styles.pageWrap,
             horizontal
