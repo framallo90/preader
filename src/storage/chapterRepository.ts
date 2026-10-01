@@ -1,4 +1,4 @@
-import { getDatabase } from './database';
+import { getDatabase, runInTransaction } from './database';
 import { Chapter } from '../types/storage';
 import { ChapterInfo } from '../types/document';
 
@@ -30,7 +30,7 @@ export const chapterRepository = {
   async saveChaptersForBook(bookId: string, chapters: ChapterInfo[]): Promise<void> {
     const db = await getDatabase();
 
-    await db.withTransactionAsync(async () => {
+    await runInTransaction(db, async () => {
       await db.runAsync('DELETE FROM chapters WHERE bookId = ?', [bookId]);
 
       for (const chapter of chapters) {

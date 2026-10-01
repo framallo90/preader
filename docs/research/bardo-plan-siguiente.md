@@ -1204,3 +1204,49 @@ todo, reabrir y mandar PLAY de auricular (`input keyevent 126`): reproduce.
   minuto). Sólo afecta la racha en el borde de la medianoche.
 - Iconos de favorito sin etiqueta para el lector de pantalla; los steppers de Ajustes dicen "Menos" y
   "Más" sin decir de qué.
+
+---
+
+## "No se pudo iniciar la app": la conexión de SQLite moría (2026-10-01)
+
+Facu, desde el teléfono: en el lector apareció "Call to function 'NativeDatabase.prepareAsync' has
+been rejected", y al reabrir, "No se pudo iniciar la app — NativeDatabase.execAsync … Caused by:
+java.lang.NullPointerException". Hasta forzar la detención no había salida.
+
+### Causa (leída en el código de expo-sqlite 55 y expo-modules-core)
+
+1. Para "recuperarse", `withDatabaseRetry` reabría la base ante CUALQUIER error: el regex de
+   `isStaleDatabaseError` buscaba "NativeDatabase", y todos los errores de la base lo dicen
+   ("Call to function 'NativeDatabase.xxx' has been rejected"). Un error común (una consulta que falla
+   una vez) alcanzaba.
+2. expo-sqlite, al abrir otra vez el mismo archivo, devuelve el MISMO objeto nativo (lo busca en su
+   caché) envuelto en un objeto JavaScript nuevo.
+3. Cuando el recolector de basura de JavaScript se lleva el envoltorio viejo,
+   `NativeDatabase.sharedObjectDidRelease` cierra la conexión sin mirar el contador de referencias,
+   y el objeto queda en el caché con `isClosed = false`. Desde ahí cada consulta tira
+   `NullPointerException` (el puente JNI ya no tiene objeto nativo) y cada apertura nueva devuelve ese
+   mismo muerto. Con el proceso vivo, reabrir la app no alcanzaba.
+
+Reproducido en el emulador con la build del 25: renombrar la tabla `colls` un instante hace fallar la
+carga del Inicio (dentro de `withDatabaseRetry`); con la tabla ya restaurada, abrir un libro un par de
+veces (para que corra el recolector) y volver: "No se pudieron cargar los recientes — NullPointer";
+salir con Atrás y reabrir en el mismo proceso: "No se pudo iniciar la app", idéntico al teléfono.
+
+### Arreglo (`src/storage/database.ts`)
+
+- **Conexión propia por apertura** (`useNewConnection: true`): un envoltorio viejo sólo puede cerrar
+  la suya, y reabrir da una conexión de verdad nueva en vez del muerto del caché.
+- **Se reabre sólo ante una conexión muerta** (`NullPointerException`, "already released", "Access to
+  closed resource"). Un error común se devuelve tal cual.
+- **Cada `getDatabase()` verifica que la conexión siga viva** (`isInTransactionSync`, una llamada
+  sincrónica mínima) y, si murió, abre otra ahí mismo. La conexión descartada se cierra de verdad.
+- **`busy_timeout` de 3 segundos** por conexión, por si alguna vez conviven dos.
+- **Transacciones de a una** (`runInTransaction`): las de expo-sqlite no se excluyen entre sí, y dos a
+  la vez sobre la misma conexión daban "cannot start a transaction within a transaction" (cambiar un
+  ajuste mientras se guardaban los capítulos de un libro).
+- La pantalla de error de arranque tiene **Reintentar**, y el arranque pasa por `withDatabaseRetry`.
+- Guardar la posición al parar la voz ya no muestra un error nativo crudo en la barra de la voz.
+
+Verificado en el emulador con los mismos pasos: el error común aparece una vez (la tabla no estaba) y
+después todo sigue: el Inicio carga, reabrir en el mismo proceso arranca normal, y el progreso se
+guarda. Tres toques rápidos a un ajuste quedan guardados con el último valor.

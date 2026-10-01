@@ -1,4 +1,4 @@
-import { getDatabase } from './database';
+import { getDatabase, runInTransaction } from './database';
 import { parsedDocumentRepository } from './parsedDocumentRepository';
 import { Book, BookStatus } from '../types/storage';
 
@@ -164,7 +164,7 @@ export const bookRepository = {
   async setOrder(entries: { id: string; orderIndex: number }[]): Promise<void> {
     if (entries.length === 0) return;
     const db = await getDatabase();
-    await db.withTransactionAsync(async () => {
+    await runInTransaction(db, async () => {
       for (const entry of entries) {
         await db.runAsync('UPDATE books SET orderIndex = ? WHERE id = ?', [entry.orderIndex, entry.id]);
       }
@@ -291,7 +291,7 @@ export const bookRepository = {
     const db = await getDatabase();
     // reading_progress no tiene FK, así que se borra a mano. Capítulos, notas y
     // vínculos con colecciones se van por ON DELETE CASCADE.
-    await db.withTransactionAsync(async () => {
+    await runInTransaction(db, async () => {
       await db.runAsync('DELETE FROM reading_progress WHERE bookId = ?', [bookId]);
       await db.runAsync('DELETE FROM books WHERE id = ?', [bookId]);
     });

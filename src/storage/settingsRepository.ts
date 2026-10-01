@@ -1,4 +1,4 @@
-import { getDatabase } from './database';
+import { getDatabase, runInTransaction } from './database';
 import { AppSettings, AUTO_SCROLL_SPEEDS, DEFAULT_SETTINGS, LIBRARY_LAYOUTS, LIBRARY_SORTS, LibraryLayout, LibrarySort, MAX_TEXT_MARGIN, MIN_TEXT_MARGIN } from '../types/storage';
 
 type SettingsRow = {
@@ -167,7 +167,7 @@ export const settingsRepository = {
 
     const db = await getDatabase();
 
-    await db.withTransactionAsync(async () => {
+    await runInTransaction(db, async () => {
       for (const [key, value] of entries) {
         await db.runAsync(
           `

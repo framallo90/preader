@@ -24,6 +24,9 @@ la escribió.
     `documentAudioPlaybackService.ts` 805 → 1.100, `app/` 5.800 → 6.100, `src/services` 3.400 →
     3.900, total 20.100 / 17.500 → 21.200 / 18.700).
   - Dos filas nuevas en la parte 3: `audioSessionRestore.ts` (servicios) y `patches/` (raíz).
+  - 2026-10-01: la base pasó a la versión 11 (decía 10 en varias partes; corregido), `database.ts` 340 → 420
+    y `_layout.tsx` 140 → 160 líneas, y una historia nueva en "Problemas reales" (la 7: "No se pudo iniciar la
+    app"). Si el PDF ya se rehízo, hay que rehacerlo otra vez con esto.
   - Tres frases nuevas, cortas: en `index.tsx` (parte 1, 2 y 3) que el escaneo también corre al
     volver a la app y al tirar para abajo; en `settings.tsx` (parte 3) "carpetas y su orden"; en
     `libraryScanService.ts` y `libraryFolders.ts` (parte 3) qué devuelve el escaneo y que las

@@ -308,7 +308,11 @@ export function useReaderController({
   const stop = useCallback(async () => {
     try {
       await documentAudioPlaybackService.pause();
-      await persistAbsoluteChar(absoluteCharIndexRef.current, true);
+      // Guardar la posición no puede convertir "parar" en un error en pantalla
+      // (un mensaje nativo crudo en la barra de la voz).
+      await persistAbsoluteChar(absoluteCharIndexRef.current, true).catch((error: unknown) => {
+        console.warn('[lector] no se pudo guardar la posición al parar:', error instanceof Error ? error.message : error);
+      });
     } catch (error) {
       reportError(error, 'No se pudo detener la lectura.');
     } finally {

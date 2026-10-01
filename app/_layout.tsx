@@ -1,11 +1,11 @@
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { AppErrorBoundary } from '../src/components/AppErrorBoundary';
 import { AppSettingsProvider, useAppSettings } from '../src/hooks/useAppSettings';
-import { initializeDatabase } from '../src/storage/database';
+import { initializeDatabase, withDatabaseRetry } from '../src/storage/database';
 import { parsedDocumentRepository } from '../src/storage/parsedDocumentRepository';
 import { runtimeStateRepository } from '../src/storage/runtimeStateRepository';
 import { lightColors } from '../src/utils/theme';
@@ -57,12 +57,17 @@ export default function RootLayout() {
   const [isDatabaseReady, setIsDatabaseReady] = useState(false);
   const [bootError, setBootError] = useState<string | null>(null);
 
+  // Reintentar desde la pantalla de error de arranque (antes no había salida
+  // más que forzar la detención de la app).
+  const [bootAttempt, setBootAttempt] = useState(0);
+
   useEffect(() => {
     let isMounted = true;
 
     const prepareAndRecover = async () => {
       try {
-        await initializeDatabase();
+        // Con reintento: si la conexión nativa estaba muerta, se abre otra.
+        await withDatabaseRetry(() => initializeDatabase());
       } catch (error) {
         if (isMounted) {
           setBootError(
@@ -98,13 +103,23 @@ export default function RootLayout() {
 
     void prepareAndRecover();
     return () => { isMounted = false; };
-  }, []);
+  }, [bootAttempt]);
 
   if (bootError) {
     return (
       <View style={[styles.bootContainer, styles.bootError]}>
         <Text style={styles.bootTitle}>No se pudo iniciar la app</Text>
         <Text style={styles.bootSubtitle}>{bootError}</Text>
+        <Pressable
+          onPress={() => {
+            setBootError(null);
+            setBootAttempt((n) => n + 1);
+          }}
+          accessibilityRole="button"
+          style={styles.bootRetry}
+        >
+          <Text style={styles.bootRetryText}>Reintentar</Text>
+        </Pressable>
       </View>
     );
   }
@@ -140,4 +155,6 @@ const styles = StyleSheet.create({
   bootText: { color: lightColors.text, fontSize: 16 },
   bootTitle: { color: lightColors.text, fontSize: 20, fontWeight: '700', textAlign: 'center' },
   bootSubtitle: { color: lightColors.danger, fontSize: 15, textAlign: 'center' },
+  bootRetry: { marginTop: 8, paddingHorizontal: 22, paddingVertical: 12, borderRadius: 12, backgroundColor: lightColors.primary },
+  bootRetryText: { color: lightColors.primaryText, fontSize: 15, fontWeight: '700' },
 });

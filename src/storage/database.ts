@@ -5,47 +5,105 @@ import { SQLiteDatabase, openDatabaseAsync } from 'expo-sqlite';
 const DATABASE_NAME = 'pdf-voice-reader.db';
 const CURRENT_DB_VERSION = 11;
 let databasePromise: Promise<SQLiteDatabase> | null = null;
+// La conexión ya abierta, para poder preguntarle si sigue viva sin esperar.
+let currentDatabase: SQLiteDatabase | null = null;
 
-export async function getDatabase() {
-  if (!databasePromise) {
-    databasePromise = openDatabaseAsync(DATABASE_NAME)
-      .then(async (db) => {
-        // Por CONEXIÓN, no sólo al inicializar: al reabrir la base
-        // (withDatabaseRetry) la conexión nueva corría sin foreign_keys, y
-        // borrar un libro dejaba notas, capítulos y colecciones huérfanos.
-        await db.execAsync('PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL;');
-        return db;
-      })
-      .catch((error) => {
+/**
+ * Por qué cada apertura pide una conexión NUEVA (`useNewConnection`).
+ *
+ * expo-sqlite, al abrir otra vez el mismo archivo, devuelve el MISMO objeto
+ * nativo envuelto en un objeto JavaScript nuevo. Cuando el recolector de
+ * basura se lleva el envoltorio viejo, el objeto nativo cierra la conexión
+ * (sin mirar que hay otro envoltorio usándola) y queda en el caché del módulo
+ * como si estuviera abierto. Desde ahí, toda consulta tira
+ * "NullPointerException" y toda apertura nueva devuelve ese mismo muerto:
+ * "No se pudo iniciar la app" hasta forzar la detención. Lo disparaba
+ * cualquier error común de una consulta, porque reabrir era la respuesta a
+ * todo. Con conexión propia, un envoltorio viejo sólo puede cerrar la suya.
+ */
+function openConnection(): Promise<SQLiteDatabase> {
+  const opening: Promise<SQLiteDatabase> = openDatabaseAsync(DATABASE_NAME, { useNewConnection: true })
+    .then(async (db) => {
+      // Por CONEXIÓN, no sólo al inicializar: una conexión nueva arranca sin
+      // foreign_keys, y borrar un libro dejaba notas y capítulos huérfanos.
+      // busy_timeout: si alguna vez conviven dos conexiones (la vieja todavía
+      // sin cerrar), una escritura espera en vez de fallar en el acto.
+      await db.execAsync('PRAGMA foreign_keys = ON; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 3000;');
+      if (databasePromise === opening) currentDatabase = db;
+      return db;
+    })
+    .catch((error) => {
       // Si abrir falló, que el próximo intento vuelva a probar en vez de quedar
       // pegado a una promesa rechazada para siempre.
-      databasePromise = null;
+      if (databasePromise === opening) databasePromise = null;
       throw error;
     });
-  }
+  databasePromise = opening;
+  return opening;
+}
 
-  return databasePromise;
+/** ¿La conexión nativa sigue viva? Una pregunta sincrónica mínima: si murió, tira. */
+function isConnectionAlive(db: SQLiteDatabase): boolean {
+  try {
+    db.isInTransactionSync();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Suelta una conexión y la cierra de verdad (si ya estaba muerta, cerrarla falla y no importa). */
+function discardConnection(db: SQLiteDatabase | null) {
+  if (db && currentDatabase !== db) {
+    void db.closeAsync().catch(() => {});
+    return;
+  }
+  currentDatabase = null;
+  databasePromise = null;
+  if (db) void db.closeAsync().catch(() => {});
+}
+
+export async function getDatabase() {
+  // Cada pedido mira primero si la conexión sigue viva: si murió por debajo,
+  // se abre otra ahí mismo, en vez de que la app quede rota hasta reiniciarla.
+  if (currentDatabase && !isConnectionAlive(currentDatabase)) {
+    console.warn('[db] la conexión nativa murió: se abre una nueva');
+    discardConnection(currentDatabase);
+  }
+  return databasePromise ?? openConnection();
 }
 
 /**
- * Suelta la instancia para que el próximo `getDatabase()` vuelva a abrir.
- *
- * El objeto nativo de SQLite puede quedar liberado por debajo (pasa al
- * actualizar la app con el proceso vivo). A partir de ahí TODA consulta falla
- * con "shared object already released" y la biblioteca se ve vacía, con un
- * cartel de error, hasta que la cierres y la abras a mano.
+ * Suelta la conexión para que el próximo `getDatabase()` abra otra. Sólo para
+ * una conexión muerta (ver isStaleDatabaseError).
  */
 export function resetDatabaseHandle() {
-  databasePromise = null;
+  discardConnection(currentDatabase);
+}
+
+// Las transacciones de expo-sqlite no se excluyen entre sí: dos al mismo
+// tiempo sobre la misma conexión daban "cannot start a transaction within a
+// transaction" (cambiar un ajuste mientras se guardaban los capítulos de un
+// libro). Se encolan.
+let transactionChain: Promise<unknown> = Promise.resolve();
+
+/**
+ * `db.withTransactionAsync`, pero de a una por vez. Lo de adentro no puede
+ * abrir otra transacción con esto mismo (se trabaría esperándose).
+ */
+export function runInTransaction(db: SQLiteDatabase, task: () => Promise<void>): Promise<void> {
+  const next = transactionChain.then(
+    () => db.withTransactionAsync(task),
+    () => db.withTransactionAsync(task),
+  );
+  transactionChain = next.catch(() => {});
+  return next;
 }
 
 /**
- * Corre algo contra la base y, si el objeto nativo quedó liberado por debajo,
- * la reabre y lo intenta UNA vez más.
- *
- * Pasa al actualizar la app con el proceso vivo: a partir de ahí toda consulta
- * falla y la pantalla queda en un error sin salida, aunque los datos estén
- * intactos. Reabrir es barato y lo arregla.
+ * Corre algo contra la base y, si la conexión nativa murió por debajo, abre
+ * otra y lo intenta UNA vez más. Un error común (una consulta mal, la base
+ * ocupada) NO reabre: se devuelve tal cual.
  */
 export async function withDatabaseRetry<T>(run: () => Promise<T>): Promise<T> {
   try {
@@ -57,10 +115,15 @@ export async function withDatabaseRetry<T>(run: () => Promise<T>): Promise<T> {
   }
 }
 
-/** ¿El error es "la base quedó inutilizable" y conviene reabrir y reintentar? */
+/**
+ * ¿La conexión quedó inutilizable y conviene abrir otra? Sólo los errores de
+ * conexión muerta. Antes cualquier error de la base contaba (todos dicen
+ * "NativeDatabase" en el mensaje), y reabrir por un error común era justo lo
+ * que terminaba matando la conexión.
+ */
 export function isStaleDatabaseError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /already released|NativeStatement|NativeDatabase/i.test(message);
+  return /already released|NullPointerException|Access to closed resource/i.test(message);
 }
 
 export async function initializeDatabase() {
@@ -279,7 +342,7 @@ async function hasColumn(db: SQLiteDatabase, table: string, column: string): Pro
 async function cleanUpDeadSchema(db: SQLiteDatabase) {
   await db.execAsync('PRAGMA foreign_keys = OFF');
   try {
-    await db.withTransactionAsync(async () => {
+    await runInTransaction(db, async () => {
       if (await hasColumn(db, 'books', 'sagaId')) {
         await db.execAsync(`
           CREATE TABLE books_v10 (
