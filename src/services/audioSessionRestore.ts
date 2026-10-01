@@ -2,11 +2,10 @@
  * Restaurar la escucha después de un reinicio de la app.
  *
  * Si la app se cerró (o Android la mató) mientras se escuchaba un libro, al
- * volver a abrirla no existía ninguna sesión de medios: el play de la
- * notificación, de la pantalla de bloqueo o del auricular no hacía nada hasta
- * tocar "Escuchar" adentro de la app. Acá se vuelve a dejar ese libro cargado
- * en pausa, en su posición, con la sesión armada: el play externo, y el de la
- * tarjeta del Inicio, vuelven a funcionar.
+ * volver a abrirla ese libro queda cargado en pausa, en su posición: la
+ * tarjeta del Inicio dice "Listo para seguir" y su play suena al instante.
+ * No se abre la notificación ni se toman los botones de medios: eso recién
+ * pasa cuando el usuario da play.
  *
  * Corre de fondo, después de que el Inicio ya se mostró (abrir tiene que ser
  * instantáneo), y si algo falta (el libro, su caché de texto) no hace nada.
@@ -18,6 +17,9 @@ import { runtimeStateRepository } from '../storage/runtimeStateRepository';
 import { AppSettings } from '../types/storage';
 import { resolveSavedPosition } from '../utils/progressRemap';
 import { documentAudioPlaybackService } from './documentAudioPlaybackService';
+
+/** Hasta cuánto después de la última escucha se restaura (12 horas). */
+const RESTORE_WINDOW_MS = 12 * 60 * 60 * 1000;
 
 export async function restoreAudioSessionIfAny(
   settings: Pick<AppSettings, 'defaultVoiceId' | 'defaultRate'>,
@@ -38,6 +40,13 @@ export async function restoreAudioSessionIfAny(
   if (!document || document.fullText.length === 0 || (document.pdf && !document.pdf.hasText)) return false;
 
   const progress = await bookProgressRepository.getProgress(bookId);
+  // Sólo una escucha reciente: volver a la app al día siguiente y encontrar
+  // el libro "listo para seguir" sin haberlo pedido no tiene sentido.
+  const lastAt = progress ? Date.parse(progress.updatedAt) : NaN;
+  if (!Number.isFinite(lastAt) || Date.now() - lastAt > RESTORE_WINDOW_MS) {
+    await runtimeStateRepository.setAudioSessionBookId(null);
+    return false;
+  }
   const position = resolveSavedPosition(document, progress);
   await documentAudioPlaybackService.restoreSession(
     document,

@@ -1250,3 +1250,63 @@ salir con Atrás y reabrir en el mismo proceso: "No se pudo iniciar la app", id�
 Verificado en el emulador con los mismos pasos: el error común aparece una vez (la tabla no estaba) y
 después todo sigue: el Inicio carga, reabrir en el mismo proceso arranca normal, y el progreso se
 guarda. Tres toques rápidos a un ajuste quedan guardados con el último valor.
+
+---
+
+## Tres fallas de la voz: STOP externo, la restauración y la voz que vuelve sola (2026-10-01)
+
+Facu: "si cerramos el reproductor de audio, el mismo libro no vuelve a sonar; hay que reproducir otro
+y volver", y "se está abriendo solo el audio y de la nada se empieza a reproducir". Las tres cosas
+se reprodujeron en el emulador antes de tocar nada.
+
+### 1. Cerrar el reproductor desde el sistema dejaba el mismo libro sin sonar
+
+Cerrar el reproductor del panel de notificaciones, o un STOP de Bluetooth o del auto, le manda a la
+app una orden STOP. El reproductor nativo suelta el tramo y queda vacío (sesión "NONE"), pero la app
+seguía teniendo anotado que el tramo estaba cargado. El play del mismo libro pedía ese tramo, "ya estaba", y
+esperaba un "listo" que nunca llegaba; a los 30 segundos fallaba con un error que vivía adentro de la
+barra de audio, oculta justo en ese estado. Otro libro pedía otro tramo, lo cargaba de cero y el
+reproductor revivía; por eso "reproducir otro y volver" lo destrababa.
+
+Arreglo: el servicio de audio detecta el reproductor vacío que no pidió y lo trata como un "Detener"
+(el próximo play vuelve a cargar el tramo, y la escucha deja de estar para restaurar); cargar un tramo
+vuelve a hacerlo si el reproductor está vacío aunque sea el mismo; el play de la tarjeta del Inicio
+arranca desde la posición guardada si el reproductor quedó vacío; y el error de la voz se muestra
+aunque no haya audio cargado.
+
+### 2. La restauración del arranque escondía los avisos del reproductor
+
+Mientras restauraba la escucha al abrir la app, el servicio ignoraba todos los avisos del reproductor;
+si el usuario daba play en esos segundos, la voz sonaba y el botón seguía en "Escuchar". Ahora los
+ignora sólo mientras el usuario no pidió sonido.
+
+### 3. La voz volvía sola "de la nada": un error de expo-audio con el foco de audio
+
+Cuando otra app toma el audio un momento (llamada, nota de voz, aviso, navegación), expo-audio pausa
+a Bardo y lo marca para reanudar. Por un error de orden, no suelta su pedido de audio: pone
+`focusAcquired = false` y recién después pausa, y la pausa intenta soltar el pedido pero ve que "no lo
+tiene". El pedido queda registrado en Android, y cuando la otra app termina, aunque sea diez minutos
+después, Android le devuelve el audio y expo-audio reanuda. Reproducido en el emulador con una llamada
+entrante (`adb emu gsm call`): 75 segundos sonando el teléfono, sin tocar nada, al cortar la voz volvió
+sola; el registro de Android mostraba que Bardo nunca soltó el pedido. También volvía aunque el usuario
+hubiera cerrado el reproductor durante la interrupción.
+
+Además, la restauración del arranque armaba la notificación (el reproductor "se abría solo") y tomaba
+los botones de medios con un instante de reproducción en silencio: un auricular o un auto que se
+conectaba mandaba play y Bardo arrancaba a leer.
+
+Arreglo, en el parche a expo-audio: al terminar una interrupción se reanuda sólo si duró menos de un
+minuto y el reproductor sigue cargado; un pedido de audio viejo se suelta antes de pedir otro; perder
+el audio del todo, o quedar vacío, borra la marca de reanudar. Y la restauración del arranque ya no
+abre la notificación ni toma los botones: deja el libro listo en la tarjeta del Inicio, y sólo si la
+última escucha fue hace menos de doce horas. La notificación aparece recién cuando el usuario da play.
+
+Verificado en el emulador: STOP del sistema y Escuchar el mismo libro, suena; reabrir la app tras
+cerrarla escuchando, sin notificación, con la tarjeta "Listo para seguir" y su play andando; llamada de
+75 segundos, al cortar queda en pausa; llamada de 10 segundos, al cortar retoma; play durante la
+restauración, el botón pasa a "Pausar narración".
+
+Trampa al regenerar el parche: con expo-audio compilado desde las fuentes aparece
+`node_modules/expo-audio/android/build`, con rutas demasiado largas para git en Windows, y
+`patch-package` falla sin avisar del todo (deja el parche viejo). Hay que mover esa carpeta afuera,
+regenerar y devolverla.

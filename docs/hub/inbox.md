@@ -27,6 +27,8 @@ la escribió.
   - 2026-10-01: la base pasó a la versión 11 (decía 10 en varias partes; corregido), `database.ts` 340 → 420
     y `_layout.tsx` 140 → 160 líneas, y una historia nueva en "Problemas reales" (la 7: "No se pudo iniciar la
     app"). Si el PDF ya se rehízo, hay que rehacerlo otra vez con esto.
+  - También 2026-10-01: la parte 3 cambió en dos filas (`audioSessionRestore.ts` 50 → 60 y su descripción, y
+    `patches/` con el arreglo del audio que volvía solo).
   - Tres frases nuevas, cortas: en `index.tsx` (parte 1, 2 y 3) que el escaneo también corre al
     volver a la app y al tirar para abajo; en `settings.tsx` (parte 3) "carpetas y su orden"; en
     `libraryScanService.ts` y `libraryFolders.ts` (parte 3) qué devuelve el escaneo y que las

@@ -1,8 +1,103 @@
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt
-index 72a6e9e..f0c838a 100644
+index 72a6e9e..efc306a 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt
 +++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioModule.kt
-@@ -435,6 +435,9 @@ class AudioModule : Module() {
+@@ -9,6 +9,7 @@ import android.media.AudioFocusRequest
+ import android.media.AudioManager
+ import android.net.Uri
+ import android.os.Build
++import android.os.SystemClock
+ import android.util.Log
+ import androidx.core.content.ContextCompat
+ import androidx.core.net.toUri
+@@ -65,16 +66,26 @@ class AudioModule : Module() {
+     get() = players.values.asSequence() + playlists.values.asSequence()
+ 
+   private var audioFocusRequest: AudioFocusRequest? = null
++
++  // Bardo (patch): cuándo empezó la última interrupción pasajera (una llamada,
++  // una nota de voz, un aviso), y hasta cuánto se reanuda sola al terminar.
++  private var transientLossAt = 0L
++  private val resumeAfterInterruptionMs = 60_000L
+   private val audioFocusChangeListener = AudioManager.OnAudioFocusChangeListener { focusChange ->
+     appContext.mainQueue.launch {
+       when (focusChange) {
+         AudioManager.AUDIOFOCUS_LOSS -> {
+           focusAcquired = false
+-          allPlayables.forEach { it.pause() }
++          // Bardo (patch): perder el audio del todo no deja nada para reanudar después.
++          allPlayables.forEach { playable ->
++            playable.isPaused = false
++            playable.pause()
++          }
+         }
+ 
+         AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
+           focusAcquired = false
++          transientLossAt = SystemClock.elapsedRealtime()
+           allPlayables.forEach { playable ->
+             if (playable.isPlaying) {
+               playable.isPaused = true
+@@ -92,6 +103,7 @@ class AudioModule : Module() {
+               playable.setVolume(playable.previousVolume * 0.5f)
+             }
+           } else {
++            transientLossAt = SystemClock.elapsedRealtime()
+             allPlayables.forEach { playable ->
+               if (playable.isPlaying) {
+                 playable.isPaused = true
+@@ -103,13 +115,24 @@ class AudioModule : Module() {
+ 
+         AudioManager.AUDIOFOCUS_GAIN -> {
+           focusAcquired = true
++          // Bardo (patch): se reanuda sólo después de una interrupción CORTA y si
++          // el reproductor sigue cargado. Antes reanudaba siempre: una llamada de
++          // diez minutos terminaba y la voz arrancaba "de la nada", aunque el
++          // usuario ya se hubiera olvidado, o hubiera cerrado el reproductor.
++          val shortInterruption = SystemClock.elapsedRealtime() - transientLossAt <= resumeAfterInterruptionMs
++          var resumed = false
+           allPlayables.forEach { playable ->
+             playable.setVolume(playable.previousVolume)
+             if (playable.isPaused) {
+               playable.isPaused = false
+-              playable.play()
++              if (shortInterruption && playable.player.playbackState == Player.STATE_READY) {
++                playable.play()
++                resumed = true
++              }
+             }
+           }
++          // Nada que reanudar: se suelta el audio en vez de quedar tomándolo en silencio.
++          if (!resumed && shouldReleaseFocus()) releaseAudioFocus()
+         }
+       }
+     }
+@@ -119,10 +142,24 @@ class AudioModule : Module() {
+     return allPlayables.none { it.isPlaying }
+   }
+ 
++  // Bardo (patch): tras una interrupción pasajera, el pedido de audio anterior
++  // queda registrado en Android (releaseAudioFocus no lo suelta porque
++  // focusAcquired ya está en false). Al terminar la interrupción, Android le
++  // devolvía el audio a ese pedido viejo y la voz arrancaba sola. Se suelta.
++  private fun abandonStaleFocusRequest() {
++    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
++      audioFocusRequest?.let { audioManager.abandonAudioFocusRequest(it) }
++    } else {
++      @Suppress("DEPRECATION")
++      audioManager.abandonAudioFocus(audioFocusChangeListener)
++    }
++  }
++
+   private fun requestAudioFocus() {
+     if (focusAcquired || !audioEnabled || interruptionMode == InterruptionMode.MIX_WITH_OTHERS) {
+       return
+     }
++    abandonStaleFocusRequest()
+ 
+     val result = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+       val requestType = interruptionMode?.let {
+@@ -435,6 +472,9 @@ class AudioModule : Module() {
  
        Function("pause") { player: AudioPlayer ->
          runOnMain {
@@ -13,7 +108,7 @@ index 72a6e9e..f0c838a 100644
          }
        }
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
-index f7c4364..975af06 100644
+index f7c4364..175575c 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
 +++ b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/AudioPlayer.kt
 @@ -52,6 +52,8 @@ class AudioPlayer(
@@ -25,6 +120,15 @@ index f7c4364..975af06 100644
      .apply {
        if (bufferDurationMs > 0) {
          setLoadControl(
+@@ -203,6 +205,8 @@ class AudioPlayer(
+       }
+ 
+       override fun onPlaybackStateChanged(playbackState: Int) {
++        // Bardo (patch): un reproductor parado (vacío) no se reanuda solo.
++        if (playbackState == Player.STATE_IDLE) isPaused = false
+         val justFinished = playbackState == Player.STATE_ENDED &&
+           previousPlaybackState != Player.STATE_ENDED
+         previousPlaybackState = playbackState
 diff --git a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt b/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt
 index 1d9eea1..83b582e 100644
 --- a/node_modules/expo-audio/android/src/main/java/expo/modules/audio/service/AudioControlsService.kt

@@ -5,13 +5,11 @@ import {
   createAudioPlayer,
 } from 'expo-audio';
 
-import { AppState } from 'react-native';
-
 import { bookProgressRepository } from '../storage/bookProgressRepository';
 import { runtimeStateRepository } from '../storage/runtimeStateRepository';
 import { ParsedDocument } from '../types/document';
 import { getAbsoluteCharIndex, getPositionFromAbsoluteChar } from '../utils/documentProgress';
-import { pagePercentage, progressFootprint } from '../utils/progressRemap';
+import { pagePercentage, progressFootprint, resolveSavedPosition } from '../utils/progressRemap';
 import { detectLanguage } from '../utils/languageDetect';
 import { clamp } from '../utils/math';
 import { prepareSpeechText } from '../utils/speechText';
@@ -23,7 +21,6 @@ import { Span } from '../utils/textSpans';
 import { resolveVoice } from '../utils/voices';
 import { audioSessionService } from './audioSessionService';
 import { cancelPendingSynthesis, listVoices, synthesizeSpeech } from './systemTtsService';
-import { isMusicActive } from '../../modules/bardo-keys';
 
 // Cuántos tramos se sintetizan por adelantado. Los tramos son cortos (arranque
 // rápido), así que con dos de colchón la voz no espera al motor entre tramos.
@@ -188,8 +185,12 @@ class DocumentAudioPlaybackService {
   // no tiene que meterse.
   private hasUserPlayed = false;
   // Restaurando la escucha al arrancar: los avisos del reproductor no se
-  // publican (nada de "Preparando" ni de posiciones a medias en pantalla).
+  // publican (nada de "Preparando" ni de posiciones a medias en pantalla),
+  // salvo que el usuario ya haya pedido sonido: ahí los avisos son suyos.
   private isRestoring = false;
+  // Cargando un tramo en el reproductor: mientras tanto, que esté vacío es lo
+  // esperable y no significa que alguien lo haya parado desde afuera.
+  private isLoadingSource = false;
   // Foco de audio pedido para esta tanda de sonido. El play desde la
   // notificación, la pantalla de bloqueo o el auricular va directo al
   // reproductor nativo SIN pedir foco (expo-audio sólo lo pide en el play de
@@ -272,7 +273,24 @@ class DocumentAudioPlaybackService {
   }
 
   private handlePlayerStatus = (status: AudioStatus) => {
-    if (this.isRestoring) return;
+    // Antes se ignoraban TODOS los avisos mientras se restauraba: si el usuario
+    // tocaba play en esos segundos, la voz sonaba y el botón seguía en "Escuchar".
+    if (this.isRestoring && !this.hasUserPlayed) return;
+    // El reproductor quedó vacío sin que la app lo pidiera: alguien de afuera
+    // lo paró (cerrar el reproductor del panel de notificaciones, un STOP de
+    // Bluetooth o del auto) o falló. Antes la app seguía creyendo que el tramo
+    // estaba cargado, y el próximo play del MISMO libro esperaba un "listo"
+    // que nunca llegaba: no sonaba hasta reproducir otro libro. Ahora se
+    // toma como un "Detener": el próximo play vuelve a cargar el tramo.
+    if (status.playbackState === 'idle' && this.activeSourceKey !== null && !this.isLoadingSource) {
+      this.activeSourceKey = null;
+      this.focusClaimedWhilePlaying = false;
+      this.lastObservedIsPlaying = false;
+      this.trackListening(false);
+      void runtimeStateRepository.setAudioSessionBookId(null).catch(() => {});
+      this.updateSnapshot({ isLoaded: false, isPlaying: false, isPreparing: false });
+      return;
+    }
     this.trackListening(Boolean(status.playing));
     const activeChunk = this.getActiveChunk();
     if (status.playing && !this.focusClaimedWhilePlaying) {
@@ -523,15 +541,23 @@ class DocumentAudioPlaybackService {
     // Por rango, no por número de tramo: tras re-anclar la grilla, el tramo 3 puede
     // ser otro texto y el player tiene que cargar el archivo nuevo.
     const sourceKey = this.chunkIdFor(document, targetChunk, voiceId);
+    // Vacío (parado desde afuera o con error): hay que volver a cargarlo aunque
+    // sea el mismo tramo; esperar a que "termine de cargar" no termina nunca.
+    const playerIsEmpty = player.currentStatus.playbackState === 'idle';
 
-    if (this.activeSourceKey !== sourceKey) {
+    if (this.activeSourceKey !== sourceKey || playerIsEmpty) {
       this.lastPersistedAt = 0;
       this.lastPersistedAbsoluteCharIndex = -1;
       if (player.currentStatus.playing) player.pause();
-      player.replace({ uri: mp3Uri, name: `${document.fileName} · ${targetChunk.index + 1}/${this.activeChunks.length}` });
-      this.activeSourceKey = sourceKey;
-      this.activeChunkIndex = targetIndex;
-      await this.waitUntilLoaded(player, sessionId);
+      this.isLoadingSource = true;
+      try {
+        player.replace({ uri: mp3Uri, name: `${document.fileName} · ${targetChunk.index + 1}/${this.activeChunks.length}` });
+        this.activeSourceKey = sourceKey;
+        this.activeChunkIndex = targetIndex;
+        await this.waitUntilLoaded(player, sessionId);
+      } finally {
+        this.isLoadingSource = false;
+      }
     } else if (!player.currentStatus.isLoaded) {
       // El índice también acá: el mismo RANGO puede ser el tramo 2 ahora y el 5
       // después de re-anclar la grilla. Si no se actualiza, el avance al tramo
@@ -704,34 +730,6 @@ class DocumentAudioPlaybackService {
     this.lastObservedIsPlaying = false;
   }
 
-  /**
-   * Android manda las teclas de medios (auricular, notificación, pantalla de
-   * bloqueo) a la última sesión que REPRODUJO: una sesión recién armada en
-   * pausa no las recibe (verificado con `input keyevent 126`: nada hasta que
-   * el libro suena una vez). Un instante de reproducción en silencio la deja
-   * como "la sesión de los botones", y se vuelve a la posición exacta sin
-   * guardar nada en el medio.
-   */
-  private async claimMediaButtons(absoluteCharIndex: number, sessionId: number) {
-    const player = this.player;
-    if (!player || !player.currentStatus.isLoaded || !this.isSessionActive(sessionId)) return;
-    const volume = player.volume;
-    try {
-      player.volume = 0;
-      this.focusClaimedWhilePlaying = true;
-      player.play();
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      // Si en el medio el usuario pidió sonido, es SU reproducción: no se pausa.
-      if (!this.isSessionActive(sessionId)) return;
-      player.pause();
-      await this.seekWithinActiveChunk(absoluteCharIndex);
-    } catch (error) {
-      console.warn('[audio] no se pudieron reclamar los botones de medios:', error instanceof Error ? error.message : error);
-    } finally {
-      player.volume = volume;
-    }
-  }
-
   // ─── Public API ────────────────────────────────────────────────────────────
 
   subscribe(listener: PlaybackListener) {
@@ -743,11 +741,14 @@ class DocumentAudioPlaybackService {
   getSnapshot() { return { ...this.snapshot }; }
 
   /**
-   * Vuelve a dejar un libro cargado EN PAUSA en su posición, con la sesión de
-   * medios armada, después de que la app se reinició mientras se lo escuchaba.
-   * No suena nada: queda todo listo para que el play de la notificación, de la
-   * pantalla de bloqueo, del auricular o de la tarjeta del Inicio funcione.
-   * Si ya hay un libro cargado, no hace nada.
+   * Vuelve a dejar un libro cargado EN PAUSA en su posición, después de que la
+   * app se reinició mientras se lo escuchaba: la tarjeta del Inicio muestra
+   * "Listo para seguir" y su play suena al instante. No suena nada, no se abre
+   * la notificación y no se toman los botones de medios: nada pasa sin que el
+   * usuario lo pida. (Antes se armaba la notificación y se tomaban los botones
+   * con un instante de reproducción en silencio: el reproductor "se abría
+   * solo", y un auricular o un auto que se conectaba mandaba play y la voz
+   * arrancaba.) Si ya hay un libro cargado, no hace nada.
    */
   async restoreSession(
     document: ParsedDocument,
@@ -784,17 +785,15 @@ class DocumentAudioPlaybackService {
       await this.seekWithinActiveChunk(absolute);
       this.player.pause();
       this.player.setPlaybackRate(rate);
-      this.armLockScreen(metadata);
-      // Los botones de medios sólo si no hay otra app sonando: si la hay, el
-      // play del auricular es de ella, no nuestro.
-      if (!isMusicActive()) await this.claimMediaButtons(absolute, sessionId);
     } catch (error) {
       console.warn('[audio] no se pudo restaurar la escucha:', error instanceof Error ? error.message : error);
     } finally {
       this.isRestoring = false;
       this.suppressPersistUntil = Date.now() + 1000;
       // Recién ahora el resto se entera: cargado, en pausa, en su posición.
-      if (this.player && this.snapshot.documentId === document.id) this.handlePlayerStatus(this.player.currentStatus);
+      if (this.player && !this.hasUserPlayed && this.snapshot.documentId === document.id) {
+        this.handlePlayerStatus(this.player.currentStatus);
+      }
     }
   }
 
@@ -816,7 +815,15 @@ class DocumentAudioPlaybackService {
   /** Reanuda el libro cargado (en pausa) desde donde está: el play de la tarjeta del Inicio. */
   async resume() {
     const doc = this.activeDocument;
-    if (!doc || !this.player || !this.player.currentStatus.isLoaded) return;
+    if (!doc) return;
+    if (!this.player || !this.player.currentStatus.isLoaded) {
+      // El reproductor quedó vacío (lo pararon desde afuera): se arranca de
+      // nuevo desde la posición guardada, en vez de no hacer nada.
+      const progress = await bookProgressRepository.getProgress(doc.id).catch(() => null);
+      const from = resolveSavedPosition(doc, progress).absoluteCharIndex;
+      await this.play(doc, this.preferredVoiceId, this.activePlaybackRate, from, this.activeMetadata);
+      return;
+    }
     const at = this.currentAbsoluteCharFor(doc.id);
     const sessionId = this.startPlaybackSession();
     this.pauseGeneration += 1;
@@ -830,16 +837,6 @@ class DocumentAudioPlaybackService {
     // El nativo no arrancó: el camino completo de play() lo recrea y reintenta.
     this.recreatePlayer();
     await this.play(doc, this.preferredVoiceId, this.activePlaybackRate, at ?? 0, this.activeMetadata);
-  }
-
-  /**
-   * Al volver a la app, si hay un libro cargado se vuelven a registrar los
-   * controles: si Android mató el servicio de la notificación (o el usuario
-   * la cerró), la sesión de medios vuelve sin que haya que tocar nada.
-   */
-  rearmLockScreen() {
-    if (!this.activeDocument || !this.player?.currentStatus.isLoaded) return;
-    this.armLockScreen(this.activeMetadata);
   }
 
   /**
@@ -1110,11 +1107,4 @@ class DocumentAudioPlaybackService {
 
 export const documentAudioPlaybackService = new DocumentAudioPlaybackService();
 
-// Al volver a la app (desde la pantalla de bloqueo, otra app, o después de que
-// el usuario cerrara la notificación), los controles se vuelven a registrar si
-// hay un libro cargado: si Android había matado el servicio de la notificación,
-// la sesión de medios vuelve sin que haya que tocar nada.
-AppState.addEventListener('change', (state) => {
-  if (state === 'active') documentAudioPlaybackService.rearmLockScreen();
-});
 export type DocumentPlaybackSnapshot = PlaybackSnapshot;

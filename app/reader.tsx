@@ -1876,7 +1876,9 @@ export default function ReaderScreen() {
         ) : null}
 
         {/* Transporte de audio: parar · 15 s atrás · 15 s adelante. Solo mientras hay audio. */}
-        {canNarrate && (reader.isPlaying || reader.isPreparing || isAudioLoaded) ? (
+        {/* También con un error: antes el error vivía adentro de esta barra, que
+            se escondía justo cuando el audio no cargaba, y el play fallaba en silencio. */}
+        {canNarrate && (reader.isPlaying || reader.isPreparing || isAudioLoaded || Boolean(speechError)) ? (
           <View style={styles.audioBar} pointerEvents="box-none">
             {speechError ? (
               <Text style={[styles.audioBarError, { backgroundColor: colors.danger }]} numberOfLines={2}>{speechError}</Text>
