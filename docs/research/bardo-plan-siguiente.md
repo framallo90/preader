@@ -1310,3 +1310,23 @@ Trampa al regenerar el parche: con expo-audio compilado desde las fuentes aparec
 `node_modules/expo-audio/android/build`, con rutas demasiado largas para git en Windows, y
 `patch-package` falla sin avisar del todo (deja el parche viejo). Hay que mover esa carpeta afuera,
 regenerar y devolverla.
+
+---
+
+## Pausar, cerrar el reproductor y volver al mismo libro (2026-10-02)
+
+Facu: "¿qué pasa cuando la voz queda en pausa y se cierra el reproductor? El problema era que al
+querer volver a abrirlo no dejaba volver al mismo libro en escucha." Probado en el emulador con la
+versión del 1 de octubre, paso por paso:
+
+- Pausar y cerrar el reproductor del panel (deslizarlo): Android no le manda ninguna orden a la app;
+  la sesión queda en pausa. Volver al lector y tocar Escuchar, o usar la tarjeta del Inicio: el mismo
+  libro suena. El reproductor vuelve al panel al sonar.
+- Pausar y cerrar con STOP (Bluetooth, auto, o el panel en otros teléfonos): arreglado el 1 de octubre.
+- **Pausar y sacar la app de recientes, y volver a abrirla: la voz arrancaba sola.** Con el proceso
+  vivo, Android recrea la pantalla y expo-router devuelve la misma ruta del lector, que traía el
+  `mode=listen` de cuando se tocó "Escuchar" en el Inicio. El lector nuevo lo tomaba como un pedido
+  fresco y daba play. Reproducido: sin tocar nada, PAUSED → PLAYING a los 0,7 segundos de reabrir.
+  Arreglo: "escuchar" es de una sola vez; el lector lo borra de la ruta al usarlo
+  (`router.setParams({ mode: undefined })`). Verificado: al reabrir queda en pausa, y el play del lector
+  vuelve a sonar el mismo libro.

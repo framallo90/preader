@@ -664,6 +664,11 @@ export default function ReaderScreen() {
     if (!wantsListen || autoListenRef.current || !parsedDocument || isLoading || !canNarrate || isTextPending) return;
     pendingListenRef.current = false;
     autoListenRef.current = true;
+    // "Escuchar" es un pedido de UNA vez: se borra de la ruta al usarlo. Si
+    // no, cuando Android recrea la pantalla con el proceso vivo (sacar la app
+    // de recientes y volver a abrirla), el lector vuelve con la misma ruta,
+    // toma el "escuchar" como nuevo y arrancaba a leer solo.
+    if (mode === 'listen') router.setParams({ mode: undefined });
     void reader.play();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, parsedDocument, isLoading, isTextPending]);
